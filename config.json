@@ -69,6 +69,93 @@
       "staff": 5
     }
   },
+  "agents": {
+    "ceo": {
+      "type": "LeaderAgent",
+      "name": "Chief Executive Officer",
+      "department": "leadership",
+      "expertise_areas": ["strategy", "budgeting", "org_design"],
+      "skill_level": 5,
+      "capabilities": ["approve_decisions", "allocate_budget", "set_strategy"],
+      "constraints": ["must_approve_over_100k"],
+      "max_concurrent_tasks": 5
+    },
+    "engineering_head": {
+      "type": "ManagerAgent",
+      "name": "Engineering Manager",
+      "department": "engineering",
+      "expertise_areas": ["architecture", "code_review", "deployment"],
+      "skill_level": 4,
+      "capabilities": ["code_review", "architecture_design", "delegation", "quality_control"],
+      "constraints": ["cannot_execute_alone"],
+      "max_concurrent_tasks": 4,
+      "staff_range": [5, 15]
+    },
+    "design_head": {
+      "type": "ManagerAgent",
+      "name": "Design Manager",
+      "department": "design",
+      "expertise_areas": ["ui_design", "ux_research", "design_systems"],
+      "skill_level": 4,
+      "capabilities": ["design_review", "system_design", "delegation"],
+      "constraints": ["cannot_execute_alone"],
+      "max_concurrent_tasks": 3,
+      "staff_range": [3, 8]
+    },
+    "research_head": {
+      "type": "ManagerAgent",
+      "name": "Research Manager",
+      "department": "research",
+      "expertise_areas": ["data_analysis", "research_methodology", "insights"],
+      "skill_level": 4,
+      "capabilities": ["analysis", "reporting", "delegation"],
+      "constraints": [],
+      "max_concurrent_tasks": 4,
+      "staff_range": [4, 10]
+    },
+    "support_head": {
+      "type": "ManagerAgent",
+      "name": "Support Manager",
+      "department": "support",
+      "expertise_areas": ["customer_service", "problem_solving", "documentation"],
+      "skill_level": 3,
+      "capabilities": ["triage", "escalation", "delegation"],
+      "constraints": [],
+      "max_concurrent_tasks": 5,
+      "staff_range": [5, 12]
+    },
+    "sales_head": {
+      "type": "ManagerAgent",
+      "name": "Sales Manager",
+      "department": "sales",
+      "expertise_areas": ["sales_strategy", "negotiation", "customer_relations"],
+      "skill_level": 4,
+      "capabilities": ["deal_approval", "delegation", "forecasting"],
+      "constraints": ["needs_approval_over_50k"],
+      "max_concurrent_tasks": 4,
+      "staff_range": [4, 10]
+    },
+    "tech_lead": {
+      "type": "SpecialistAgent",
+      "name": "Technical Specialist",
+      "department": "engineering",
+      "expertise_areas": ["backend", "database", "systems_design"],
+      "skill_level": 5,
+      "capabilities": ["architecture", "code_review", "mentoring"],
+      "constraints": [],
+      "max_concurrent_tasks": 2
+    },
+    "product_coordinator": {
+      "type": "CoordinatorAgent",
+      "name": "Product Coordinator",
+      "department": "product",
+      "expertise_areas": ["cross_functional", "workflow_management"],
+      "skill_level": 3,
+      "capabilities": ["workflow_orchestration", "communication", "conflict_resolution"],
+      "constraints": [],
+      "max_concurrent_tasks": 6
+    }
+  },
   "default_department": "engineering",
   "llm_provider": "auto"
 }
