@@ -1,0 +1,74 @@
+{
+  "departments": {
+    "engineering": {
+      "keywords": [
+        "code",
+        "bug",
+        "feature",
+        "deploy",
+        "api",
+        "database",
+        "backend",
+        "frontend",
+        "fix",
+        "error"
+      ],
+      "staff": 5
+    },
+    "design": {
+      "keywords": [
+        "design",
+        "ui",
+        "ux",
+        "mockup",
+        "visual",
+        "graphics",
+        "layout",
+        "interface",
+        "styling"
+      ],
+      "staff": 5
+    },
+    "support": {
+      "keywords": [
+        "support",
+        "help",
+        "issue",
+        "troubleshoot",
+        "customer",
+        "resolve",
+        "problem",
+        "complaint"
+      ],
+      "staff": 5
+    },
+    "research": {
+      "keywords": [
+        "research",
+        "analyze",
+        "data",
+        "insights",
+        "report",
+        "study",
+        "findings",
+        "statistics"
+      ],
+      "staff": 5
+    },
+    "sales": {
+      "keywords": [
+        "sales",
+        "customer",
+        "pitch",
+        "proposal",
+        "deal",
+        "client",
+        "business",
+        "contract"
+      ],
+      "staff": 5
+    }
+  },
+  "default_department": "engineering",
+  "llm_provider": "auto"
+}
