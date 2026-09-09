@@ -1,3 +1,64 @@
+# Daily Progress Report - September 9, 2026
+
+## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT
+
+**Summary:** Day 2 implementation. Phases 1, 2, and 4 (agent specialization, workflows, analytics) were already in place but agents could execute, delegate, and get approved for work as if money and headcount were unlimited. Today's work grounds those decisions in finite resources: department budgets that can run out, and staffing capacity that can be over- or under-utilized.
+
+### ✅ What Was Built
+
+**`budgets.py` (~275 lines) — new module**
+
+- `ExpenseRecord`: a single committed spend (department, amount, category, task/agent references, timestamp)
+- `DepartmentBudget`: allocation vs. spend vs. *reservations* for one department
+  - `available()` / `utilization_pct()` / `can_afford()`
+  - `reserve()` / `release_reservation()` / `commit_reservation()` — lets a workflow approval gate hold funds before they're actually spent, so two concurrent requests can't both pass a check against the same uncommitted dollars
+- `BudgetManager`: registry + JSON persistence (`data/budgets.json`), mirroring the pattern in `agent_state.AgentRegistry` and `performance.PerformanceAnalytics`
+  - `allocate()`, `request_expense()`, `reserve_funds()`, `confirm_reservation()`, `cancel_reservation()`
+  - `approve_decision(decision, department)`: bridges `agent_decisions.DecisionResult` into a real budget check instead of the mocked `budget_available: float` the CEO's `OrganizationDecisionMaker.approve_decision()` currently takes
+  - `organization_summary()`, `over_budget_departments()` for org-wide rollups and alerts
+- `CapacitySnapshot` / `CapacityManager`: reads the *existing* `agent_registry` (no new state to keep in sync) to report per-department headcount vs. workload
+  - `snapshot()`, `is_over_capacity()`, `organization_report()`
+  - `recommend_actions()`: flags departments to hire into (over-utilized) or reassign work out of (idle), same shape as `performance.get_recommendations()`
+
+**`config.json`**
+- Added `monthly_budget` to each department (engineering $50k, sales $35k, design $30k, support $25k, research $20k) so `BudgetManager` has real starting allocations to seed from instead of requiring manual setup.
+
+**`test_budgets.py` (~165 lines)** — five scenarios, all passing:
+1. Allocation, spending, and rejecting a request that would overspend
+2. Reserve → confirm / the reservation blocking a second request that would exceed what's left
+3. Organization-wide summary and the over-budget-department alert
+4. A `DecisionResult` requiring approval getting checked against a real department budget
+5. Capacity snapshot + recommendation on an isolated agent registry (busy vs. idle agent)
+
+### 🔧 Design Decisions
+
+- **Reservations, not just check-then-spend.** A naive `if amount <= available: spend()` has a race between an agent's decision and a leader's approval. Modeling reservations as first-class (`DepartmentBudget.reserved`) means a workflow's approval step can hold funds the moment a request is made, not just when it's granted.
+- **Capacity reads agent_state, doesn't duplicate it.** `CapacityManager` computes snapshots from `agent_registry.all()` (`max_concurrent_tasks`, `current_workload`) rather than tracking a second copy of headcount — one source of truth for "how busy is this agent."
+- **Test isolation.** `test_budgets.py` uses its own data files (`data/test_budgets.json`, `data/test_agent_states.json`, cleaned up after each run) instead of the shared `data/agent_states.json`/`data/budgets.json`, so running the demo doesn't leave fake `capacity_test` agents or throwaway ledgers in the committed state.
+- **Left `agent_decisions.py` untouched.** Rather than changing `OrganizationDecisionMaker.approve_decision()`'s signature (which `test_agent_decisions.py` already exercises with a raw float), `BudgetManager.approve_decision()` is an additive bridge — lower risk, and the two can be reconciled once budgets are wired into the actual task execution path.
+
+### ✅ Validation
+
+- `python -m py_compile` clean on all `.py` files in the repo
+- `python3 test_budgets.py`: all 5 scenarios pass
+- Re-ran `test_agent_decisions.py`, `test_performance.py`, `test_workflows.py`: still pass, confirming nothing in the existing system was touched
+
+### 📝 Next Steps
+
+- Wire `BudgetManager`/`CapacityManager` into `task_executor_v2.py` so department heads actually check budget/capacity before executing or delegating (currently `budgets.py` is a standalone, tested module — not yet called from the execution path)
+- Use `reserve_funds()`/`confirm_reservation()` inside `workflows.py`'s existing "Budget Approval" step instead of the current no-op approval gate
+- Reconcile `OrganizationDecisionMaker.approve_decision()`'s mocked cost/budget with `BudgetManager.approve_decision()`
+- Add a spend/capacity view to `performance.generate_report()` so a single report covers quality, cost, and resource utilization
+
+### 📂 Files Modified
+
+- `budgets.py` (new)
+- `test_budgets.py` (new)
+- `config.json` (added `monthly_budget` per department)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 8, 2026
 
 ## 🎯 PHASE 1 & 2 FOUNDATION: COMPLETE
