@@ -1,29 +1,85 @@
 """
 Task Executor v2 - Parallel execution with event bus and agent registry
+Now with autonomous agent decision-making and performance tracking.
 """
 from typing import Dict, Any, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 from core import EventBus, agent_registry, BaseAgent
 from departments import DepartmentManager
+from agent_state import agent_registry as agent_state_registry, AgentState, AgentProfile
+from agent_decisions import AgentDecisionEngine, DecisionContext
 
 
 class DepartmentHeadAgent(BaseAgent):
-    """Generic LLM-backed department head. Works for any department in config.json.
+    """Autonomous agent head with decision-making, performance tracking, and learning.
 
-    Register a class via agent_registry (e.g. @agent_registry.register("engineering_head"))
-    to override this default for a specific department.
+    Now uses AgentState for identity, capabilities, metrics. Makes autonomous decisions
+    about task execution, delegation, or escalation.
     """
 
-    def __init__(self, department: str, llm_provider=None, **kwargs):
+    def __init__(self, department: str, agent_state: Optional[AgentState] = None,
+                 llm_provider=None, **kwargs):
         super().__init__(**kwargs)
         self.department = department
         self.agent_id = f"{department}_head"
         self.llm = llm_provider
 
+        # Use provided state or load from registry
+        if agent_state:
+            self.agent_state = agent_state
+        else:
+            self.agent_state = agent_state_registry.get(self.agent_id)
+            if not self.agent_state:
+                # Fallback: create default state for this department
+                profile = AgentProfile(
+                    agent_id=self.agent_id,
+                    name=f"{department.title()} Manager",
+                    agent_type="ManagerAgent",
+                    department=department,
+                    expertise_areas=[department],
+                    skill_level=3,
+                    capabilities=["delegation", "execution"],
+                    constraints=[]
+                )
+                self.agent_state = agent_state_registry.register(profile)
+
+    def decide_on_task(self, task: str, estimated_hours: float = 1.0) -> Dict[str, Any]:
+        """Use decision engine to decide how to handle the task."""
+        decision_context = DecisionContext(
+            task_id=f"task_{int(time.time())}",
+            task_type=self.department,
+            required_skills=self.agent_state.profile.expertise_areas,
+            complexity=0.5,  # Simplified
+            urgency=0.5,
+            estimated_hours=estimated_hours,
+            required_approval_level=2
+        )
+
+        engine = AgentDecisionEngine(self.agent_state)
+        decision = engine.decide(decision_context)
+
+        self._emit("agent_decision", {
+            "decision": decision.decision,
+            "assigned_to": decision.assigned_agent_id,
+            "confidence": decision.confidence,
+            "reasoning": decision.reasoning
+        })
+
+        return {
+            "decision": decision.decision,
+            "assigned_agent_id": decision.assigned_agent_id,
+            "requires_approval": decision.approval_required,
+            "confidence": decision.confidence,
+            "context": decision_context
+        }
+
     def run(self, task: str, **kwargs) -> Dict[str, Any]:
-        self._emit("agent_start", {"task": task, "department": self.department})
+        self._emit("agent_start", {"task": task, "department": self.department, "agent_id": self.agent_id})
         start = time.time()
+
+        # Check workload
+        self.agent_state.add_task()
 
         prompt = (
             f"As the {self.department.title()} Head, analyze this task and provide "
@@ -33,6 +89,7 @@ class DepartmentHeadAgent(BaseAgent):
         analysis = f"{self.department.title()} team analyzed the task and produced a plan."
         tokens_used = 0
         provider_used = "mock"
+        quality_score = 0.0
 
         if self.llm:
             try:
@@ -40,6 +97,7 @@ class DepartmentHeadAgent(BaseAgent):
                 analysis = result.get("content", analysis)
                 tokens_used = result.get("tokens_estimate", 0)
                 provider_used = result.get("provider", "mock")
+                quality_score = 4.0  # Mock quality score
                 self._emit("llm_response", {
                     "provider": provider_used,
                     "model": result.get("model", "Unknown"),
@@ -47,16 +105,47 @@ class DepartmentHeadAgent(BaseAgent):
                 })
             except Exception as e:
                 self._emit("llm_error", {"error": str(e), "provider": provider_used})
+                quality_score = 2.0
 
         duration = time.time() - start
-        self._emit("agent_complete", {"status": "success", "duration": duration, "tokens": tokens_used})
+
+        # Record performance
+        self.agent_state.record_performance(
+            quality=quality_score,
+            hours=duration / 3600.0,
+            cost=tokens_used * 0.00001,  # Mock cost
+            success=quality_score >= 3.0
+        )
+
+        # Update preference for this task type
+        self.agent_state.learn_preference(self.department, 0.3 if quality_score >= 3.0 else -0.2)
+
+        self._emit("agent_complete", {
+            "status": "success",
+            "duration": duration,
+            "tokens": tokens_used,
+            "quality": quality_score,
+            "workload": self.agent_state.current_workload
+        })
 
         staff_count = DepartmentManager.get_staff_count(self.department)
+
+        # Clean up workload
+        self.agent_state.remove_task()
+        agent_state_registry.save()
+
         return {
             "analysis": analysis,
             "department": self.department,
+            "agent_id": self.agent_id,
             "llm_provider": provider_used,
             "tokens_used": tokens_used,
+            "quality_score": quality_score,
+            "metrics": {
+                "avg_quality": self.agent_state.metrics.avg_quality_score,
+                "tasks_completed": self.agent_state.metrics.tasks_completed,
+                "error_rate": self.agent_state.metrics.error_rate
+            },
             "staff_contributions": [
                 {"role": f"{self.department.title()} Staff {i + 1}", "contribution": f"Task component {i + 1}"}
                 for i in range(staff_count)

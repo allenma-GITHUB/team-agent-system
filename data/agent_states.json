@@ -1,0 +1,111 @@
+{
+  "eng_lead": {
+    "profile": {
+      "agent_id": "eng_lead",
+      "name": "Engineering Lead",
+      "agent_type": "ManagerAgent",
+      "department": "engineering",
+      "expertise_areas": [
+        "architecture",
+        "backend",
+        "database"
+      ],
+      "skill_level": 5,
+      "capabilities": [
+        "code_review",
+        "delegation"
+      ],
+      "constraints": [
+        "cannot_execute_alone"
+      ],
+      "max_concurrent_tasks": 3,
+      "max_hours_per_week": 40.0
+    },
+    "metrics": {
+      "tasks_completed": 0,
+      "avg_quality_score": 0.0,
+      "avg_completion_time_hours": 0.0,
+      "avg_cost_per_task": 0.0,
+      "error_rate": 0.0,
+      "customer_satisfaction": 0.0
+    },
+    "relationships": {
+      "design_lead": {
+        "agent_id": "design_lead",
+        "trust_score": 1,
+        "collaboration_count": 2,
+        "last_collaboration": "2026-09-08T23:50:42.707626"
+      }
+    },
+    "current_workload": 3,
+    "learned_preferences": {},
+    "availability_until": null
+  },
+  "design_lead": {
+    "profile": {
+      "agent_id": "design_lead",
+      "name": "Design Lead",
+      "agent_type": "ManagerAgent",
+      "department": "design",
+      "expertise_areas": [
+        "ui_design",
+        "ux_research"
+      ],
+      "skill_level": 4,
+      "capabilities": [
+        "design_review",
+        "delegation"
+      ],
+      "constraints": [],
+      "max_concurrent_tasks": 2,
+      "max_hours_per_week": 40.0
+    },
+    "metrics": {
+      "tasks_completed": 6,
+      "avg_quality_score": 3.0234375,
+      "avg_completion_time_hours": 3.375,
+      "avg_cost_per_task": 63.28125,
+      "error_rate": 0.2222222222222222,
+      "customer_satisfaction": 0.0
+    },
+    "relationships": {},
+    "current_workload": 0,
+    "learned_preferences": {
+      "ui_design": 0.8,
+      "documentation": -0.5
+    },
+    "availability_until": null
+  },
+  "ceo": {
+    "profile": {
+      "agent_id": "ceo",
+      "name": "CEO",
+      "agent_type": "LeaderAgent",
+      "department": "leadership",
+      "expertise_areas": [
+        "strategy",
+        "budgeting"
+      ],
+      "skill_level": 5,
+      "capabilities": [
+        "approve_decisions",
+        "budget_allocation"
+      ],
+      "constraints": [],
+      "max_concurrent_tasks": 5,
+      "max_hours_per_week": 40.0
+    },
+    "metrics": {
+      "tasks_completed": 0,
+      "avg_quality_score": 0.0,
+      "avg_completion_time_hours": 0.0,
+      "avg_cost_per_task": 0.0,
+      "error_rate": 0.0,
+      "customer_satisfaction": 0.0
+    },
+    "relationships": {},
+    "current_workload": 0,
+    "learned_preferences": {},
+    "availability_until": null
+  }
+}
