@@ -878,6 +878,42 @@ Drafted the example session's numbers first, then ran the actual commands to che
 
 ---
 
+## 🎯 TWENTIETH CHECKPOINT TODAY: FINISHING THE DOCUMENTATION SWEEP
+
+**Summary:** The previous checkpoint's Next Steps flagged the other top-level docs as "likely similarly stale." Checked all seven: three (`SESSION_SUMMARY.md`, `TEST_REPORT.md`, `IMPROVEMENTS_APPLIED.md`) are honestly dated snapshots ("Date: 2026-09-07/08") that don't claim to describe the current system, so their staleness is benign, same as any past `DAILY_PROGRESS.md` entry - left untouched. Two (`QUICKSTART.md`, `SUMMARY.md`) presented undated, "what you have"/evergreen framing while actually describing `main.py` and Windows `.bat` launchers that don't exist. One (`IMPROVEMENTS.md`) is a legitimate historical design-rationale document (mirroring `UPGRADE_GUIDE.md`, left alone) but still had a "Current:" code example that could mislead a reader taking it at face value.
+
+### ✅ What Changed
+
+**`QUICKSTART.md`** — rewritten in full, same treatment as `README.md`: every `main.py` → `main_v2.py`, the "Files" list updated to the real current module set (`budgets.py`, `workflows.py`, `strategy.py`, `performance.py`, `agent_state.py`), and the architecture diagram updated to mention capacity/budget/decision checks instead of the old "5 staff members simulate" description. Kept intentionally short - a quickstart doesn't need README's depth, just correct commands.
+
+**`SUMMARY.md`** — added a banner at the top marking it a historical day-one snapshot (it references `main.py`, `task_executor.py`, and Windows `.bat` files that don't exist, plus a roadmap superseded by everything actually built since), pointing to `README.md`/`QUICKSTART.md` for current docs and `DAILY_PROGRESS.md` for history. Body left otherwise unedited - not worth fully rewriting a document that substantially duplicates `README.md`'s purpose; two "current state" documents to keep in sync forever is worse than one clearly-marked historical one.
+
+**`IMPROVEMENTS.md`** — same banner treatment: marked as the original v1→v2 design proposal (its "Current:" examples describe pre-`_v2` behavior), pointing forward to `README.md`/`DAILY_PROGRESS.md`.
+
+### 🔧 Design Decisions
+
+- **Not every stale doc gets a full rewrite.** `README.md`/`QUICKSTART.md` are what a new reader opens first and are meant to be followed literally - they earned the full rewrite. `SUMMARY.md`/`IMPROVEMENTS.md` are better treated as historical records once something else (README) is the accurate reference - a clear banner fixes the misleading part without taking on permanent duplicate-maintenance debt.
+- **A date in the title is what makes staleness honest rather than misleading.** `SESSION_SUMMARY.md`/`TEST_REPORT.md`/`IMPROVEMENTS_APPLIED.md` all needed zero changes for exactly this reason - nobody reads a dated snapshot expecting it to be current.
+
+### ✅ Validation
+
+- No code changed; `git status` confirms only the four `.md` files touched
+- `QUICKSTART.md`'s commands and claims mirror the previous checkpoint's already-verified `README.md` content (effort-estimate heuristic, `status`/`report` output, architecture pipeline)
+
+### 📝 Next Steps
+
+- No execution path exists for `ceo`/`tech_lead`/`product_coordinator` roles specifically
+- `workflow_next()` still only shows the next step rather than auto-executing non-approval ones (deliberately left as-is)
+- `main_v2.py`'s task pipeline and `workflows.py`'s workflow pipeline remain two separate systems for anything beyond a single `execute_step()` call
+
+### 📂 Files Modified
+
+- `QUICKSTART.md` (full rewrite)
+- `SUMMARY.md` / `IMPROVEMENTS.md` (historical-snapshot banners added)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT
