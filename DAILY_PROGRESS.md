@@ -370,6 +370,52 @@ Writing the retry test the straightforward way - block a step, top up the budget
 
 ---
 
+## 🎯 NINTH CHECKPOINT TODAY: DEPENDENCY INJECTION FOR DepartmentHeadAgent
+
+**Summary:** Every checkpoint since the second one flagged the same unresolved item: `DepartmentHeadAgent` (and the `AgentDecisionEngine`/`OrganizationDecisionMaker` it drives) hardcoded the shared global `agent_state_registry`, `budget_manager`, `capacity_manager`, and `analytics` singletons. Every test exercising `run()` had to touch real shared files (`data/agent_states.json`, `data/budgets.json`, `data/performance_metrics.json`) and manually clean up afterward (`git checkout --`, stray `rm -f`s) - eleven test files' worth of that ritual today alone. Closed it.
+
+### ✅ What Changed
+
+**`agent_decisions.py`**
+- `AgentDecisionEngine.__init__(agent_state, registry=None)`: defaults to the shared global agent registry, but `find_best_delegate()` now reads from `self.registry` instead of the bare module-level name
+- `OrganizationDecisionMaker.__init__(leader_agent_id, registry=None)`: same pattern
+
+**`task_executor_v2.py`**
+- `DepartmentHeadAgent.__init__` gains `agent_state_registry`, `budget_manager`, `capacity_manager`, `analytics` params - each `None` by default (falls back to the shared singleton, so every existing call site's behavior is unchanged), stored as `self.<name>` and used everywhere in `decide_on_task()`/`run()` instead of the bare module names
+- `TaskExecutor.__init__` gains the same four params and passes them through to every `DepartmentHeadAgent` it creates in `get_agent_for_department()` - so injecting once at the executor level covers every agent it spins up on demand, not just one constructed by hand
+
+**`test_department_head_isolation.py` (new)** — two scenarios, both passing and idempotent:
+1. A fully-injected `DepartmentHeadAgent` runs a task and hashes/mtimes of all three shared data files are proven byte-for-byte unchanged before vs. after - while the *injected* isolated instances correctly recorded the spend, agent registration, and metrics
+2. A `TaskExecutor` constructed with injected dependencies propagates them to an agent it creates on demand via `execute()`, not just one built by hand
+
+### 🔧 Design Decisions
+
+- **`None` means "use the global," never "use nothing."** Every new parameter defaults to `None` and falls back to the pre-existing module-level singleton - so this is purely additive. No existing call site (including every one of today's earlier eight checkpoints' tests, and `main_v2.py`, which passes none of these) needed to change to keep working exactly as before. Verified by re-running the full pre-existing 11-file suite unmodified.
+- **Left the eight existing tests as they are.** Rewriting `test_resource_gating.py` etc. to use full injection was tempting but riskier than it's worth right now - they're stable, passing, and their "unique `qa_*` name + manual cleanup" pattern still works. The new capability is proven with a dedicated test instead of a risky retrofit of working code. Migrating them is a legitimate future cleanup, not a requirement.
+- **Verified the CLI path too**, not just tests: re-ran `main_v2.py submit`/`process`/`report` end to end in a temp directory to confirm the refactor didn't change default (non-injected) behavior.
+
+### ✅ Validation
+
+- `python -m py_compile` clean on all `.py` files
+- `test_department_head_isolation.py`: both scenarios pass, run twice back-to-back to confirm idempotency, and confirmed via `git status` that no shared or scratch files were left behind (its own `main()` cleans up its private data files)
+- Full suite (12 test files, all nine of today's checkpoints): all pass, unmodified
+- End-to-end CLI run in a temp directory (`submit --hours 2` → `process` → `report`) confirmed unchanged default behavior
+
+### 📝 Next Steps
+
+- Optionally migrate the eight pre-DI test files to use full injection now that the capability exists, retiring their manual shared-file cleanup
+- `DepartmentManager.route_task()` still has no auto-estimation of `estimated_hours` from task text - manual `--hours` flag only
+- Workflows (`workflows.py`) are still test/script-only from the CLI's perspective - `main_v2.py` has no workflow commands
+
+### 📂 Files Modified
+
+- `agent_decisions.py` (`AgentDecisionEngine`/`OrganizationDecisionMaker` accept an injectable registry)
+- `task_executor_v2.py` (`DepartmentHeadAgent`/`TaskExecutor` accept injectable registry/budget/capacity/analytics)
+- `test_department_head_isolation.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT

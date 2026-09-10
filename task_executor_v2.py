@@ -7,10 +7,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 from core import EventBus, agent_registry, BaseAgent
 from departments import DepartmentManager
-from agent_state import agent_registry as agent_state_registry, AgentState, AgentProfile
+from agent_state import agent_registry as _default_agent_state_registry, AgentState, AgentProfile
 from agent_decisions import AgentDecisionEngine, DecisionContext
-from budgets import budget_manager, capacity_manager
-from performance import analytics
+from budgets import budget_manager as _default_budget_manager, capacity_manager as _default_capacity_manager
+from performance import analytics as _default_analytics
 
 
 class DepartmentHeadAgent(BaseAgent):
@@ -21,18 +21,29 @@ class DepartmentHeadAgent(BaseAgent):
     """
 
     def __init__(self, department: str, agent_state: Optional[AgentState] = None,
-                 llm_provider=None, cost_per_hour: float = 100.0, **kwargs):
+                 llm_provider=None, cost_per_hour: float = 100.0,
+                 agent_state_registry=None, budget_manager=None,
+                 capacity_manager=None, analytics=None, **kwargs):
         super().__init__(**kwargs)
         self.department = department
         self.agent_id = f"{department}_head"
         self.llm = llm_provider
         self.cost_per_hour = cost_per_hour
 
+        # Every dependency below defaults to the shared global singleton
+        # (same behavior as before), but a caller - typically a test that
+        # wants full isolation instead of touching data/agent_states.json,
+        # data/budgets.json, etc. - can inject its own instances.
+        self.agent_state_registry = agent_state_registry or _default_agent_state_registry
+        self.budget_manager = budget_manager or _default_budget_manager
+        self.capacity_manager = capacity_manager or _default_capacity_manager
+        self.analytics = analytics or _default_analytics
+
         # Use provided state or load from registry
         if agent_state:
             self.agent_state = agent_state
         else:
-            self.agent_state = agent_state_registry.get(self.agent_id)
+            self.agent_state = self.agent_state_registry.get(self.agent_id)
             if not self.agent_state:
                 # Fallback: create default state for this department
                 profile = AgentProfile(
@@ -45,11 +56,11 @@ class DepartmentHeadAgent(BaseAgent):
                     capabilities=["delegation", "execution"],
                     constraints=[]
                 )
-                self.agent_state = agent_state_registry.register(profile)
+                self.agent_state = self.agent_state_registry.register(profile)
 
         # Seed a department budget from config.json on first use; leaves an
         # already-tracked period's spend alone on subsequent runs.
-        budget_manager.ensure_allocated(department, DepartmentManager.get_monthly_budget(department))
+        self.budget_manager.ensure_allocated(department, DepartmentManager.get_monthly_budget(department))
 
     def decide_on_task(self, task: str, estimated_hours: float = 1.0) -> Dict[str, Any]:
         """Use decision engine to decide how to handle the task."""
@@ -63,7 +74,7 @@ class DepartmentHeadAgent(BaseAgent):
             required_approval_level=2
         )
 
-        engine = AgentDecisionEngine(self.agent_state)
+        engine = AgentDecisionEngine(self.agent_state, registry=self.agent_state_registry)
         decision = engine.decide(decision_context)
 
         self._emit("agent_decision", {
@@ -88,7 +99,7 @@ class DepartmentHeadAgent(BaseAgent):
 
         # Staffing capacity is informational for now (there's no cross-department
         # rerouting yet), but a stretched-thin department should show up in traces.
-        capacity = capacity_manager.snapshot(self.department)
+        capacity = self.capacity_manager.snapshot(self.department)
         self._emit("capacity_check", {
             "utilization": capacity.utilization_pct(),
             "agent_count": capacity.agent_count,
@@ -111,11 +122,11 @@ class DepartmentHeadAgent(BaseAgent):
         # enough to need approval - otherwise routine work is free and only
         # large tasks are resource-constrained, which understates real cost.
         if decision.approval_required:
-            approved, reason = budget_manager.approve_decision(
+            approved, reason = self.budget_manager.approve_decision(
                 decision, department=self.department, cost_per_hour=self.cost_per_hour
             )
         else:
-            approved, reason = budget_manager.request_expense(
+            approved, reason = self.budget_manager.request_expense(
                 department=self.department, amount=estimated_hours * self.cost_per_hour,
                 category="labor", description=decision.reasoning, agent_id=self.agent_id
             )
@@ -182,7 +193,7 @@ class DepartmentHeadAgent(BaseAgent):
             cost=mock_cost,
             success=quality_score >= 3.0
         )
-        analytics.record_task(
+        self.analytics.record_task(
             agent_id=self.agent_id,
             agent_name=self.agent_state.profile.name,
             department=self.department,
@@ -207,7 +218,7 @@ class DepartmentHeadAgent(BaseAgent):
 
         # Clean up workload
         self.agent_state.remove_task()
-        agent_state_registry.save()
+        self.agent_state_registry.save()
 
         return {
             "analysis": analysis,
@@ -233,11 +244,21 @@ class DepartmentHeadAgent(BaseAgent):
 class TaskExecutor:
     """Executes tasks with parallel support and event tracing."""
 
-    def __init__(self, llm_provider, bus: Optional[EventBus] = None, max_workers: int = 4):
+    def __init__(self, llm_provider, bus: Optional[EventBus] = None, max_workers: int = 4,
+                 agent_state_registry=None, budget_manager=None,
+                 capacity_manager=None, analytics=None):
         self.llm = llm_provider
         self.bus = bus or EventBus()
         self.max_workers = max_workers
         self.agents = {}
+        # Passed through to every DepartmentHeadAgent this executor creates -
+        # None means "use the shared global singletons" (unchanged default
+        # behavior); a caller can inject isolated instances for full
+        # isolation (e.g. in tests, without touching data/*.json).
+        self.agent_state_registry = agent_state_registry
+        self.budget_manager = budget_manager
+        self.capacity_manager = capacity_manager
+        self.analytics = analytics
 
     def get_agent_for_department(self, department: str) -> BaseAgent:
         """Get or create an agent for a department. Uses a registered override if
@@ -247,7 +268,13 @@ class TaskExecutor:
             if agent_registry.get(agent_name):
                 self.agents[department] = agent_registry.create(agent_name, bus=self.bus, llm_provider=self.llm)
             else:
-                self.agents[department] = DepartmentHeadAgent(department, bus=self.bus, llm_provider=self.llm)
+                self.agents[department] = DepartmentHeadAgent(
+                    department, bus=self.bus, llm_provider=self.llm,
+                    agent_state_registry=self.agent_state_registry,
+                    budget_manager=self.budget_manager,
+                    capacity_manager=self.capacity_manager,
+                    analytics=self.analytics
+                )
 
         return self.agents[department]
 

@@ -4,7 +4,7 @@ Agents decide: should I do this? Who should do this? Can I do this now?
 """
 from typing import Optional, List, Tuple
 from dataclasses import dataclass
-from agent_state import AgentState, agent_registry
+from agent_state import AgentState, agent_registry as _default_agent_registry
 
 
 @dataclass
@@ -33,8 +33,11 @@ class DecisionResult:
 class AgentDecisionEngine:
     """Decision-making logic for agents processing tasks."""
 
-    def __init__(self, agent_state: AgentState):
+    def __init__(self, agent_state: AgentState, registry=None):
         self.agent = agent_state
+        # Defaults to the shared global agent registry; tests (or a caller
+        # managing an isolated set of agents) can inject their own instead.
+        self.registry = registry or _default_agent_registry
 
     def can_execute(self, context: DecisionContext) -> Tuple[bool, str]:
         """Can this agent execute the task?"""
@@ -76,7 +79,7 @@ class AgentDecisionEngine:
 
     def find_best_delegate(self, context: DecisionContext) -> Optional[AgentState]:
         """Find best agent to delegate to."""
-        candidates = agent_registry.available_agents(
+        candidates = self.registry.available_agents(
             skill_required=context.required_skills[0] if context.required_skills else None
         )
 
@@ -168,8 +171,9 @@ class AgentDecisionEngine:
 class OrganizationDecisionMaker:
     """High-level decisions made by leadership (LeaderAgent)."""
 
-    def __init__(self, leader_agent_id: str):
-        self.leader = agent_registry.get(leader_agent_id)
+    def __init__(self, leader_agent_id: str, registry=None):
+        registry = registry or _default_agent_registry
+        self.leader = registry.get(leader_agent_id)
         if not self.leader or self.leader.profile.agent_type != "LeaderAgent":
             raise ValueError(f"Agent {leader_agent_id} is not a LeaderAgent")
 
