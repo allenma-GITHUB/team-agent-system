@@ -754,6 +754,47 @@ Ran the real bridge - `TaskExecutor`, real `LLMProvider`, real budgets - end to 
 
 ---
 
+## 🎯 SEVENTEENTH CHECKPOINT TODAY: CLOSING A TESTING DEBT, NOT ADDING A FEATURE
+
+**Summary:** Sixteen checkpoints today layered feature after feature onto `main_v2.py`'s core task pipeline (`submit_task`, `process_tasks`, `list_tasks`, `show_task`, `show_status`), and every single one of them was validated by a manual end-to-end CLI run in a temp directory - genuinely useful for catching integration bugs (it caught two real ones earlier today), but none of it left behind an automated regression test. This was a deliberate pause to pay down that debt rather than reach for another feature.
+
+### ✅ What Was Built
+
+**`test_main_cli_core.py` (new)** — seven scenarios, all passing and idempotent, covering the five core functions directly (not through a subprocess):
+1. `submit_task()` with no `--dept`/`--hours` correctly routes the department (keyword match) and estimates hours (heuristic default)
+2. `process_tasks(parallel=True)` actually executes queued tasks and marks them `completed` with a real result
+3. `process_tasks(parallel=False)` (the sequential path) does the same
+4. `process_tasks()` with nothing queued is a clean no-op (`"No queued tasks."`, no crash)
+5. `list_tasks(status=...)` correctly filters - all/queued/completed views each show exactly the right rows
+6. `show_task()` displays real task details and reports a missing task cleanly rather than crashing
+7. `show_status()` reflects real, accumulated task/budget/capacity counts after a mixed sequence of submits and a process run
+
+### 🔧 Design Decisions
+
+- **Call the functions directly, not through a subprocess.** Every earlier CLI validation today shelled out to a fresh `python3 main_v2.py ...` process specifically to test process-boundary behavior (persistence, in particular). This test has no such requirement - it's testing the functions' own logic - so it imports `main_v2` and calls `submit_task()`/`process_tasks()`/etc. directly, using `contextlib.redirect_stdout` to capture and assert on their printed output. Much faster, and there's no reason to pay the subprocess cost when there's nothing about process boundaries to prove.
+- **A custom `IsolatedCwd` context manager, not a bare `tempfile`/`os.chdir` pair repeated seven times.** Copies `config.json` into a fresh temp directory, `os.chdir`s into it, and restores the original directory and cleans up afterward - the same isolation approach `test_effort_estimation.py`'s fifth scenario used earlier today, extracted into something reusable across all seven scenarios here.
+- **Verified the isolation claim, not just assumed it.** Ran `test_main_cli_core.py` alone (not the full suite) and diffed `git status` before/after - confirmed it leaves the tracked `data/agent_states.json` and every scratch file untouched. The pollution visible when running the full 19-file suite together comes entirely from the other eighteen (pre-existing) files, which still rely on the shared global singletons and their own manual cleanup - a fact worth recording plainly rather than letting it look like this new file caused it.
+
+### ✅ Validation
+
+- `python -m py_compile` clean
+- `test_main_cli_core.py`: all 7 scenarios pass, run twice back-to-back to confirm idempotency
+- Full suite (19 test files now): all pass
+- Confirmed via `git status` diffing that this specific file, run alone, touches zero shared or scratch files
+
+### 📝 Next Steps
+
+- `workflow_next()` still only shows the next step rather than auto-executing non-approval ones - considered today, deliberately left as-is: it would collapse the current `next`/`complete` separation, which mirrors `submit`/`process`'s intentional queued-vs-processed distinction, for a marginal convenience gain
+- No execution path exists for `ceo`/`tech_lead`/`product_coordinator` roles specifically, only the five department heads
+- Optionally migrate the earlier pre-DI test files to use full injection now that the capability exists
+
+### 📂 Files Modified
+
+- `test_main_cli_core.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT
