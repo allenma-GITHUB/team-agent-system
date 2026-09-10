@@ -26,6 +26,18 @@ TASKS_FILE = DATA_DIR / "tasks.json"
 RESULTS_DIR = DATA_DIR / "results"
 
 
+def _flag_value(flag: str):
+    """sys.argv[index+1] for a CLI flag, bounds- and shape-checked - a
+    trailing flag with no value, or one immediately followed by another
+    flag, used to raise an uncaught IndexError and crash with a raw
+    traceback instead of a clean usage message. Returns (value, ok)."""
+    i = sys.argv.index(flag)
+    if i + 1 >= len(sys.argv) or sys.argv[i + 1].startswith("--"):
+        print(f"✗ {flag} requires a value")
+        return None, False
+    return sys.argv[i + 1], True
+
+
 def init_system():
     """Initialize directories and files."""
     DATA_DIR.mkdir(exist_ok=True)
@@ -397,12 +409,21 @@ def main():
         desc = sys.argv[2]
         dept = None
         if "--dept" in sys.argv:
-            dept = sys.argv[sys.argv.index("--dept") + 1]
+            dept, ok = _flag_value("--dept")
+            if not ok:
+                return
         # None -> submit_task() falls back to a keyword-based estimate
         # instead of a flat 1.0h; --hours always wins if supplied.
         hours = None
         if "--hours" in sys.argv:
-            hours = float(sys.argv[sys.argv.index("--hours") + 1])
+            raw_hours, ok = _flag_value("--hours")
+            if not ok:
+                return
+            try:
+                hours = float(raw_hours)
+            except ValueError:
+                print(f"✗ --hours must be a number, got {raw_hours!r}")
+                return
             if hours < 0:
                 print(f"✗ --hours must be >= 0, got {hours}")
                 return
@@ -415,7 +436,9 @@ def main():
     elif command == "list":
         status = None
         if "--status" in sys.argv:
-            status = sys.argv[sys.argv.index("--status") + 1]
+            status, ok = _flag_value("--status")
+            if not ok:
+                return
         list_tasks(status)
 
     elif command == "show":

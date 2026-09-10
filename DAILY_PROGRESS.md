@@ -1,5 +1,22 @@
 # Daily Progress Report - September 10, 2026
 
+## 🐛 CHECKPOINT 26: MALFORMED CLI FLAGS CRASHED WITH RAW TRACEBACKS
+
+**Found immediately after checkpoint 25**, while re-checking the same CLI parsing code the negative-hours fix touched: `submit "test" --hours` (flag as the last argument, no value), `submit "test" --dept` (same), and `submit "test" --hours abc` (non-numeric value) all raised an uncaught `IndexError`/`ValueError` and dumped a raw Python traceback to the user instead of a usage message. `list --status` (no value) had the identical hole. Root cause in all four: `sys.argv[sys.argv.index(flag) + 1]` assumes the flag is never last and that `float()` on its value never fails.
+
+### ✅ Fix
+
+Added a shared `_flag_value(flag)` helper in `main_v2.py` (module-level, used by both the `submit` and `list` CLI handlers) that:
+- Bounds-checks `index + 1` against `len(sys.argv)` instead of indexing blindly
+- Treats a value that itself starts with `--` as "no value supplied" (so `submit "test" --dept --hours 5` reports `--dept requires a value` instead of silently setting `dept="--hours"`)
+- Returns `(value, ok)` so each call site can print a clean `✗ <flag> requires a value` and return, rather than letting the exception propagate
+
+`--hours`'s `float()` conversion is now wrapped in a `try/except ValueError` with its own clean message (`✗ --hours must be a number, got 'abc'`).
+
+**New test:** `test_cli_flag_parsing.py` — drives `main_v2.main()` directly with crafted `sys.argv` for all five malformed-flag shapes plus a well-formed control case, asserting no exception escapes and the expected message prints. Run twice back-to-back (clean both times); full 24-file suite re-run clean afterward. Verified live via the real CLI in an isolated temp dir for every case above.
+
+---
+
 ## 🐛 CHECKPOINT 25: NEGATIVE `--hours` COULD MANUFACTURE BUDGET OUT OF THIN AIR
 
 **Found while probing `main_v2.py`'s CLI with edge-case inputs** (a new review angle after several checkpoints of concurrency-bug hunting): `submit "test" --dept engineering --hours -5` was accepted silently — `✓ Task 0001 submitted to ENGINEERING (est. -5.0h)`.
