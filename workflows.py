@@ -5,6 +5,7 @@ Enables complex business processes like feature requests, bug fixes, and reviews
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Callable, Any, Tuple
 from enum import Enum
+from pathlib import Path
 import json
 import time
 from datetime import datetime
@@ -129,11 +130,67 @@ class WorkflowTemplate:
 
 
 class WorkflowEngine:
-    """Orchestrates workflow execution."""
+    """Orchestrates workflow execution.
 
-    def __init__(self):
+    Instances persist to disk (data/workflows.json by default) so state
+    survives across separate process runs - e.g. a CLI command that starts
+    a workflow and a later one that advances it. Templates are NOT
+    persisted: they're supplied by code (create_feature_request_workflow(),
+    etc.) and must be re-registered with register_template() at the start
+    of every process before operating on a restored instance, the same way
+    DepartmentManager re-reads config.json fresh each run instead of
+    caching department definitions to disk.
+    """
+
+    def __init__(self, data_file: str = "data/workflows.json"):
+        self.data_file = Path(data_file)
         self.templates: Dict[str, WorkflowTemplate] = {}
         self.instances: Dict[str, WorkflowInstance] = {}
+        self.load()
+
+    def load(self):
+        """Load persisted instances from file. Templates are never persisted."""
+        if not self.data_file.exists():
+            return
+        with open(self.data_file) as f:
+            data = json.load(f)
+        for instance_id, inst_data in data.items():
+            self.instances[instance_id] = WorkflowInstance(
+                workflow_id=inst_data["workflow_id"],
+                workflow_name=inst_data["workflow_name"],
+                instance_id=inst_data["instance_id"],
+                input_data=inst_data.get("input_data", {}),
+                status=WorkflowStatus(inst_data["status"]),
+                current_step=inst_data.get("current_step"),
+                step_results=inst_data.get("step_results", {}),
+                step_status={k: StepStatus(v) for k, v in inst_data.get("step_status", {}).items()},
+                created_at=inst_data.get("created_at"),
+                started_at=inst_data.get("started_at"),
+                completed_at=inst_data.get("completed_at"),
+                error=inst_data.get("error"),
+            )
+
+    def save(self):
+        """Persist instances to file."""
+        self.data_file.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+        for instance_id, instance in self.instances.items():
+            data[instance_id] = {
+                "workflow_id": instance.workflow_id,
+                "workflow_name": instance.workflow_name,
+                "instance_id": instance.instance_id,
+                "input_data": instance.input_data,
+                "status": instance.status.value,
+                "current_step": instance.current_step,
+                "step_results": instance.step_results,
+                "step_status": {k: v.value for k, v in instance.step_status.items()},
+                "created_at": instance.created_at,
+                "started_at": instance.started_at,
+                "completed_at": instance.completed_at,
+                "error": instance.error,
+            }
+        with open(self.data_file, 'w') as f:
+            json.dump(data, f, indent=2)
 
     def register_template(self, template: WorkflowTemplate) -> None:
         """Register a workflow template."""
@@ -147,6 +204,7 @@ class WorkflowEngine:
 
         instance = template.create_instance(input_data)
         self.instances[instance.instance_id] = instance
+        self.save()
         return instance
 
     def start_instance(self, instance_id: str) -> bool:
@@ -157,6 +215,7 @@ class WorkflowEngine:
 
         instance.status = WorkflowStatus.IN_PROGRESS
         instance.started_at = datetime.utcnow().isoformat()
+        self.save()
         return True
 
     def complete_step(self, instance_id: str, step_id: str, result: Dict[str, Any]) -> bool:
@@ -167,6 +226,7 @@ class WorkflowEngine:
 
         instance.step_results[step_id] = result
         instance.step_status[step_id] = StepStatus.COMPLETED
+        self.save()
         return True
 
     @staticmethod
@@ -201,6 +261,7 @@ class WorkflowEngine:
             if step and step.estimated_cost > 0:
                 budget_manager.cancel_reservation(step.budget_dept(), reference)
 
+        self.save()
         return True
 
     def retry_blocked_step(self, instance_id: str) -> Tuple[bool, str]:
@@ -226,11 +287,13 @@ class WorkflowEngine:
         reserved, reason = budget_manager.reserve_funds(department, reference, step.estimated_cost)
         if not reserved:
             instance.error = f"Step '{step.name}' still blocked: {reason}"
+            self.save()
             return False, reason
 
         instance.step_status[step_id] = StepStatus.IN_PROGRESS
         instance.status = WorkflowStatus.IN_PROGRESS
         instance.error = None
+        self.save()
         return True, "Resumed"
 
     def get_next_step(self, instance_id: str) -> Optional[WorkflowStep]:
@@ -266,10 +329,12 @@ class WorkflowEngine:
                 instance.step_status[next_step.step_id] = StepStatus.BLOCKED
                 instance.status = WorkflowStatus.ESCALATED
                 instance.error = f"Step '{next_step.name}' blocked: {reason}"
+                self.save()
                 return None
 
         instance.current_step = next_step.step_id
         instance.step_status[next_step.step_id] = StepStatus.IN_PROGRESS
+        self.save()
 
         return next_step
 
@@ -289,6 +354,7 @@ class WorkflowEngine:
             if all_done:
                 instance.status = WorkflowStatus.COMPLETED
                 instance.completed_at = datetime.utcnow().isoformat()
+                self.save()
                 return True
 
         return instance.is_complete()

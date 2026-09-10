@@ -37,7 +37,7 @@ def test_retry_succeeds_once_budget_is_topped_up():
     department = "qa_retry_ok"
     budget_manager.allocate(department, 1000)  # can't cover the $5,000 step yet
 
-    engine = WorkflowEngine()
+    engine = WorkflowEngine(data_file="data/test_workflow_engine.json")
     engine.register_template(make_template("wf_retry_ok", department, step_cost=5000))
     instance = engine.create_instance("wf_retry_ok", {})
     engine.start_instance(instance.instance_id)
@@ -79,7 +79,7 @@ def test_retry_fails_again_if_still_unaffordable():
     department = "qa_retry_still_broke"
     budget_manager.allocate(department, 100)
 
-    engine = WorkflowEngine()
+    engine = WorkflowEngine(data_file="data/test_workflow_engine.json")
     engine.register_template(make_template("wf_retry_broke", department, step_cost=5000))
     instance = engine.create_instance("wf_retry_broke", {})
     engine.start_instance(instance.instance_id)
@@ -102,7 +102,7 @@ def test_retry_on_non_blocked_workflow_is_a_no_op():
     department = "qa_retry_healthy"
     budget_manager.allocate(department, 100000)
 
-    engine = WorkflowEngine()
+    engine = WorkflowEngine(data_file="data/test_workflow_engine.json")
     engine.register_template(make_template("wf_retry_healthy", department, step_cost=1000))
     instance = engine.create_instance("wf_retry_healthy", {})
     engine.start_instance(instance.instance_id)

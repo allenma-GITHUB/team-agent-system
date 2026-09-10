@@ -416,6 +416,56 @@ Writing the retry test the straightforward way - block a step, top up the budget
 
 ---
 
+## 🎯 TENTH CHECKPOINT TODAY: WORKFLOWS HAD ZERO PERSISTENCE
+
+**Summary:** Started scoping a CLI surface for workflows (a natural next step after today's CLI wiring for budgets/capacity/performance) and found something more fundamental blocking it entirely: `WorkflowEngine` kept `self.instances`/`self.templates` in plain in-memory dicts with no `save()`/`load()` at all - unlike every other stateful module today (`agent_state.py`, `budgets.py`, `performance.py`), which all persist to JSON. Since every CLI command is a fresh Python process, a CLI command to start a workflow and a later command to advance it would never see the same state - the second command's workflow_engine would be empty. Wiring CLI commands on top of that would have been building on nothing. Fixed the actual gap first.
+
+### ✅ What Changed
+
+**`workflows.py`**
+- `WorkflowEngine.__init__(data_file="data/workflows.json")`: loads persisted instances on construction
+- New `load()`/`save()`: (de)serializes `WorkflowInstance` objects, converting the `WorkflowStatus`/`StepStatus` enum fields to/from their `.value` (plain JSON can't represent Python enums directly)
+- Every mutating method (`create_instance`, `start_instance`, `complete_step`, `approve_step`, `retry_blocked_step`, `get_next_step` - both its success and blocked paths - and `check_complete`) now calls `self.save()`
+- **Templates are deliberately NOT persisted** - they're supplied by code (`create_feature_request_workflow()`, etc.) and must be re-registered with `register_template()` at the start of every process, the same way `DepartmentManager` re-reads `config.json` fresh each run instead of caching department definitions to disk. A restored instance whose template hasn't been re-registered yet still exists (its data survived), it just can't be advanced until the caller registers the matching template again.
+
+**`test_workflow_budget.py` / `test_workflow_retry.py`**
+- Both previously constructed a fresh `WorkflowEngine()` specifically to stay isolated from the global `workflow_engine` singleton. With persistence now defaulting to the *same* `data/workflows.json` path, those "fresh" engines would have silently shared a file with the global singleton and with each other across runs. Pointed both at an isolated `data/test_workflow_engine.json` instead - the same fix pattern used throughout today for every other shared singleton.
+
+**`test_workflow_persistence.py` (new)** — two scenarios, both passing and idempotent:
+1. A workflow instance created and partially advanced by one `WorkflowEngine` object is fully visible to a second, completely separate `WorkflowEngine` object pointed at the same file (simulating two CLI process invocations) - including being driven the rest of the way to completion by the second object
+2. Templates are confirmed *not* to survive between engine objects (by design): a fresh engine with the instance's data but no `register_template()` call can see the instance but can't advance it
+
+### 🔧 How This Was Found
+
+Not by running code and seeing a wrong answer, this time - by reading `WorkflowEngine.__init__` while scoping the next feature and noticing it had no `data_file` parameter or `load()`/`save()` at all, unlike every sibling module. Worth calling out because it's the one checkpoint today found by inspection rather than by running the pipeline end-to-end - both approaches earned their keep today.
+
+### 🔧 Design Decisions
+
+- **Persist instances, not templates.** Templates are static code, safe to reconstruct identically every process start; instances are the actual mutable state a real workflow run needs to survive a restart. Persisting templates too would mean two competing sources of truth (the code and the file) for something that should only ever come from code.
+- **Save on every mutation, not batched.** Mirrors the pattern already used in `agent_state.py`/`budgets.py`/`performance.py` - a crash between "mutate in memory" and "write to disk" is a real risk with batching; committing state's cheap enough here to do it every time instead.
+
+### ✅ Validation
+
+- `python -m py_compile` clean
+- `test_workflow_persistence.py`: both scenarios pass, run twice back-to-back to confirm idempotency
+- Full suite (13 test files now): all pass, including the two updated tests confirmed to still isolate correctly from the global singleton
+- Confirmed `main_v2.py` doesn't import `workflows.py` at all yet, so this change has no CLI-facing effect until that wiring happens
+
+### 📝 Next Steps
+
+- Add the actual CLI surface for workflows to `main_v2.py` (`workflow start/next/approve/retry/status`) - the reason this checkpoint happened, now unblocked
+- Optionally migrate the eight pre-DI test files to use full injection now that the capability exists
+- `DepartmentManager.route_task()` still has no auto-estimation of `estimated_hours` from task text
+
+### 📂 Files Modified
+
+- `workflows.py` (`WorkflowEngine` persistence: `load()`/`save()`, called from every mutating method)
+- `test_workflow_budget.py` / `test_workflow_retry.py` (isolated `data_file` to avoid colliding with the global singleton)
+- `test_workflow_persistence.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT
