@@ -152,12 +152,8 @@ Just describe your task naturally—the system routes it automatically.
 ## Need Help?
 
 See [README.md](README.md) for:
-<<<<<<< HEAD
 
-- Detailed command reference
-=======
 - Full command reference (including `workflow` and `strategy`)
->>>>>>> c3e202eec5ba193e4f47bf4121e1393723e6b562
 - Configuration customization
 - How to add new departments and agent profiles
 - LLM provider setup
