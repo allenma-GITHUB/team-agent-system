@@ -28,7 +28,7 @@ def init_system():
         TASKS_FILE.write_text(json.dumps([], indent=2))
 
 
-def submit_task(description: str, department=None):
+def submit_task(description: str, department=None, estimated_hours: float = 1.0):
     """Submit a new task."""
     init_system()
 
@@ -42,6 +42,7 @@ def submit_task(description: str, department=None):
         "id": task_id,
         "description": description,
         "department": department,
+        "estimated_hours": estimated_hours,
         "status": "queued",
         "created_at": datetime.now().isoformat(),
         "result": None
@@ -50,7 +51,7 @@ def submit_task(description: str, department=None):
     tasks.append(task)
     TASKS_FILE.write_text(json.dumps(tasks, indent=2))
 
-    print(f"✓ Task {task_id} submitted to {department.upper()}")
+    print(f"✓ Task {task_id} submitted to {department.upper()} (est. {estimated_hours}h)")
     return task_id
 
 
@@ -81,7 +82,7 @@ def process_tasks(parallel=True):
 
     if parallel and len(queued) > 1:
         # Parallel execution
-        task_list = [(t["department"], t["description"]) for t in queued]
+        task_list = [(t["department"], t["description"], t.get("estimated_hours", 1.0)) for t in queued]
         results = executor.execute_parallel(task_list)
 
         for i, (task, result) in enumerate(zip(queued, results)):
@@ -97,7 +98,9 @@ def process_tasks(parallel=True):
     else:
         # Sequential execution
         for task in queued:
-            result = executor.execute(task["department"], task["description"])
+            result = executor.execute(
+                task["department"], task["description"], task.get("estimated_hours", 1.0)
+            )
             task["status"] = "completed"
             task["result"] = result
             task["completed_at"] = datetime.now().isoformat()
@@ -214,7 +217,7 @@ def main():
     if len(sys.argv) < 2:
         print("Team Agent System v2 - CLI with Event Bus & Parallel Execution")
         print("\nUsage:")
-        print("  python main_v2.py submit <description> [--dept DEPARTMENT]")
+        print("  python main_v2.py submit <description> [--dept DEPARTMENT] [--hours N]")
         print("  python main_v2.py process [--sequential]")
         print("  python main_v2.py list [--status STATUS]")
         print("  python main_v2.py show <task_id>")
@@ -231,13 +234,16 @@ def main():
 
     if command == "submit":
         if len(sys.argv) < 3:
-            print("Usage: python main_v2.py submit <description> [--dept DEPARTMENT]")
+            print("Usage: python main_v2.py submit <description> [--dept DEPARTMENT] [--hours N]")
             return
         desc = sys.argv[2]
         dept = None
         if "--dept" in sys.argv:
             dept = sys.argv[sys.argv.index("--dept") + 1]
-        submit_task(desc, dept)
+        hours = 1.0
+        if "--hours" in sys.argv:
+            hours = float(sys.argv[sys.argv.index("--hours") + 1])
+        submit_task(desc, dept, estimated_hours=hours)
 
     elif command == "process":
         sequential = "--sequential" in sys.argv

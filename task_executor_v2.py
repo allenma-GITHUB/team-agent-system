@@ -251,7 +251,7 @@ class TaskExecutor:
 
         return self.agents[department]
 
-    def execute(self, department: str, task_description: str) -> Dict[str, Any]:
+    def execute(self, department: str, task_description: str, estimated_hours: float = 1.0) -> Dict[str, Any]:
         """Execute a task (single, synchronous)."""
         self.bus.emit("task_execute_start", {
             "task": task_description[:60],
@@ -260,7 +260,7 @@ class TaskExecutor:
 
         start = time.time()
         agent = self.get_agent_for_department(department)
-        result = agent.run(task_description)
+        result = agent.run(task_description, estimated_hours=estimated_hours)
         duration = time.time() - start
 
         self.bus.emit("task_execute_end", {
@@ -283,7 +283,9 @@ class TaskExecutor:
         """Execute multiple tasks in parallel.
 
         Args:
-            tasks: List of (department, description) tuples
+            tasks: List of (department, description) or
+                   (department, description, estimated_hours) tuples.
+                   estimated_hours defaults to 1.0 if omitted.
 
         Returns:
             List of results in original order
@@ -297,10 +299,11 @@ class TaskExecutor:
         start_time = time.time()
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = {
-                executor.submit(self.execute, dept, desc): i
-                for i, (dept, desc) in enumerate(tasks)
-            }
+            futures = {}
+            for i, task_tuple in enumerate(tasks):
+                dept, desc, *rest = task_tuple
+                estimated_hours = rest[0] if rest else 1.0
+                futures[executor.submit(self.execute, dept, desc, estimated_hours)] = i
 
             completed = 0
             for future in as_completed(futures):

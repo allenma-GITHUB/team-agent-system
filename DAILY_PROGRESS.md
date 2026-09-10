@@ -278,6 +278,52 @@ Validating the new `report` CLI command end-to-end (not just unit tests) against
 
 ---
 
+## 🎯 SEVENTH CHECKPOINT TODAY: ESTIMATED HOURS NEVER LEFT THE CLI
+
+**Summary:** The previous checkpoint fixed how `DepartmentHeadAgent.run()` records `estimated_hours` once it has one - but nothing ever gave it one. `TaskExecutor.execute()`/`execute_parallel()` never accepted or passed through an `estimated_hours` argument, so every task processed by `main_v2.py process` silently used `run()`'s default of `1.0h`, and `submit_task()` had no way to specify anything else. Every task ever submitted through the actual CLI was billed and measured identically regardless of real size. Closed the whole path end to end.
+
+### ✅ What Changed
+
+**`task_executor_v2.py`**
+- `TaskExecutor.execute(department, task_description, estimated_hours=1.0)`: now passes `estimated_hours` through to `agent.run()` instead of dropping it
+- `TaskExecutor.execute_parallel()`: now accepts `(department, description)` *or* `(department, description, estimated_hours)` tuples - a bare 2-tuple still defaults to `1.0h`, so this is backward compatible
+
+**`main_v2.py`**
+- `submit_task()` takes `estimated_hours` and stores it on the task record; the `submit` command gained a `--hours N` flag (defaults to `1.0`)
+- `process_tasks()` reads each task's stored `estimated_hours` (via `.get(..., 1.0)`, so tasks submitted before this change still work) and passes it through on both the parallel and sequential paths
+
+**`test_executor_hours_threading.py` (new)** — three scenarios, all passing and idempotent:
+1. `execute()` with `estimated_hours=5.0` bills exactly `5h * $100/hr = $500`
+2. `execute_parallel()` bills each task in a batch for its *own* hours (`2h` and `3h` tasks together cost `$500`, not `2 * default`)
+3. A bare `(department, description)` 2-tuple still defaults to `1.0h` - confirms the extension didn't break the original tuple shape
+
+### 🔧 How This Was Found
+
+Same as the previous checkpoint - running the real CLI pipeline (`submit --hours 0.5`, `submit --hours 30`, `process --sequential`, `report`) in an isolated temp directory rather than trusting unit tests alone. Before this fix, both tasks would have cost identically ($100 flat, `1.0h` each) and the report's `avg_turnaround_time` still would have been meaningless despite the previous checkpoint's fix, because nothing was actually feeding `run()` a real number. After: `$3,050` total spend (`$50` + `$3,000`, matching a `0.5h` and a `30h` task exactly), `15.2h` avg turnaround, and the `workload_rebalance` recommendation fired for real through the full CLI path - three of today's checkpoints visibly compounding correctly together.
+
+### ✅ Validation
+
+- `python -m py_compile` clean
+- End-to-end CLI run (temp dir, two tasks at `0.5h` and `30h`) confirmed exact expected spend and a real, non-zero average turnaround
+- `test_executor_hours_threading.py`: all 3 scenarios pass, run twice back-to-back to confirm idempotency
+- Full suite (10 test files now): all pass
+
+### 📝 Next Steps
+
+- A `resume_step()`/retry path for `BLOCKED` workflow steps once budget frees up
+- Give the `bug_fix` workflow's "Verification" step a real cost too
+- Apply the injectable-dependency pattern to `DepartmentHeadAgent` so its own tests can stop touching the shared global registries
+- `DepartmentManager.route_task()` auto-detects department from keywords but there's still no auto-estimation of `estimated_hours` from task text - it's purely a manual `--hours` flag today
+
+### 📂 Files Modified
+
+- `task_executor_v2.py` (`execute()`/`execute_parallel()` thread `estimated_hours` through)
+- `main_v2.py` (`submit --hours`, stored on the task, passed through `process`)
+- `test_executor_hours_threading.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT
