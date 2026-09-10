@@ -9,6 +9,9 @@ import json
 import time
 from datetime import datetime
 
+from budgets import budget_manager
+from departments import DepartmentManager
+
 
 class WorkflowStatus(Enum):
     """Workflow execution status."""
@@ -45,9 +48,16 @@ class WorkflowStep:
     timeout_minutes: int = 60
     retry_on_failure: bool = True
     max_retries: int = 2
+    estimated_cost: float = 0.0  # $ reserved/spent from budget_dept() when this step requires approval
+    budget_department: Optional[str] = None  # defaults to owner_department if unset
 
     def __hash__(self):
         return hash(self.step_id)
+
+    def budget_dept(self) -> str:
+        """Department whose budget backs this step (may differ from who executes it,
+        e.g. a finance-owned approval step that draws against engineering's budget)."""
+        return self.budget_department or self.owner_department
 
 
 @dataclass
@@ -159,23 +169,46 @@ class WorkflowEngine:
         instance.step_status[step_id] = StepStatus.COMPLETED
         return True
 
+    @staticmethod
+    def _budget_reference(instance_id: str, step_id: str) -> str:
+        """Namespaced reservation key so workflow holds don't collide with
+        any other subsystem (e.g. task_executor_v2) reserving the same budget."""
+        return f"wf:{instance_id}:{step_id}"
+
     def approve_step(self, instance_id: str, step_id: str, approved: bool) -> bool:
-        """Approve/reject a step requiring approval."""
+        """Approve/reject a step requiring approval. If the step carries an
+        estimated_cost, its budget hold is committed to real spend on approval
+        or released back to the department on rejection."""
         instance = self.instances.get(instance_id)
         if not instance:
             return False
 
+        template = self.templates.get(instance.workflow_id)
+        step = template.get_step_by_id(step_id) if template else None
+        reference = self._budget_reference(instance_id, step_id)
+
         if approved:
             instance.step_status[step_id] = StepStatus.APPROVED
+            if step and step.estimated_cost > 0:
+                budget_manager.confirm_reservation(
+                    step.budget_dept(), reference, category="workflow_step",
+                    description=step.name, task_id=instance_id
+                )
         else:
             instance.step_status[step_id] = StepStatus.REJECTED
             instance.status = WorkflowStatus.PAUSED
             instance.error = f"Step {step_id} rejected"
+            if step and step.estimated_cost > 0:
+                budget_manager.cancel_reservation(step.budget_dept(), reference)
 
         return True
 
     def get_next_step(self, instance_id: str) -> Optional[WorkflowStep]:
-        """Get next step to execute."""
+        """Get next step to execute. A step requiring approval with a non-zero
+        estimated_cost must first reserve that amount from its department's
+        budget; if the department can't afford it, the step is blocked and the
+        workflow escalates instead of silently proceeding into an approval gate
+        no one can actually fund."""
         instance = self.instances.get(instance_id)
         if not instance or instance.status != WorkflowStatus.IN_PROGRESS:
             return None
@@ -190,9 +223,22 @@ class WorkflowEngine:
         }
 
         next_step = template.get_next_step(completed)
-        if next_step:
-            instance.current_step = next_step.step_id
-            instance.step_status[next_step.step_id] = StepStatus.IN_PROGRESS
+        if not next_step:
+            return None
+
+        if next_step.requires_approval and next_step.estimated_cost > 0:
+            department = next_step.budget_dept()
+            budget_manager.ensure_allocated(department, DepartmentManager.get_monthly_budget(department))
+            reference = self._budget_reference(instance_id, next_step.step_id)
+            reserved, reason = budget_manager.reserve_funds(department, reference, next_step.estimated_cost)
+            if not reserved:
+                instance.step_status[next_step.step_id] = StepStatus.BLOCKED
+                instance.status = WorkflowStatus.ESCALATED
+                instance.error = f"Step '{next_step.name}' blocked: {reason}"
+                return None
+
+        instance.current_step = next_step.step_id
+        instance.step_status[next_step.step_id] = StepStatus.IN_PROGRESS
 
         return next_step
 
@@ -264,7 +310,8 @@ def create_feature_request_workflow() -> WorkflowTemplate:
                 description="Create detailed design",
                 depends_on=["intake"],
                 requires_approval=True,
-                approval_role="design_lead"
+                approval_role="design_lead",
+                estimated_cost=3000
             ),
             WorkflowStep(
                 step_id="estimation",
@@ -280,7 +327,9 @@ def create_feature_request_workflow() -> WorkflowTemplate:
                 description="Approve budget allocation",
                 depends_on=["estimation"],
                 requires_approval=True,
-                approval_role="ceo"
+                approval_role="ceo",
+                estimated_cost=15000,
+                budget_department="engineering"  # finance approves it, engineering's budget funds it
             ),
             WorkflowStep(
                 step_id="development",

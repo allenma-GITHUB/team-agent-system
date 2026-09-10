@@ -58,6 +58,53 @@
 
 ---
 
+## 🎯 SAME-DAY FOLLOW-UP: BUDGET-GATED WORKFLOW APPROVAL STEPS
+
+**Summary:** Second checkpoint today. The task-execution gap above is closed, but `workflows.py`'s "Budget Approval" step was still just a label — `approve_step()` never touched money, and `StepStatus.BLOCKED`/`WorkflowStatus.ESCALATED` were defined in the enums but never actually assigned anywhere. Wired the same `budgets.py` reserve/confirm/cancel flow into the workflow engine so an approval-gated step with a real cost can't silently proceed past a department that can't afford it.
+
+### ✅ What Changed
+
+**`workflows.py`**
+- `WorkflowStep` gains `estimated_cost` (default `0.0`, so existing approval steps with no cost are unaffected) and `budget_department` (defaults to `owner_department` via new `budget_dept()` helper) — lets a step be *owned* by one department (e.g. `finance`, who approves) while its cost is funded from another's budget (e.g. `engineering`, who actually pays for the work)
+- `WorkflowEngine.get_next_step()`: before advancing into a step that `requires_approval` and has `estimated_cost > 0`, it seeds the department's budget from `config.json` (`budget_manager.ensure_allocated`, same helper `task_executor_v2.py` uses) and calls `reserve_funds()`. If the department can't afford it, the step is marked `BLOCKED` and the workflow `ESCALATED` — both enum values existed since Phase 2 but were dead code until now — and `get_next_step()` returns `None` instead of handing back a step no one can fund
+- `WorkflowEngine.approve_step()`: on approval, `confirm_reservation()` converts the hold into real logged spend; on rejection, `cancel_reservation()` releases it back to the department instead of leaving it stuck as a phantom hold
+- `create_feature_request_workflow()`: gave the "Design Specification" step a real `$3,000` cost against `design`'s budget, and "Budget Approval" a `$15,000` cost that's owned by `finance` but funded from `engineering`'s budget — a concrete example of the owner/funder split
+
+**`test_workflow_budget.py` (new)** — four scenarios, all passing:
+1. An affordable step reserves on advance, then approval commits the reservation to spend
+2. A rejected step releases its reservation rather than spending it
+3. A step costing more than the department can afford blocks (`StepStatus.BLOCKED`) and escalates the workflow (`WorkflowStatus.ESCALATED`) without touching the budget at all
+4. A step owned by one department but funded by another's budget reserves/spends against the *funding* department, not the owner
+
+### 🔧 Design Decisions
+
+- **Reservation happens on advance, not on approval.** If the hold were only taken at `approve_step()` time, two different steps (or a step and some other spend) could both "pass" a check against the same uncommitted dollars in the window between a step starting and being approved — the exact race yesterday's `DepartmentBudget.reserved` was built to prevent. Reserving as soon as the engine hands out the step closes that window here too.
+- **Backward compatible by construction.** `estimated_cost` defaults to `0.0`, so every existing workflow step (including "Engineering Estimate," "Implementation," "Launch," and the entire `bug_fix` template) is completely untouched — the existing `test_workflows.py` suite runs unmodified and unaffected, it just now also does a real `$3,000` reserve/confirm cycle against `design`'s budget under the hood for its "Design Specification" step.
+- **Owner vs. funder is a real distinction, not just plumbing.** A CEO/finance sign-off step approves spend, it doesn't source it — modeling `budget_department` separately means the reservation lands on the department whose money actually leaves, which is what an org chart looks like in practice.
+- **No auto-retry on BLOCKED.** A blocked step stays blocked; nothing currently re-attempts it once budget frees up. That's an intentional scope cut, not an oversight — see Next Steps.
+
+### ✅ Validation
+
+- `python -m py_compile` clean on all `.py` files
+- `test_workflow_budget.py`: all 4 scenarios pass
+- Re-ran the full suite (`test_agent_decisions.py`, `test_performance.py`, `test_workflows.py`, `test_budgets.py`, `test_resource_gating.py`, `test_workflow_budget.py`): all still pass, including `test_workflows.py`'s existing walk through the now-budget-gated "Design Specification" step
+- Re-ran `test_workflow_budget.py` again from a fully cleaned state to confirm reproducibility
+
+### 📝 Next Steps
+
+- A `resume_step()`/retry path for `BLOCKED` steps once budget frees up (currently they stay stuck)
+- Give the `bug_fix` workflow's "Verification" step a real cost too, now that the plumbing exists
+- Surface `WorkflowStatus.ESCALATED` instances somewhere a human/CEO agent would actually see them (today it's just instance state, no notification)
+- The cross-cutting item from yesterday still stands: meter actual per-task LLM/labor cost against budget, not just approval-gated estimates
+
+### 📂 Files Modified
+
+- `workflows.py` (budget reserve/confirm/cancel wired into `get_next_step()`/`approve_step()`, new `WorkflowStep` fields)
+- `test_workflow_budget.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT
