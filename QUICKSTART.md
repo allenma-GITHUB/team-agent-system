@@ -11,6 +11,7 @@ python main.py submit "Your task description here"
 ```
 
 Examples:
+
 ```bash
 # Engineering
 python main.py submit "Fix the login button not responding"
@@ -49,7 +50,7 @@ python main.py show <task_id>
 python main.py status
 ```
 
-## That's It!
+## That's It
 
 Your system is running in **mock mode** (works without any API keys). See [README.md](README.md) for LLM integration.
 
@@ -62,6 +63,7 @@ To upgrade from mock mode to real LLM responses:
 3. Restart the system
 
 Supported providers:
+
 - Anthropic Claude
 - OpenAI GPT
 - Google Gemini
@@ -73,28 +75,32 @@ The system automatically detects available APIs and uses the best one.
 ## Common Tasks
 
 ### Create an Engineering Task
+
 ```bash
 python main.py submit "Database migration for user table"
 ```
 
 ### Create a Design Task
+
 ```bash
 python main.py submit "Redesign landing page with new brand guidelines"
 ```
 
 ### See All Pending Work
+
 ```bash
 python main.py list --status queued
 ```
 
 ### See Completed Work
+
 ```bash
 python main.py list --status completed
 ```
 
 ## System Architecture
 
-```
+```text
 Your CLI
    ↓
 Task Router (auto-detects department)
@@ -109,7 +115,7 @@ Results (stored locally)
 ## Departments (Auto-Routing)
 
 | Keywords | Department |
-|----------|-----------|
+| ---------- | ----------- |
 | code, bug, feature, deploy | Engineering |
 | design, ui, ux, mockup | Design |
 | support, help, issue | Support |
@@ -132,6 +138,7 @@ Just describe your task naturally—the system routes it automatically.
 ## Need Help?
 
 See [README.md](README.md) for:
+
 - Detailed command reference
 - Configuration customization
 - How to add new departments

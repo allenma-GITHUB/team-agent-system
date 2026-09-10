@@ -9,7 +9,8 @@
 ## Issues Fixed
 
 ### ❌ Before
-```
+
+```text
 ❌ Using non-existent model: claude-3-opus-20250219
 ❌ No fallback strategy if model unavailable
 ❌ No token tracking
@@ -18,7 +19,8 @@
 ```
 
 ### ✅ After
-```
+
+```text
 ✅ Intelligent model fallback chain
 ✅ Best Claude model selection for tasks
 ✅ Token counting and tracking
@@ -53,6 +55,7 @@ for model, model_name, version in models_to_try:
 ```
 
 **Benefits:**
+
 - Works with any API account
 - Automatically finds available models
 - No hardcoded model names needed
@@ -73,6 +76,7 @@ def select_provider(self, task_type: str = "general"):
 ```
 
 **For Coding Tasks:**
+
 - **1st Choice:** Claude 3.5 Sonnet (excellent code, token-efficient)
 - **2nd Choice:** Groq (ultra-fast, good quality)
 - **3rd Choice:** OpenAI GPT-4
@@ -93,6 +97,7 @@ return {
 ```
 
 **Result:** Complete observability
+
 - See which provider was used
 - Track tokens per task
 - Monitor cost over time
@@ -101,18 +106,21 @@ return {
 ### 4. **Enhanced Error Handling** 🛡️
 
 **Before:**
-```
+
+```text
 ⚠ Anthropic error: Error code: 404 - {...}. Falling back to mock.
 ```
 
 **After:**
-```
+
+```text
 ⚠ Anthropic error on claude-3-opus-20250219: not_found_error
 Trying next model: claude-3-sonnet-20240229...
 ✓ Using Claude 3 Sonnet
 ```
 
 **Benefits:**
+
 - Clear status messages
 - Visible fallback progression
 - Easier debugging
@@ -121,6 +129,7 @@ Trying next model: claude-3-sonnet-20240229...
 ### 5. **Multi-Provider Model Lists** 🌐
 
 **OpenAI Models:**
+
 ```python
 models_to_try = [
     ("gpt-4o", "GPT-4o (Recommended)"),
@@ -130,16 +139,19 @@ models_to_try = [
 ```
 
 **Gemini Models:**
+
 ```python
 # Updated to: gemini-2.0-flash (latest, fastest)
 ```
 
 **Groq Models:**
+
 ```python
 # Using: mixtral-8x7b-32768 (ultra-fast)
 ```
 
 **Nvidia:**
+
 ```python
 # Updated with OpenAI-compatible endpoint
 # Model: Nemotron 3 Ultra 550B
@@ -152,7 +164,7 @@ models_to_try = [
 ### Recommendation: **Claude 3.5 Sonnet** ✅
 
 | Aspect | Rating | Notes |
-|--------|--------|-------|
+| -------- | -------- | ------- |
 | **Code Quality** | ⭐⭐⭐⭐⭐ | Excellent for development tasks |
 | **Token Efficiency** | ⭐⭐⭐⭐⭐ | Lowest tokens per task vs Opus |
 | **Speed** | ⭐⭐⭐⭐ | Fast enough for most use cases |
@@ -160,12 +172,14 @@ models_to_try = [
 | **Reasoning** | ⭐⭐⭐⭐ | Excellent reasoning (not needed for tasks) |
 
 ### Why Not Opus for Coding?
+
 - **3x more tokens** (higher cost)
 - **Slower** (not needed for coding)
 - **Same code quality** as Sonnet
 - **Overkill** for most coding tasks
 
 ### Fallback Chain for Coding
+
 1. **Claude 3.5 Sonnet** ← Best for coding
 2. **Claude 3 Sonnet** ← Fallback
 3. **Claude Opus 4.1** ← If Sonnet unavailable
@@ -178,14 +192,16 @@ models_to_try = [
 ## Token Optimization Results
 
 ### Before Improvements
-```
+
+```text
 No tracking of token usage
 Unknown costs
 No optimization possible
 ```
 
 ### After Improvements
-```
+
+```text
 ✓ All API calls tracked
 ✓ Tokens per task visible
 ✓ Provider selection optimized
@@ -193,6 +209,7 @@ No optimization possible
 ```
 
 ### Example Task Trace
+
 ```json
 {
   "task_id": "0016",
@@ -210,6 +227,7 @@ No optimization possible
 ## System Status After Improvements
 
 ### LLM Providers
+
 ✅ **Anthropic Claude** - Auto-model selection (Sonnet preferred)  
 ✅ **OpenAI GPT** - Model fallback chain  
 ✅ **Google Gemini** - 2.0 Flash model  
@@ -218,6 +236,7 @@ No optimization possible
 ✅ **Mock** - Always available (graceful fallback)
 
 ### Error Handling
+
 ✅ Model not found → Try next model  
 ✅ API overloaded → Try next provider  
 ✅ Invalid credentials → Fall back to mock  
@@ -225,6 +244,7 @@ No optimization possible
 ✅ Timeout → Use mock response  
 
 ### Observability
+
 ✅ Token tracking per task  
 ✅ Provider selection visibility  
 ✅ Model fallback progression  
@@ -238,6 +258,7 @@ No optimization possible
 ### Files Modified
 
 **llm_provider.py** (~200 lines changed)
+
 - Added model fallback strategy
 - Implemented task-type-aware provider selection
 - Added token tracking to all methods
@@ -246,6 +267,7 @@ No optimization possible
 - Fixed API parameter compatibility
 
 **task_executor_v2.py** (~50 lines changed)
+
 - Updated to handle new dict response format
 - Added token tracking to agents
 - Added LLM provider metadata to results
@@ -256,7 +278,8 @@ No optimization possible
 ## Performance Impact
 
 ### Before
-```
+
+```text
 Sequential: Might fail with model not found error
 Fallback: Crash or generic mock
 Observability: None
@@ -264,7 +287,8 @@ Cost tracking: Impossible
 ```
 
 ### After
-```
+
+```text
 Sequential: Auto-tries multiple models
 Fallback: Graceful to mock (always works)
 Observability: Full token/provider tracking
@@ -306,6 +330,7 @@ python main_v2.py show 0016
 ## Next Steps / Future Improvements
 
 ### Phase 3 (In Progress)
+
 - ✅ Claude Sonnet optimization
 - ✅ Multi-model fallback
 - ✅ Token tracking
@@ -313,6 +338,7 @@ python main_v2.py show 0016
 - ⏳ Provider analytics dashboard
 
 ### Phase 4
+
 - ⏳ Streaming support (for long responses)
 - ⏳ Batch processing optimization
 - ⏳ Custom model fine-tuning

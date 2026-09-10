@@ -55,7 +55,7 @@ python main.py status
 The system comes with 5 default departments:
 
 | Department | Keywords | Staff | Role |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **Engineering** | code, bug, feature, deploy | 5 | Development & DevOps |
 | **Design** | design, ui, ux, mockup | 5 | Visual & UX Design |
 | **Support** | support, help, issue, troubleshoot | 5 | Customer Support |
@@ -153,9 +153,11 @@ The system automatically detects available API keys and selects the best provide
 
 1. Get your API key from the provider
 2. Edit `.env` file:
-   ```
+
+   ```text
    ANTHROPIC_API_KEY=sk-ant-xxxxx
    ```
+
 3. Restart the system
 4. Run `python main.py status` to verify
 
@@ -163,14 +165,14 @@ The system automatically detects available API keys and selects the best provide
 
 If an API key is invalid or the service fails:
 
-```
+```text
 ⚠ Anthropic error: Invalid API key. Falling back to mock.
 Mock system activated. Continue working without interruption.
 ```
 
 ## Project Structure
 
-```
+```text
 team-agent-system/
 ├── main.py                 # CLI entry point
 ├── llm_provider.py         # LLM routing & API calls
@@ -210,40 +212,50 @@ Edit `config.json` to customize departments:
 ## Commands
 
 ### Submit Task
+
 ```bash
 python main.py submit "Task description" [--dept DEPARTMENT]
 ```
+
 Submit a new task. Department auto-detected or specify with `--dept`.
 
 ### Process Tasks
+
 ```bash
 python main.py process
 ```
+
 Process all queued tasks using department heads & staff.
 
 ### List Tasks
+
 ```bash
 python main.py list [--status STATUS]
 ```
+
 List all tasks or filter by status (queued, completed).
 
 ### Show Task
+
 ```bash
 python main.py show <task_id>
 ```
+
 Display task details including results.
 
 ### System Status
+
 ```bash
 python main.py status
 ```
+
 Show system stats and current LLM provider.
 
 ## How It Works
 
 ### Task Flow
 
-```
+```text
 1. User submits task
    ↓
 2. Router detects department (based on keywords)
@@ -261,7 +273,7 @@ Show system stats and current LLM provider.
 
 ### Without API Keys (Mock Mode)
 
-```
+```text
 Task: "Fix login bug"
    ↓
 Router: "engineering" (detected)
@@ -280,7 +292,7 @@ Result: "Bug analyzed, fixed, tested, ready for production"
 
 ### With API Keys (Real LLM)
 
-```
+```text
 Task: "Fix login bug"
    ↓
 Router: "engineering" (detected)
