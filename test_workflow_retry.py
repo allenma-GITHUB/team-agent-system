@@ -6,7 +6,14 @@ way to resume a workflow once the department's budget was topped up. This
 adds and tests that path.
 """
 from workflows import WorkflowEngine, WorkflowStep, WorkflowTemplate, WorkflowStatus, StepStatus
-from budgets import budget_manager
+from budgets import BudgetManager
+
+# Isolated instead of the shared global budget_manager.
+budget_manager = BudgetManager(data_file="data/test_wfr_budgets.json")
+
+
+def _engine() -> WorkflowEngine:
+    return WorkflowEngine(data_file="data/test_workflow_engine.json", budget_manager=budget_manager)
 
 
 def print_section(title: str):
@@ -37,7 +44,7 @@ def test_retry_succeeds_once_budget_is_topped_up():
     department = "qa_retry_ok"
     budget_manager.allocate(department, 1000)  # can't cover the $5,000 step yet
 
-    engine = WorkflowEngine(data_file="data/test_workflow_engine.json")
+    engine = _engine()
     engine.register_template(make_template("wf_retry_ok", department, step_cost=5000))
     instance = engine.create_instance("wf_retry_ok", {})
     engine.start_instance(instance.instance_id)
@@ -79,7 +86,7 @@ def test_retry_fails_again_if_still_unaffordable():
     department = "qa_retry_still_broke"
     budget_manager.allocate(department, 100)
 
-    engine = WorkflowEngine(data_file="data/test_workflow_engine.json")
+    engine = _engine()
     engine.register_template(make_template("wf_retry_broke", department, step_cost=5000))
     instance = engine.create_instance("wf_retry_broke", {})
     engine.start_instance(instance.instance_id)
@@ -102,7 +109,7 @@ def test_retry_on_non_blocked_workflow_is_a_no_op():
     department = "qa_retry_healthy"
     budget_manager.allocate(department, 100000)
 
-    engine = WorkflowEngine(data_file="data/test_workflow_engine.json")
+    engine = _engine()
     engine.register_template(make_template("wf_retry_healthy", department, step_cost=1000))
     instance = engine.create_instance("wf_retry_healthy", {})
     engine.start_instance(instance.instance_id)
@@ -127,7 +134,8 @@ def main():
     print("=" * 60 + "\n")
 
     import pathlib
-    pathlib.Path("data/test_workflow_engine.json").unlink(missing_ok=True)
+    for f in ["data/test_workflow_engine.json", "data/test_wfr_budgets.json"]:
+        pathlib.Path(f).unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

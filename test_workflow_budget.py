@@ -7,7 +7,15 @@ department can't afford blocks instead of proceeding into an approval gate
 no one can actually fund.
 """
 from workflows import WorkflowEngine, WorkflowStep, WorkflowTemplate, WorkflowStatus, StepStatus
-from budgets import budget_manager
+from budgets import BudgetManager
+
+# Isolated instead of the shared global budget_manager (WorkflowEngine now
+# supports injecting one, the same DI pattern used elsewhere today).
+budget_manager = BudgetManager(data_file="data/test_wfb_budgets.json")
+
+
+def _engine() -> WorkflowEngine:
+    return WorkflowEngine(data_file="data/test_workflow_engine.json", budget_manager=budget_manager)
 
 
 def print_section(title: str):
@@ -38,7 +46,7 @@ def test_approval_confirms_reservation_into_spend():
     department = "qa_wf_ok"
     budget_manager.allocate(department, 10000)
 
-    engine = WorkflowEngine(data_file="data/test_workflow_engine.json")
+    engine = _engine()
     engine.register_template(make_template("wf_ok", step_cost=4000, department=department))
     instance = engine.create_instance("wf_ok", {})
     engine.start_instance(instance.instance_id)
@@ -66,7 +74,7 @@ def test_rejection_releases_reservation():
     department = "qa_wf_reject"
     budget_manager.allocate(department, 10000)
 
-    engine = WorkflowEngine(data_file="data/test_workflow_engine.json")
+    engine = _engine()
     engine.register_template(make_template("wf_reject", step_cost=2500, department=department))
     instance = engine.create_instance("wf_reject", {})
     engine.start_instance(instance.instance_id)
@@ -92,7 +100,7 @@ def test_unaffordable_step_blocks_workflow():
     department = "qa_wf_broke"
     budget_manager.allocate(department, 1000)  # can't cover a $5,000 step
 
-    engine = WorkflowEngine(data_file="data/test_workflow_engine.json")
+    engine = _engine()
     engine.register_template(make_template("wf_broke", step_cost=5000, department=department))
     instance = engine.create_instance("wf_broke", {})
     engine.start_instance(instance.instance_id)
@@ -126,7 +134,7 @@ def test_split_owner_and_budget_department():
     budget_manager.allocate("qa_wf_finance", 1_000_000)   # who approves - plenty, irrelevant here
     budget_manager.allocate("qa_wf_engineering", 20000)    # who actually funds it
 
-    engine = WorkflowEngine(data_file="data/test_workflow_engine.json")
+    engine = _engine()
     template = WorkflowTemplate(
         workflow_id="wf_split", name="Split budget test", description="",
         steps=[WorkflowStep(
@@ -168,7 +176,8 @@ def main():
     print("=" * 60 + "\n")
 
     import pathlib
-    pathlib.Path("data/test_workflow_engine.json").unlink(missing_ok=True)
+    for f in ["data/test_workflow_engine.json", "data/test_wfb_budgets.json"]:
+        pathlib.Path(f).unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

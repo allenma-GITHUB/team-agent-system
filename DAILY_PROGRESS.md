@@ -914,6 +914,56 @@ Drafted the example session's numbers first, then ran the actual commands to che
 
 ---
 
+## 🎯 TWENTY-FIRST CHECKPOINT TODAY: A REAL BUG FOUND BY REVIEWING, NOT BUILDING
+
+**Summary:** Twenty checkpoints of rapid feature work is a lot of surface area to have never deliberately re-read for correctness. Switched modes: instead of the next feature, did a targeted review of `workflows.py`'s budget-reservation logic - the highest-risk, most-composed piece of code from today (touched by checkpoints 2, 8, 9, 10, 11, and 16). Found a real, serious bug on the first thing checked.
+
+### 🐛 The Bug
+
+`WorkflowEngine.get_next_step()` re-runs its entire reservation logic every time it's called, with no check for whether the step it's about to "advance to" is already `IN_PROGRESS` from a prior call. Calling it a second time on the same still-pending step - e.g. a user simply re-running `workflow next <instance_id>` to remind themselves what's next, never having advanced anything - re-attempted `reserve_funds()` for the step's full `estimated_cost` a second time. Since the *existing* reservation is already subtracted out of `DepartmentBudget.available()`, that second attempt failed for lack of double the headroom, and the step was wrongly flipped to `BLOCKED` with the whole workflow `ESCALATED` - corrupting a perfectly healthy, affordable step into a stuck one, with no code change or budget event to explain why.
+
+Found by manually probing the exact call pattern ("what happens if I call this twice") rather than by any test - every one of today's existing workflow tests happened to call `get_next_step()` exactly once per step before completing or approving it, so the bug had zero test coverage despite `get_next_step()` being exercised by six separate checkpoints.
+
+### 🐛 A Second, Related Finding: `WorkflowEngine` Had No Budget Injection
+
+While isolating a test to investigate the bug cleanly, discovered `WorkflowEngine` never got the dependency-injection treatment `DepartmentHeadAgent`/`TaskExecutor` got in checkpoint 9 - `get_next_step()`/`approve_step()`/`retry_blocked_step()` all hardcoded the shared global `budget_manager`. This meant `test_workflow_budget.py`/`test_workflow_retry.py`'s "isolated" `WorkflowEngine(data_file=...)` instances were never actually isolated on the budget side - only the workflow-instance data was isolated; every dollar amount in those tests was silently being read from and written to the real shared `data/budgets.json`. My initial bug-reproduction attempt used an isolated `BudgetManager` I'd constructed myself but never actually wired in, which is exactly what made the bug invisible on the first (flawed) probe - it silently checked the wrong object.
+
+### ✅ What Changed
+
+**`workflows.py`**
+- `WorkflowEngine.__init__` gains `budget_manager=None`, the same DI pattern as everything else today; every internal `budget_manager.` call now goes through `self.budget_manager.`
+- `get_next_step()`: if the computed next step's status is already `IN_PROGRESS`, return it immediately without touching the budget at all - fixes the bug directly
+
+**`test_workflow_budget.py` / `test_workflow_retry.py`**
+- Now construct and inject their own isolated `BudgetManager`, closing the gap that made them look isolated without actually being isolated
+
+**`test_workflow_idempotent_advance.py` (new)** — three scenarios, all passing and idempotent:
+1. Five repeated `get_next_step()` calls on the same step leave the reservation at exactly its original amount the whole time - never grows, never collapses to zero, never blocks
+2. The step still approves normally afterward, converting the (undisturbed) reservation to real spend
+3. Confirms the injected `BudgetManager` is what actually gets mutated, and the shared global singleton is never touched - the exact isolation check the first (flawed) probe got wrong
+
+### ✅ Validation
+
+- `python -m py_compile` clean
+- The exact failure was reproduced first (properly isolated this time), confirmed by the fix, then re-verified through the *real* CLI: `workflow next` called three times in a row on a feature-request's "Design Specification" step stayed stable and still approved cleanly afterward
+- `test_workflow_idempotent_advance.py`: all 3 scenarios pass, run twice back-to-back
+- Full suite (20 test files now): all pass
+
+### 📝 Next Steps
+
+- The same "called twice" review angle is worth applying to other today's-built call paths (e.g. `DepartmentHeadAgent.run()` called concurrently for the same agent, `retry_blocked_step()` called while a retry is already in flight) rather than assuming today's other checkpoints are equally clean
+- No execution path exists for `ceo`/`tech_lead`/`product_coordinator` roles specifically
+- `workflow_next()` still only shows the next step rather than auto-executing non-approval ones (deliberately left as-is)
+
+### 📂 Files Modified
+
+- `workflows.py` (budget-manager DI, idempotent `get_next_step()` fix)
+- `test_workflow_budget.py` / `test_workflow_retry.py` (now inject an isolated `BudgetManager`)
+- `test_workflow_idempotent_advance.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT

@@ -10,7 +10,7 @@ import json
 import time
 from datetime import datetime
 
-from budgets import budget_manager
+from budgets import budget_manager as _default_budget_manager
 from departments import DepartmentManager
 
 
@@ -142,10 +142,14 @@ class WorkflowEngine:
     caching department definitions to disk.
     """
 
-    def __init__(self, data_file: str = "data/workflows.json"):
+    def __init__(self, data_file: str = "data/workflows.json", budget_manager=None):
         self.data_file = Path(data_file)
         self.templates: Dict[str, WorkflowTemplate] = {}
         self.instances: Dict[str, WorkflowInstance] = {}
+        # Defaults to the shared global BudgetManager (unchanged behavior);
+        # a caller (tests, in particular) can inject an isolated instance
+        # instead, the same DI pattern used by DepartmentHeadAgent/TaskExecutor.
+        self.budget_manager = budget_manager or _default_budget_manager
         self.load()
 
     def load(self):
@@ -278,7 +282,7 @@ class WorkflowEngine:
         if approved:
             instance.step_status[step_id] = StepStatus.APPROVED
             if step and step.estimated_cost > 0:
-                budget_manager.confirm_reservation(
+                self.budget_manager.confirm_reservation(
                     step.budget_dept(), reference, category="workflow_step",
                     description=step.name, task_id=instance_id
                 )
@@ -287,7 +291,7 @@ class WorkflowEngine:
             instance.status = WorkflowStatus.PAUSED
             instance.error = f"Step {step_id} rejected"
             if step and step.estimated_cost > 0:
-                budget_manager.cancel_reservation(step.budget_dept(), reference)
+                self.budget_manager.cancel_reservation(step.budget_dept(), reference)
 
         self.save()
         return True
@@ -312,7 +316,7 @@ class WorkflowEngine:
 
         department = step.budget_dept()
         reference = self._budget_reference(instance_id, step_id)
-        reserved, reason = budget_manager.reserve_funds(department, reference, step.estimated_cost)
+        reserved, reason = self.budget_manager.reserve_funds(department, reference, step.estimated_cost)
         if not reserved:
             instance.error = f"Step '{step.name}' still blocked: {reason}"
             self.save()
@@ -347,11 +351,20 @@ class WorkflowEngine:
         if not next_step:
             return None
 
+        # Already advanced to (and, if it needed one, already holding its
+        # reservation) - just hand it back. Without this, a second call
+        # (e.g. a caller just re-checking status) would re-attempt the
+        # reservation for a step that already has one, and since the
+        # existing hold is already excluded from available(), that
+        # re-attempt fails and wrongly blocks a perfectly fine step.
+        if instance.step_status.get(next_step.step_id) == StepStatus.IN_PROGRESS:
+            return next_step
+
         if next_step.requires_approval and next_step.estimated_cost > 0:
             department = next_step.budget_dept()
-            budget_manager.ensure_allocated(department, DepartmentManager.get_monthly_budget(department))
+            self.budget_manager.ensure_allocated(department, DepartmentManager.get_monthly_budget(department))
             reference = self._budget_reference(instance_id, next_step.step_id)
-            reserved, reason = budget_manager.reserve_funds(department, reference, next_step.estimated_cost)
+            reserved, reason = self.budget_manager.reserve_funds(department, reference, next_step.estimated_cost)
             if not reserved:
                 instance.current_step = next_step.step_id
                 instance.step_status[next_step.step_id] = StepStatus.BLOCKED
