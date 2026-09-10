@@ -97,8 +97,169 @@ $ python main_v2.py strategy   # (after research separately ran up 95% budget ut
 
 ## Departments & Agents
 
+<<<<<<< HEAD
+```bash
+# Submit a task
+python main.py submit "Fix login bug"
+
+# Process queued tasks
+python main.py process
+
+# List all tasks
+python main.py list
+
+# Show task details
+python main.py show <task_id>
+
+# System status
+python main.py status
+```
+
+## Departments
+
+The system comes with 5 default departments:
+
+| Department | Keywords | Staff | Role |
+| --- | --- | --- | --- |
+| **Engineering** | code, bug, feature, deploy | 5 | Development & DevOps |
+| **Design** | design, ui, ux, mockup | 5 | Visual & UX Design |
+| **Support** | support, help, issue, troubleshoot | 5 | Customer Support |
+| **Research** | research, analyze, data, insights | 5 | Analysis & Insights |
+| **Sales** | sales, customer, pitch, proposal | 5 | Sales & Business Dev |
+
+### Auto-Routing Example
+
+```bash
+python main.py submit "Fix the checkout button styling"  # → Design
+python main.py submit "Database query is timing out"     # → Engineering
+python main.py submit "Customer reported connection issue" # → Support
+python main.py submit "Analyze Q3 sales trends"          # → Research
+python main.py submit "Create customer proposal"          # → Sales
+```
+
+## Usage Examples
+
+### Example 1: Bug Fix Task
+
+```bash
+$ python main.py submit "Login page shows 500 error"
+✓ Task submitted: a7b2f9c1
+  Department: engineering
+  Description: Login page shows 500 error
+
+$ python main.py process
+Processing 1 task(s)...
+
+[a7b2f9c1] ENGINEERING - Login page shows 500 error...
+  → Result: MOCK RESPONSE: Analyzed the bug - found root cause in the database query. Fixed by adding proper indexing. Tested locally and in staging. Ready for production.
+
+✓ All tasks processed.
+
+$ python main.py show a7b2f9c1
+Task: a7b2f9c1
+Status: completed
+Department: engineering
+Description: Login page shows 500 error
+Created: 2024-01-15T10:30:45.123456
+
+Result:
+  Summary: Engineering team completed development task...
+  Details: Code reviewed, tested, and ready for production...
+```
+
+### Example 2: Design Task
+
+```bash
+$ python main.py submit "Redesign the dashboard UI"
+✓ Task submitted: b8c3g0d2
+  Department: design
+  Description: Redesign the dashboard UI
+
+$ python main.py process
+Processing 1 task(s)...
+
+[b8c3g0d2] DESIGN - Redesign the dashboard UI...
+  → Result: MOCK RESPONSE: Created design mockups with wireframes, color palette, and component library...
+
+✓ All tasks processed.
+```
+
+### Example 3: Research Task
+
+```bash
+$ python main.py submit "Analyze competitor pricing strategies"
+✓ Task submitted: c9d4h1e3
+  Department: research
+  Description: Analyze competitor pricing strategies
+
+$ python main.py process
+Processing 1 task(s)...
+
+[c9d4h1e3] RESEARCH - Analyze competitor pricing strategies...
+  → Result: MOCK RESPONSE: Completed analysis of available data. Key findings: 85% positive sentiment...
+
+✓ All tasks processed.
+```
+
+## LLM Providers
+
+The system automatically detects available API keys and selects the best provider:
+
+### Provider Priority
+
+1. **Anthropic** (Claude) - Best for complex reasoning
+2. **OpenAI** (GPT-4) - Balanced, excellent creativity
+3. **Gemini** (Google) - Fast and efficient
+4. **Groq** - Ultra-fast inference
+5. **Nvidia** - Specialized models
+6. **Mock** - Always available fallback
+
+### Add an API Key
+
+1. Get your API key from the provider
+2. Edit `.env` file:
+
+   ```text
+   ANTHROPIC_API_KEY=sk-ant-xxxxx
+   ```
+
+3. Restart the system
+4. Run `python main.py status` to verify
+
+### Graceful Degradation
+
+If an API key is invalid or the service fails:
+
+```text
+⚠ Anthropic error: Invalid API key. Falling back to mock.
+Mock system activated. Continue working without interruption.
+```
+
+## Project Structure
+
+```text
+team-agent-system/
+├── main.py                 # CLI entry point
+├── llm_provider.py         # LLM routing & API calls
+├── departments.py          # Department management
+├── task_executor.py        # Task execution logic
+├── config.json             # Department configuration (auto-created)
+├── .env                    # API keys (create from .env.example)
+├── .env.example            # API key template
+├── data/
+│   ├── tasks.json         # Task queue
+│   ├── departments.json   # Department state (future)
+│   └── results/           # Task results
+└── README.md
+```
+
+## Configuration
+
+Edit `config.json` to customize departments:
+=======
 Both are defined in `config.json`. Departments control keyword routing, staff
 count, and monthly budget:
+>>>>>>> c3e202eec5ba193e4f47bf4121e1393723e6b562
 
 ```json
 "departments": {
@@ -115,6 +276,66 @@ e.g. `"engineering_head"`) - `agent_type`, `skill_level`, `capabilities`,
 `constraints`, `max_concurrent_tasks`. A department not named here still
 works; its head falls back to a generic `ManagerAgent`/skill-3 profile.
 
+<<<<<<< HEAD
+### Submit Task
+
+```bash
+python main.py submit "Task description" [--dept DEPARTMENT]
+```
+
+Submit a new task. Department auto-detected or specify with `--dept`.
+
+### Process Tasks
+
+```bash
+python main.py process
+```
+
+Process all queued tasks using department heads & staff.
+
+### List Tasks
+
+```bash
+python main.py list [--status STATUS]
+```
+
+List all tasks or filter by status (queued, completed).
+
+### Show Task
+
+```bash
+python main.py show <task_id>
+```
+
+Display task details including results.
+
+### System Status
+
+```bash
+python main.py status
+```
+
+Show system stats and current LLM provider.
+
+## How It Works
+
+### Task Flow
+
+```text
+1. User submits task
+   ↓
+2. Router detects department (based on keywords)
+   ↓
+3. Task queued
+   ↓
+4. Process command runs:
+   - Department Head analyzes task
+   - LLM generates strategy (or mock response)
+   - 5 Staff members simulate work
+   - Results compiled
+   ↓
+5. Task marked complete with results
+=======
 ```json
 "agents": {
   "engineering_head": {
@@ -124,6 +345,7 @@ works; its head falls back to a generic `ManagerAgent`/skill-3 profile.
     "max_concurrent_tasks": 4
   }
 }
+>>>>>>> c3e202eec5ba193e4f47bf4121e1393723e6b562
 ```
 
 ## Architecture
@@ -151,6 +373,23 @@ share global state. The module-level singletons (`budget_manager`,
 
 ## How a task actually runs
 
+<<<<<<< HEAD
+```text
+Task: "Fix login bug"
+   ↓
+Router: "engineering" (detected)
+   ↓
+Head Agent (Mock): "I'll break this into subtasks..."
+   ↓
+Staff Simulation:
+   - Lead Dev: Architecture review
+   - Backend Dev: API fix
+   - Frontend Dev: UI check
+   - QA Engineer: Testing
+   - DevOps: Deployment
+   ↓
+Result: "Bug analyzed, fixed, tested, ready for production"
+=======
 ```
 submit → queued in data/tasks.json
 process → TaskExecutor.execute(department, description, estimated_hours)
@@ -161,13 +400,28 @@ process → TaskExecutor.execute(department, description, estimated_hours)
                              everything else still draws estimated_hours * cost_per_hour
       4. (LLM call, mock or real)
       5. record_performance() + analytics.record_task() - both metrics systems updated
+>>>>>>> c3e202eec5ba193e4f47bf4121e1393723e6b562
 ```
 
 A depleted department budget or an unavailable decision path escalates the
 task (`status: "escalated"`) instead of running it - nothing executes for
 free, and nothing runs work no one approved the resources for.
 
+<<<<<<< HEAD
+```text
+Task: "Fix login bug"
+   ↓
+Router: "engineering" (detected)
+   ↓
+Head Agent (Claude/GPT): Real analysis via API
+   ↓
+Staff Simulation: (same as above)
+   ↓
+Result: Real LLM output integrated with staff sim
+```
+=======
 ## Testing
+>>>>>>> c3e202eec5ba193e4f47bf4121e1393723e6b562
 
 Every feature has a corresponding `test_*.py` script under `tests/` - run
 any of them directly from the repo root (`python tests/test_budgets.py`)

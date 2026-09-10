@@ -1,0 +1,78 @@
+{
+  "agents": {
+    "eng_lead": {
+      "agent_id": "eng_lead",
+      "name": "Engineering Lead",
+      "department": "engineering",
+      "tasks_completed": 5,
+      "total_duration_hours": 15.0,
+      "total_cost": 600.0,
+      "quality_scores": [
+        4.5,
+        4.8,
+        4.5,
+        4.8,
+        4.5
+      ],
+      "error_count": 1,
+      "avg_quality": 4.62,
+      "avg_duration_hours": 3.0,
+      "cost_per_task": 120.0,
+      "success_rate": 0.8,
+      "last_updated": "2026-09-09T00:16:44.167353"
+    },
+    "design_lead": {
+      "agent_id": "design_lead",
+      "name": "Design Lead",
+      "department": "design",
+      "tasks_completed": 4,
+      "total_duration_hours": 19.0,
+      "total_cost": 690.0,
+      "quality_scores": [
+        4.2,
+        4.4,
+        4.2,
+        4.4
+      ],
+      "error_count": 0,
+      "avg_quality": 4.300000000000001,
+      "avg_duration_hours": 4.75,
+      "cost_per_task": 172.5,
+      "success_rate": 1.0,
+      "last_updated": "2026-09-09T00:16:44.174590"
+    },
+    "research_lead": {
+      "agent_id": "research_lead",
+      "name": "Research Lead",
+      "department": "research",
+      "tasks_completed": 6,
+      "total_duration_hours": 33.0,
+      "total_cost": 900.0,
+      "quality_scores": [
+        3.8,
+        4.1,
+        4.3999999999999995,
+        3.8,
+        4.1,
+        4.3999999999999995
+      ],
+      "error_count": 1,
+      "avg_quality": 4.1,
+      "avg_duration_hours": 5.5,
+      "cost_per_task": 150.0,
+      "success_rate": 0.8333333333333334,
+      "last_updated": "2026-09-09T00:16:44.179114"
+    }
+  },
+  "departments": {},
+  "system": {
+    "total_tasks": 0,
+    "total_cost": 0.0,
+    "avg_quality": 0.0,
+    "avg_turnaround_time": 0.0,
+    "system_success_rate": 0.0,
+    "bottleneck_agent": null,
+    "bottleneck_department": null,
+    "last_updated": "2026-09-09T00:16:44.167282"
+  }
+}

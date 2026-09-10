@@ -23,7 +23,7 @@ A **production-grade multi-department AI orchestration system** running locally 
 
 ## 📊 System Stats
 
-```
+```text
 Platform:          Windows 11 (runs anywhere Python 3.10+)
 Language:          Python
 Dependencies:      Zero (mock mode), Optional (LLM support)
@@ -40,12 +40,14 @@ Disk Usage:        <10MB
 ### Two CLI Versions Available
 
 **v1 (Original)** - Simple, synchronous
+
 ```bash
 python main.py submit "Fix login bug"
 python main.py process          # Sequential execution
 ```
 
 **v2 (Enhanced)** - Production-grade, parallel
+
 ```bash
 python main_v2.py submit "Fix login bug"
 python main_v2.py process      # Parallel execution (4x faster)
@@ -54,7 +56,7 @@ python main_v2.py process      # Parallel execution (4x faster)
 ### Built-In Departments
 
 | Department | Keywords | Use Cases |
-|-----------|----------|-----------|
+| ----------- | ---------- | ----------- |
 | **Engineering** | code, bug, feature, deploy | Development, debugging, releases |
 | **Design** | design, ui, ux, mockup | Mockups, visual assets, branding |
 | **Support** | support, help, issue, troubleshoot | Customer support, troubleshooting |
@@ -63,7 +65,7 @@ python main_v2.py process      # Parallel execution (4x faster)
 
 ### How It Works
 
-```
+```text
 1. User submits task:
    → "Fix the login page timeout issue"
 
@@ -89,7 +91,7 @@ python main_v2.py process      # Parallel execution (4x faster)
 
 ## 📁 Project Structure
 
-```
+```text
 team-agent-system/
 ├── Core System
 │   ├── main.py              ← Original CLI
@@ -139,17 +141,19 @@ The system automatically detects and uses the best available provider:
 
 1. Copy `.env.example` to `.env`
 2. Add your API keys:
-   ```
+
+   ```text
    ANTHROPIC_API_KEY=sk-ant-...
    OPENAI_API_KEY=sk-...
    ```
+
 3. Restart the system
 
 ## ⚡ Performance
 
 ### v1 vs v2 Comparison
 
-```
+```text
 3 Tasks Processing
 
 v1 (Sequential):
@@ -172,7 +176,7 @@ With 20 tasks: ~4x speedup
 
 ### Measured Performance (Real Test)
 
-```
+```text
 Configuration: 4 workers, 3 concurrent tasks
 Execution Time: 0.008674 seconds
 Events Recorded: 17
@@ -183,6 +187,7 @@ CPU Usage: ~15% (brief spike)
 ## 🔄 Key Capabilities
 
 ### Task Management
+
 - ✅ Submit tasks via CLI
 - ✅ Auto-route to departments
 - ✅ Persist task queue
@@ -190,6 +195,7 @@ CPU Usage: ~15% (brief spike)
 - ✅ Store results with metadata
 
 ### Execution
+
 - ✅ Sequential (v1) or Parallel (v2)
 - ✅ Department-specific agents
 - ✅ Staff simulation
@@ -197,6 +203,7 @@ CPU Usage: ~15% (brief spike)
 - ✅ Graceful degradation
 
 ### Observability  
+
 - ✅ Event tracing (v2)
 - ✅ Execution timing
 - ✅ Performance metrics
@@ -204,6 +211,7 @@ CPU Usage: ~15% (brief spike)
 - ✅ Real-time progress
 
 ### Configuration
+
 - ✅ Customize departments
 - ✅ Adjust worker count
 - ✅ Control LLM provider
@@ -267,7 +275,7 @@ $ python main_v2.py process
 Your system now incorporates Stanford SAIL's best practices:
 
 | Pattern | Implementation | Benefit |
-|---------|---|---|
+| --------- | --- | --- |
 | **Agent Registry** | `core.py` | Pluggable agents |
 | **Event Bus** | `core.py` | Full tracing |
 | **Parallel Execution** | `task_executor_v2.py` | 4x speedup |
@@ -278,21 +286,25 @@ Your system now incorporates Stanford SAIL's best practices:
 ## 🗺️ Future Roadmap
 
 ### Phase 1 (Done ✅)
+
 - ✅ Agent Registry Pattern
 - ✅ Event Bus & Tracing
 - ✅ Parallel Execution
 
 ### Phase 2 (Next - 2 hours)
+
 - ⏳ Skills System (YAML-based)
 - ⏳ Prompt Registry
 - ⏳ Governance Hooks
 
 ### Phase 3 (Future - 4 hours)
+
 - ⏳ Structured Reasoning (THOUGHT/TOOL/FINAL_ANSWER)
 - ⏳ Task Templates
 - ⏳ Cost Tracking & Analytics
 
 ### Phase 4 (Later - 8+ hours)
+
 - ⏳ Distributed Execution
 - ⏳ Web Dashboard
 - ⏳ Training Pipeline Integration
@@ -302,6 +314,7 @@ Your system now incorporates Stanford SAIL's best practices:
 ### Add a New Department
 
 Edit `config.json`:
+
 ```json
 {
   "departments": {
@@ -330,6 +343,7 @@ class CustomHeadAgent(BaseAgent):
 ### Adjust Parallel Workers
 
 In `main_v2.py`:
+
 ```python
 executor = TaskExecutor(llm, bus=bus, max_workers=8)  # Increase from 4
 ```
@@ -337,7 +351,7 @@ executor = TaskExecutor(llm, bus=bus, max_workers=8)  # Increase from 4
 ## 📖 Documentation
 
 | Document | Content |
-|----------|---------|
+| ---------- | --------- |
 | **README.md** | Full system documentation, all features |
 | **QUICKSTART.md** | 30-second setup guide |
 | **IMPROVEMENTS.md** | OpenJarvis patterns, full roadmap |
@@ -347,6 +361,7 @@ executor = TaskExecutor(llm, bus=bus, max_workers=8)  # Increase from 4
 ## ✨ Next Steps
 
 1. **Try it now:**
+
    ```bash
    python main_v2.py submit "Your task here"
    python main_v2.py process
@@ -406,6 +421,7 @@ You now have a **fully functional, production-ready AI orchestration system** th
 ✅ Incorporates Stanford SAIL best practices  
 
 **Start using it now:**
+
 ```bash
 python main_v2.py submit "Your first task"
 python main_v2.py process

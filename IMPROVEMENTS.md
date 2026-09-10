@@ -12,6 +12,7 @@
 ## OpenJarvis Learnings
 
 OpenJarvis (Stanford SAIL) is a local-first AI framework that shows best practices for:
+
 - **Agent Registry Pattern** - Modular agent types registered at runtime
 - **Tool Resolution** - Dynamic tool discovery and execution
 - **Skills System** - Reusable task templates agents can invoke
@@ -24,6 +25,7 @@ OpenJarvis (Stanford SAIL) is a local-first AI framework that shows best practic
 ## Proposed Improvements
 
 ### 1. Agent Registry Pattern ⭐⭐⭐
+
 **Current:** Hard-coded department execution  
 **Improved:** Dynamically register agent types
 
@@ -38,11 +40,13 @@ class EngineeringHeadAgent(BaseAgent):
 ```
 
 **Benefits:**
+
 - Add new agent types without modifying core
 - Hot-reload agents
 - Multiple agent variants per department
 
 ### 2. Skills System ⭐⭐⭐
+
 **Current:** Hardcoded staff contributions  
 **Improved:** Dynamic skill discovery and composition
 
@@ -59,12 +63,14 @@ outputs:
 ```
 
 **Benefits:**
+
 - Skills are YAML/JSON (vendor-neutral)
 - Chain multiple skills in a task
 - Share skills across teams
 - Optimize skills with trace data
 
 ### 3. Event Bus & Tracing ⭐⭐⭐
+
 **Current:** Silent execution  
 **Improved:** Full observability
 
@@ -76,12 +82,14 @@ bus.emit("skill_invoked", {"skill": "test_generation", "tokens": 450})
 ```
 
 **Benefits:**
+
 - Monitor in real-time
 - Trace every decision
 - Debug failures
 - Optimize based on patterns
 
 ### 4. Governance Hooks ⭐⭐
+
 **Current:** No safety checks  
 **Improved:** Pre-flight approval system
 
@@ -94,12 +102,14 @@ def safety_check(tool_name, args):
 ```
 
 **Benefits:**
+
 - Control what agents can do
 - Policy enforcement
 - Audit trail
 - Gradual autonomy increase
 
 ### 5. Parallel Tool Execution ⭐⭐
+
 **Current:** Sequential processing  
 **Improved:** Execute tasks in parallel
 
@@ -113,11 +123,13 @@ results = executor.run_parallel(tasks, max_workers=4)
 ```
 
 **Benefits:**
+
 - 3-4x faster processing
 - Better resource utilization
 - Handle more tasks simultaneously
 
 ### 6. Prompt Registry ⭐⭐
+
 **Current:** Hardcoded prompts in code  
 **Improved:** Centralized prompt management
 
@@ -133,16 +145,18 @@ engineering:
 ```
 
 **Benefits:**
+
 - Easy to tweak prompts without code changes
 - A/B test different prompts
 - Version control prompts
 - Share prompts across teams
 
 ### 7. Structured Reasoning ⭐⭐
+
 **Current:** LLM generates free-form text  
 **Improved:** Enforce THOUGHT/TOOL/FINAL_ANSWER format
 
-```
+```text
 THOUGHT: This task requires code review and testing
 TOOL: code_review
 INPUT: {code_snippet}
@@ -152,12 +166,14 @@ FINAL_ANSWER: Code is ready. 3 tests passed.
 ```
 
 **Benefits:**
+
 - Predictable agent behavior
 - Easier to parse results
 - Better reasoning transparency
 - Compatible with training pipelines
 
 ### 8. Task Templates ⭐⭐
+
 **Current:** Free-form task descriptions  
 **Improved:** Structured task templates
 
@@ -175,12 +191,14 @@ task = TaskTemplate(
 ```
 
 **Benefits:**
+
 - Consistent task structure
 - Type checking
 - Better routing
 - Easier metrics
 
 ### 9. Distributed Execution ⭐
+
 **Current:** Single machine  
 **Improved:** Multi-machine agent network
 
@@ -192,11 +210,13 @@ research_head = Agent("research", host="dev-machine-3")
 ```
 
 **Benefits:**
+
 - Horizontal scaling
 - Isolate departments
 - Better resource isolation
 
 ### 10. Cost Tracking & Analytics ⭐
+
 **Current:** No metrics  
 **Improved:** Full analytics dashboard
 
@@ -215,21 +235,25 @@ analytics.track({
 ## Implementation Priority
 
 ### Phase 1 (Immediate) - 2 hours
+
 - [ ] Agent Registry Pattern
 - [ ] Event Bus & Basic Tracing
 - [ ] Parallel Task Execution
 
 ### Phase 2 (This week) - 4 hours
+
 - [ ] Skills System (YAML-based)
 - [ ] Prompt Registry
 - [ ] Governance Hooks
 
 ### Phase 3 (Next week) - 4 hours
+
 - [ ] Structured Reasoning Format
 - [ ] Task Templates
 - [ ] Cost Tracking & Analytics
 
 ### Phase 4 (Future) - 8+ hours
+
 - [ ] Distributed Execution
 - [ ] Web Dashboard
 - [ ] Training Pipeline Integration
@@ -237,7 +261,7 @@ analytics.track({
 
 ## File Structure After Improvements
 
-```
+```text
 team-agent-system/
 ├── main.py                 # CLI (unchanged)
 ├── config.json             # Configuration
@@ -302,6 +326,7 @@ team-agent-system/
 ## Compatibility
 
 All improvements are **backward compatible**:
+
 - Old tasks continue to work
 - Existing API unchanged
 - New features are opt-in
@@ -310,6 +335,7 @@ All improvements are **backward compatible**:
 ## Research Integration
 
 OpenJarvis patterns enable:
+
 - **Trace Data Collection** - Learn from execution history
 - **Policy Optimization** - Improve governance rules
 - **Prompt Synthesis** - Auto-generate better prompts

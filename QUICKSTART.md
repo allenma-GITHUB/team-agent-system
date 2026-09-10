@@ -11,6 +11,7 @@ python main_v2.py submit "Your task description here"
 ```
 
 Examples:
+
 ```bash
 # Engineering
 python main_v2.py submit "Fix the login button not responding"
@@ -57,7 +58,7 @@ python main_v2.py status
 python main_v2.py report
 ```
 
-## That's It!
+## That's It
 
 Your system is running in **mock mode** (works without any API keys). See [README.md](README.md) for LLM integration and the full command reference (multi-step workflows, budget reallocation, etc.).
 
@@ -70,6 +71,7 @@ To upgrade from mock mode to real LLM responses:
 3. Restart the system
 
 Supported providers:
+
 - Anthropic Claude
 - OpenAI GPT
 - Google Gemini
@@ -81,28 +83,32 @@ The system automatically detects available APIs and uses the best one.
 ## Common Tasks
 
 ### Create an Engineering Task
+
 ```bash
 python main_v2.py submit "Database migration for user table"
 ```
 
 ### Create a Design Task
+
 ```bash
 python main_v2.py submit "Redesign landing page with new brand guidelines"
 ```
 
 ### See All Pending Work
+
 ```bash
 python main_v2.py list --status queued
 ```
 
 ### See Completed Work
+
 ```bash
 python main_v2.py list --status completed
 ```
 
 ## System Architecture
 
-```
+```text
 Your CLI
    ↓
 Task Router (auto-detects department)
@@ -118,7 +124,7 @@ Result (recorded to task history + org-wide analytics)
 ## Departments (Auto-Routing)
 
 | Keywords | Department |
-|----------|-----------|
+| ---------- | ----------- |
 | code, bug, feature, deploy | Engineering |
 | design, ui, ux, mockup | Design |
 | support, help, issue | Support |
@@ -146,7 +152,12 @@ Just describe your task naturally—the system routes it automatically.
 ## Need Help?
 
 See [README.md](README.md) for:
+<<<<<<< HEAD
+
+- Detailed command reference
+=======
 - Full command reference (including `workflow` and `strategy`)
+>>>>>>> c3e202eec5ba193e4f47bf4121e1393723e6b562
 - Configuration customization
 - How to add new departments and agent profiles
 - LLM provider setup

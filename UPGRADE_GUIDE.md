@@ -7,7 +7,7 @@ Your Team Agent System has been upgraded with **OpenJarvis patterns** for produc
 ### ⭐ Feature Comparison
 
 | Feature | v1 | v2 | Improvement |
-|---------|----|----|-------------|
+| --------- | ---- | ---- | ------------- |
 | **Task Processing** | Sequential | Parallel | **3-4x faster** |
 | **Event Tracing** | ❌ None | ✅ Full | Complete observability |
 | **Agent System** | Hardcoded | Pluggable Registry | Extensible architecture |
@@ -18,6 +18,7 @@ Your Team Agent System has been upgraded with **OpenJarvis patterns** for produc
 ## Quick Comparison: v1 vs v2
 
 ### v1: Simple Task Executor
+
 ```bash
 python main.py submit "Fix login bug"
 python main.py process  # Sequential, ~3 seconds for 3 tasks
@@ -25,6 +26,7 @@ python main.py show <id>
 ```
 
 ### v2: Enterprise Orchestrator
+
 ```bash
 python main_v2.py submit "Fix login bug"
 python main_v2.py process  # Parallel, ~0.01 seconds for 3 tasks
@@ -36,7 +38,7 @@ python main_v2.py show 0001
 
 ## New Architecture (v2)
 
-```
+```text
 ┌─────────────────────────────────────┐
 │     CLI (main_v2.py)                │
 └────────────┬────────────────────────┘
@@ -126,6 +128,7 @@ bus.emit("task_started", {"task": "...", "department": "..."})
 ## Migration Guide: v1 → v2
 
 ### Option A: Use Both (Recommended)
+
 Keep v1 for simple use cases, use v2 for production.
 
 ```bash
@@ -154,6 +157,7 @@ team status
 ### Backward Compatibility
 
 **v2 is fully backward compatible:**
+
 - Same task format
 - Same department routing
 - Same LLM provider logic
@@ -162,7 +166,7 @@ team status
 ## New Files (v2)
 
 | File | Purpose |
-|------|---------|
+| ------ | --------- |
 | **core.py** | Event bus, registry, base classes |
 | **task_executor_v2.py** | Parallel executor with agents |
 | **main_v2.py** | Updated CLI with v2 features |
@@ -173,6 +177,7 @@ team status
 ### Scenario: Company runs daily batch processing
 
 **v1 (Old):**
+
 ```bash
 # Process 20 tasks sequentially
 # Takes ~60 seconds (3 seconds per task)
@@ -180,6 +185,7 @@ python main.py process
 ```
 
 **v2 (New):**
+
 ```bash
 # Process 20 tasks in parallel (4 workers)
 # Takes ~15 seconds (3s × 20 / 4 workers)
@@ -195,7 +201,7 @@ cat data/traces/trace_*.jsonl | jq 'select(.type=="agent_complete")'
 
 From our test run (3 tasks, parallel):
 
-```
+```text
 Sequential time: ~9ms (3 tasks × 3ms each)
 Parallel time:   ~0.01s (3 tasks simultaneously)
 Workers used:    3 (auto-adjusted to task count)
@@ -237,7 +243,7 @@ jq 'select(.data.duration > 5)' data/traces/trace_*.jsonl
 ### Event Types
 
 | Event | When | Useful For |
-|-------|------|-----------|
+| ------- | ------ | ----------- |
 | `parallel_execution_start` | Batch begins | Throughput tracking |
 | `task_execute_start` | Task starts | SLA monitoring |
 | `agent_start` | Agent invoked | Performance profiling |
@@ -292,7 +298,7 @@ Verify EventBus is initialized in TaskExecutor.
 ## Version Timeline
 
 | Version | Date | Features |
-|---------|------|----------|
+| --------- | ------ | ---------- |
 | v1.0 | 2026-09-07 | Basic task queue, routing, mocking |
 | **v2.0** | **2026-09-07** | **Parallel execution, events, agents** |
 | v2.1 (planned) | Soon | Skills system, prompt registry |
