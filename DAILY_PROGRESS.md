@@ -1,5 +1,23 @@
 # Daily Progress Report - September 10, 2026
 
+## 🐛 CHECKPOINT 28: WORKFLOW STEPS HAD THE SAME "ESCALATED = COMPLETED" BUG
+
+**Direct follow-up to checkpoint 27**, closing the gap explicitly flagged as left for later: `WorkflowEngine.execute_step()` had the identical hole as `TaskExecutor.execute()`/`process_tasks()` (now fixed), just one layer up. It called `executor.execute(...)` and then unconditionally `self.complete_step(instance_id, step_id, result)` — marking the step `COMPLETED` even when the executor's result said `status == "escalated"`. Confirmed via the same repro used to discover checkpoint 27: drain a department's budget, `workflow start bug_fix`, `workflow complete <iid> triage` — the step was marked `COMPLETED` with a `step_result` whose own `analysis` field read "Escalated, not executed: Insufficient budget...".
+
+### ✅ Fix
+
+`WorkflowEngine.execute_step()` (`workflows.py`) now checks the executor's result for `status == "escalated"` before completing the step. If escalated, it:
+- Stores the result in `step_results` anyway (so the reason is visible via `workflow status`)
+- Leaves the step `IN_PROGRESS` rather than `COMPLETED` — so `get_next_step()`'s existing already-in-progress short-circuit (from checkpoint 21) keeps handing back the same undone step instead of the workflow silently advancing past it
+- Sets `instance.status = WorkflowStatus.ESCALATED` and a clear `instance.error`
+- Returns `False`, same as the existing "instance/step not found" failure path
+
+`main_v2.py`'s `workflow_complete()` now distinguishes the two `False` cases with a real message: `⚠ Step '<id>' escalated, not completed: <reason>` when the instance is genuinely escalated, vs. the original "check the instance/step id" message for an actual lookup failure.
+
+**New test:** `test_workflow_execution_escalation.py` — a `FakeExecutor` (same pattern as the pre-existing `test_workflow_execution.py`) scripted to return an escalated result; asserts `execute_step()` returns `False`, the step stays `IN_PROGRESS` (not `COMPLETED`), `instance.status` becomes `ESCALATED` with a clear error, the escalated result is still recorded for visibility, `get_next_step()` keeps returning the same undone step on a re-check, and a normal (non-escalated) result still completes the step as before. Run twice back-to-back (clean both times); full 26-file suite re-run clean afterward, including the pre-existing `test_workflow_execution.py`/`test_workflow_idempotent_advance.py`. Verified live via the real CLI (`workflow start` → drained-budget `workflow complete` → `workflow status`) that the step now correctly shows `escalated`/`in_progress` instead of a false `completed`.
+
+---
+
 ## 🐛 CHECKPOINT 27: BUDGET/CAPACITY ESCALATIONS WERE SILENTLY REPORTED AS "COMPLETED"
 
 **The most significant bug found this session.** Found while auditing the bridge between `TaskExecutor` and the budget/capacity gating that checkpoints 2 and 4 added to `DepartmentHeadAgent.run()` — that gating can legitimately decide *not* to do a task (insufficient budget, no capacity, decision engine escalates) and returns `status="escalated", approved=False` instead of doing the work. `TaskExecutor.execute()` threw all of that away and unconditionally built `{"summary": f"{dept} team completed task in {duration}s", ...}` with no `status`/`approved` key at all, no matter what `agent.run()` actually returned.

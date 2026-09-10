@@ -259,6 +259,21 @@ class WorkflowEngine:
 
         task_description = f"{step.name}: {step.description}" if step.description else step.name
         result = executor.execute(step.owner_department, task_description)
+
+        if result.get("status") == "escalated":
+            # The department declined the work (budget/capacity/decision
+            # engine) rather than doing it - recording this as COMPLETED
+            # (the old behavior) would silently let the workflow advance
+            # past a step nothing was actually done for. Store the result
+            # for visibility but leave the step's status as IN_PROGRESS,
+            # so get_next_step()'s already-in-progress check keeps handing
+            # this same step back instead of the workflow silently moving on.
+            instance.step_results[step_id] = result
+            instance.status = WorkflowStatus.ESCALATED
+            instance.error = f"Step '{step.name}' escalated: {result.get('analysis', '')}"
+            self.save()
+            return False
+
         return self.complete_step(instance_id, step_id, result)
 
     @staticmethod

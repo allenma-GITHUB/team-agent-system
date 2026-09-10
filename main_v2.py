@@ -328,12 +328,14 @@ def workflow_complete(instance_id: str, step_id: str):
     init_workflows()
     executor = TaskExecutor(LLMProvider())
     ok = workflow_engine.execute_step(instance_id, step_id, executor)
+    instance = workflow_engine.get_instance(instance_id)
     if ok:
-        instance = workflow_engine.get_instance(instance_id)
         result = instance.step_results.get(step_id, {})
         print(f"✓ Step '{step_id}' executed and marked complete")
         if result.get("summary"):
             print(f"  {result['summary']}")
+    elif instance and instance.status.value == "escalated" and instance.error:
+        print(f"⚠ Step '{step_id}' escalated, not completed: {instance.error}")
     else:
         print(f"Could not complete step '{step_id}' (check the instance/step id)")
 
