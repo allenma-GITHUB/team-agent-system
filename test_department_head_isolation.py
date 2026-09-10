@@ -17,7 +17,7 @@ from pathlib import Path
 from core import EventBus
 from llm_provider import LLMProvider
 from task_executor_v2 import DepartmentHeadAgent, TaskExecutor
-from agent_state import AgentRegistry
+from agent_state import AgentRegistry, AgentProfile
 from budgets import BudgetManager, CapacityManager
 from performance import PerformanceAnalytics
 
@@ -26,6 +26,14 @@ SHARED_FILES = [
     Path("data/budgets.json"),
     Path("data/performance_metrics.json"),
 ]
+
+# TaskExecutor's on-demand agent gets DepartmentHeadAgent's fallback profile
+# (ManagerAgent, skill_level 3) with no explicit cost_per_hour, so it bills
+# at that profile's derived rate - see agent_state.AgentProfile.hourly_rate().
+FALLBACK_RATE = AgentProfile(
+    agent_id="rate_probe", name="", agent_type="ManagerAgent", department="x",
+    expertise_areas=[], skill_level=3, capabilities=[], constraints=[]
+).hourly_rate()
 
 
 def print_section(title: str):
@@ -104,7 +112,7 @@ def test_injected_task_executor_propagates_to_every_agent_it_creates():
     for path in SHARED_FILES:
         assert before[path] == after[path], f"{path} was touched by an isolated executor run"
 
-    assert budgets.get_budget("qa_di_engineering").spent == 200  # 2h * $100/hr
+    assert budgets.get_budget("qa_di_engineering").spent == 2.0 * FALLBACK_RATE
     print("  Agent created on-demand by TaskExecutor used the injected budget manager, not the global one")
 
 

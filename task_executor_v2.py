@@ -21,14 +21,13 @@ class DepartmentHeadAgent(BaseAgent):
     """
 
     def __init__(self, department: str, agent_state: Optional[AgentState] = None,
-                 llm_provider=None, cost_per_hour: float = 100.0,
+                 llm_provider=None, cost_per_hour: Optional[float] = None,
                  agent_state_registry=None, budget_manager=None,
                  capacity_manager=None, analytics=None, **kwargs):
         super().__init__(**kwargs)
         self.department = department
         self.agent_id = f"{department}_head"
         self.llm = llm_provider
-        self.cost_per_hour = cost_per_hour
 
         # Every dependency below defaults to the shared global singleton
         # (same behavior as before), but a caller - typically a test that
@@ -57,6 +56,12 @@ class DepartmentHeadAgent(BaseAgent):
                     constraints=[]
                 )
                 self.agent_state = self.agent_state_registry.register(profile)
+
+        # Compensation: derived from the agent's own seniority (agent_type,
+        # skill_level) unless the caller explicitly sets a rate, instead of
+        # billing a CEO and a support coordinator identically.
+        self.cost_per_hour = (cost_per_hour if cost_per_hour is not None
+                               else self.agent_state.profile.hourly_rate())
 
         # Seed a department budget from config.json on first use; leaves an
         # already-tracked period's spend alone on subsequent runs.

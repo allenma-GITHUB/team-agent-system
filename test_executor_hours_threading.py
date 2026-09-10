@@ -9,7 +9,18 @@ duration were identical no matter how big or small the task actually was.
 from core import EventBus
 from llm_provider import LLMProvider
 from task_executor_v2 import TaskExecutor
+from agent_state import AgentProfile
 from budgets import budget_manager
+
+# TaskExecutor's on-demand agents get DepartmentHeadAgent's fallback profile
+# (ManagerAgent, skill_level 3) with no explicit cost_per_hour, so they bill
+# at that profile's derived rate (see agent_state.AgentProfile.hourly_rate())
+# rather than a hardcoded number - keeps this test correct if the rate table
+# in agent_state.py ever changes.
+FALLBACK_RATE = AgentProfile(
+    agent_id="rate_probe", name="", agent_type="ManagerAgent", department="x",
+    expertise_areas=[], skill_level=3, capabilities=[], constraints=[]
+).hourly_rate()
 
 
 def print_section(title: str):
@@ -30,8 +41,9 @@ def test_execute_passes_estimated_hours_through():
     executor.execute(department, "A five-hour task", estimated_hours=5.0)
 
     budget = budget_manager.get_budget(department)
-    print(f"  Spent: ${budget.spent:,.2f} (5h * $100/hr default = $500 expected)")
-    assert budget.spent == 500
+    expected = 5.0 * FALLBACK_RATE
+    print(f"  Spent: ${budget.spent:,.2f} (5h * ${FALLBACK_RATE}/hr fallback rate = ${expected:,.2f} expected)")
+    assert budget.spent == expected
 
 
 def test_execute_parallel_passes_per_task_hours_through():
@@ -49,8 +61,9 @@ def test_execute_parallel_passes_per_task_hours_through():
     ])
 
     budget = budget_manager.get_budget(department)
-    print(f"  Spent: ${budget.spent:,.2f} ((2h + 3h) * $100/hr default = $500 expected)")
-    assert budget.spent == 500
+    expected = (2.0 + 3.0) * FALLBACK_RATE
+    print(f"  Spent: ${budget.spent:,.2f} ((2h + 3h) * ${FALLBACK_RATE}/hr fallback rate = ${expected:,.2f} expected)")
+    assert budget.spent == expected
 
 
 def test_execute_parallel_still_accepts_two_tuples():
@@ -65,8 +78,9 @@ def test_execute_parallel_still_accepts_two_tuples():
     executor.execute_parallel([(department, "No hours specified")])
 
     budget = budget_manager.get_budget(department)
-    print(f"  Spent: ${budget.spent:,.2f} (1h * $100/hr default = $100 expected)")
-    assert budget.spent == 100
+    expected = 1.0 * FALLBACK_RATE
+    print(f"  Spent: ${budget.spent:,.2f} (1h * ${FALLBACK_RATE}/hr fallback rate = ${expected:,.2f} expected)")
+    assert budget.spent == expected
 
 
 def main():

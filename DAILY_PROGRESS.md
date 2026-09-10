@@ -609,6 +609,57 @@ Followed the roadmap directly this time rather than a bug-hunt: with Phases 2-4'
 
 ---
 
+## 🎯 FOURTEENTH CHECKPOINT TODAY: PHASE 5, PART 2 - AGENT COMPENSATION
+
+**Summary:** The previous checkpoint's "Next Steps" named Phase 5's other listed area directly: "compensation" - every `DepartmentHeadAgent` billed at a flat `$100/hr` regardless of whether it represented a CEO or a junior coordinator. Derived compensation from the agent's own profile instead.
+
+### ✅ What Changed
+
+**`agent_state.py`**
+- New `AgentProfile.hourly_rate()`: `BASE_HOURLY_RATE_BY_TYPE` (`LeaderAgent` $250, `SpecialistAgent` $180, `ManagerAgent` $150, `CoordinatorAgent` $120, unmapped types fall back to the old flat `$100`) times a `skill_level` multiplier (`0.6 + 0.2 * skill_level`: skill 1 → `0.8x`, skill 5 → `1.6x`)
+
+**`task_executor_v2.py`**
+- `DepartmentHeadAgent.__init__`'s `cost_per_hour` now defaults to `None` and, when not explicitly given, resolves to `self.agent_state.profile.hourly_rate()` - reordered the constructor so `agent_state` is resolved *before* the rate is computed, since the rate needs the profile
+
+**`test_compensation.py` (new)** — five scenarios, all passing and idempotent:
+1. Higher-seniority `agent_type`s earn more at the same skill level (`CoordinatorAgent < ManagerAgent < SpecialistAgent < LeaderAgent`)
+2. Higher `skill_level` earns more within the same type
+3. An unrecognized `agent_type` falls back cleanly to the flat rate, no crash
+4. A `DepartmentHeadAgent` with no explicit `cost_per_hour` bills at its own profile's derived rate end to end (spend matches `hours * hourly_rate()` exactly)
+5. An explicit `cost_per_hour` still overrides the derived rate unconditionally
+
+### 🔧 Two Existing Tests Broke, As Expected, And Were Fixed Correctly
+
+`test_executor_hours_threading.py` and `test_department_head_isolation.py` both construct agents through `TaskExecutor` without an explicit `cost_per_hour`, so they'd been implicitly relying on the old flat `$100` default. Both failed immediately after this change - exactly as anticipated before making it, since every *other* test explicitly passes `cost_per_hour=100`/`=50`. Fixed by computing the expected fallback rate from `AgentProfile(...).hourly_rate()` directly in each test (`$180/hr` for the `ManagerAgent`/skill-3 fallback profile) instead of hardcoding a number - so these tests stay correct if the rate table in `agent_state.py` ever changes, rather than needing a manual update again.
+
+### 🔧 Design Decisions
+
+- **The rate table is a deliberately simple, editable set of module-level constants**, not a config-driven system - compensation policy is exactly the kind of thing that's fine to hardcode once and adjust by editing four numbers, unlike per-department budgets (which do need to vary per deployment and so live in `config.json`).
+- **Verified the two breakages by running the full suite immediately after the change**, not by reasoning about it in the abstract - confirmed the prediction (which tests would break) matched what actually broke before touching either file.
+
+### ✅ Validation
+
+- `python -m py_compile` clean
+- `test_compensation.py`: all 5 scenarios pass, run twice back-to-back to confirm idempotency
+- Full suite (16 test files now): all pass, including the two fixed pre-existing tests
+- End-to-end CLI run in a temp directory (`submit --hours 2` for both `engineering` and `design`, `process`, `status`) confirmed both departments now show `$360` spent (`2h * $180/hr` fallback rate) instead of the old flat `$200`
+
+### 📝 Next Steps
+
+- **Found while validating, out of scope for this checkpoint:** `config.json`'s richer per-department agent definitions (e.g. `engineering_head`: `skill_level: 4`) are never actually loaded into the registry - `DepartmentHeadAgent`'s fallback profile hardcodes `skill_level=3`/`ManagerAgent` regardless of what `config.json` says for that specific department head. Compensation now correctly derives from *whatever* profile an agent has, but nothing currently seeds the *richer* profile `config.json` already describes.
+- Optionally migrate the eight pre-DI test files to use full injection now that the capability exists
+- `main_v2.py`'s task pipeline and `workflows.py`'s workflow pipeline are still two entirely separate systems
+
+### 📂 Files Modified
+
+- `agent_state.py` (`AgentProfile.hourly_rate()`, rate table constants)
+- `task_executor_v2.py` (`DepartmentHeadAgent` derives `cost_per_hour` from the profile by default)
+- `test_executor_hours_threading.py` / `test_department_head_isolation.py` (updated to compute the expected fallback rate instead of hardcoding `$100`)
+- `test_compensation.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT
