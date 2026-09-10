@@ -555,6 +555,60 @@ Same "run it for real" pattern as every CLI checkpoint today. Ran the entire lif
 
 ---
 
+## 🎯 THIRTEENTH CHECKPOINT TODAY: PHASE 5 KICKOFF - STRATEGIC BUDGET REALLOCATION
+
+**Summary:** Every checkpoint so far this session sat inside Phases 2-4 of the roadmap. With the "estimated_hours" thread closed, this is the first Phase 5 ("strategic planning") work: `budgets.py` has computed exactly which departments are underspending and which are approaching their limit since checkpoint 1 today (`over_budget_departments()`, `DepartmentBudget.utilization_pct()`) - nothing has ever acted on that signal. A department stuck at 95% utilization stayed there forever even while another sat at 5%.
+
+### ✅ What Was Built
+
+**`strategy.py` (new module)**
+- `ReallocationProposal`: a single proposed transfer (`from_department`, `to_department`, `amount`, `reason`)
+- `StrategicPlanner`:
+  - `propose_reallocations(low_threshold=0.3, high_threshold=0.85)`: finds departments at or below `low_threshold` utilization (donors) and at or above `high_threshold` (recipients), then greedily matches the largest donors to the largest shortfalls. A donor never gives away more than `available() - reserve_pct * allocated` (default reserve `20%`) - "underspending so far" isn't "safe to zero out." A recipient's need is computed as exactly enough to bring it back down to `high_threshold`, not further.
+  - `apply_reallocations(proposals)`: moves `allocated` between the named departments and persists
+  - `rebalance()`: propose + apply in one call, for a caller (e.g. an automated periodic job) that trusts the heuristic outright rather than reviewing first
+- Deliberately keys off **budget** utilization, not capacity utilization - there's no "hire more staff with money" mechanic in this system, so capacity isn't the right signal for a *budget* move even though `CapacityManager` computes a similar-looking number
+
+**`main_v2.py`**
+- New `strategy [--apply]` command: dry-run by default (prints proposals with their reasoning), `--apply` actually executes them
+
+**`test_strategic_planning.py` (new)** — four scenarios, all passing and idempotent (self-cleaning, isolated `BudgetManager` instances throughout):
+1. A department at 5% utilization and one at 95% produce exactly one proposal for the exact computed shortfall (`$1,176.47`, verified against the formula by hand)
+2. A donor with a huge available balance next to a recipient with an enormous need still only gives up to its reserve-protected limit (`$750`, not more)
+3. Two departments both sitting in the middle (50%/40%) produce zero proposals
+4. `apply_reallocations()`/`rebalance()` actually mutates `allocated` on both departments and persists - confirmed by re-reading the file with a fresh `BudgetManager`
+
+### 🔧 How This Was Found And Validated
+
+Followed the roadmap directly this time rather than a bug-hunt: with Phases 2-4's loose ends from today closed, the daily task's own phase list named Phase 5 ("strategic planning, compensation, etc.") as the next unclaimed area, and `budgets.py`'s already-computed utilization signal was the obvious concrete thing to act on. Validated end-to-end via the real CLI in a temp directory: manually created a 96%-utilized `engineering` next to a 3%-utilized `design`, ran `strategy` (dry run, showed the exact proposal), then `strategy --apply` and confirmed via `status` that `engineering` dropped to exactly `85%` (the threshold, not below it) and the `[!] Over-budget: engineering` flag from checkpoint 3 disappeared.
+
+### 🔧 Design Decisions
+
+- **Reserve-protected donors, exact-shortfall recipients.** Giving away 100% of a donor's unspent budget just because it's underspending *today* would be short-sighted; the `reserve_pct` exists because "no work happened yet" isn't the same as "will never need this money." Recipients only get exactly enough to reach the threshold, not an arbitrary amount, so `apply()` doesn't overcorrect.
+- **Dry-run by default in the CLI**, matching the caution used everywhere else this system asks for money to move (`reserve_funds`, `approve_decision`) - reallocating a department's budget is a real decision, not something that should happen silently on every `strategy` invocation without `--apply`.
+
+### ✅ Validation
+
+- `python -m py_compile` clean
+- End-to-end CLI run in a temp directory: `strategy` (empty state → no-op), manual imbalance setup, `strategy` (dry run, correct proposal), `strategy --apply`, `status` confirming the exact resulting percentages and the over-budget flag clearing
+- `test_strategic_planning.py`: all 4 scenarios pass, run twice back-to-back to confirm idempotency
+- Full suite (15 test files now): all pass
+
+### 📝 Next Steps
+
+- Phase 5's other named area, "compensation": today's `cost_per_hour` is a flat `$100` default for every `DepartmentHeadAgent` regardless of the agent's own `skill_level`/`agent_type` - a real compensation model would derive it from the agent's profile
+- Optionally migrate the eight pre-DI test files to use full injection now that the capability exists
+- `main_v2.py`'s task pipeline and `workflows.py`'s workflow pipeline are still two entirely separate systems
+
+### 📂 Files Modified
+
+- `strategy.py` (new)
+- `main_v2.py` (new `strategy [--apply]` command)
+- `test_strategic_planning.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT

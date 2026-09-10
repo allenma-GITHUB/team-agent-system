@@ -14,6 +14,7 @@ from core import EventBus
 from budgets import budget_manager, capacity_manager
 from performance import analytics
 from workflows import workflow_engine, create_feature_request_workflow, create_bug_fix_workflow
+from strategy import strategic_planner
 
 WORKFLOW_TEMPLATES = {
     "feature_request": create_feature_request_workflow,
@@ -321,6 +322,27 @@ def workflow_status(instance_id: str):
         print(f"  {step_id:<20} {step_status}")
 
 
+def show_strategy(apply: bool):
+    """Show (and optionally apply) CEO-level budget reallocation proposals."""
+    proposals = strategic_planner.propose_reallocations()
+
+    if not proposals:
+        print("\n✓ No reallocation needed - no department is underspending enough "
+              "to fund another approaching its limit.")
+        return
+
+    print(f"\n💡 Proposed Reallocations ({len(proposals)}):")
+    for p in proposals:
+        print(f"  {p.from_department} -> {p.to_department}: ${p.amount:,.2f}")
+        print(f"    {p.reason}")
+
+    if apply:
+        strategic_planner.apply_reallocations(proposals)
+        print("\n✓ Applied.")
+    else:
+        print("\n(Dry run - re-run with --apply to actually move the budget.)")
+
+
 def main():
     if len(sys.argv) < 2:
         print("Team Agent System v2 - CLI with Event Bus & Parallel Execution")
@@ -338,12 +360,14 @@ def main():
         print("  python main_v2.py workflow approve <instance_id> <step_id> [--reject]")
         print("  python main_v2.py workflow retry <instance_id>")
         print("  python main_v2.py workflow status <instance_id>")
+        print("  python main_v2.py strategy [--apply]")
         print("\nExample:")
         print("  python main_v2.py submit 'Fix login bug'")
         print("  python main_v2.py process          # Parallel by default")
         print("  python main_v2.py process --sequential  # Force sequential")
         print("  python main_v2.py report           # Quality, cost, budget & capacity in one report")
         print("  python main_v2.py workflow start feature_request title='Dark mode'")
+        print("  python main_v2.py strategy --apply  # Reallocate budget from idle to strained departments")
         return
 
     command = sys.argv[1]
@@ -426,6 +450,9 @@ def main():
             workflow_status(sys.argv[3])
         else:
             print(f"Unknown workflow subcommand: {sub}")
+
+    elif command == "strategy":
+        show_strategy(apply="--apply" in sys.argv)
 
     else:
         print(f"Unknown command: {command}")
