@@ -106,20 +106,30 @@ class DepartmentHeadAgent(BaseAgent):
                 "approved": False
             }
 
+        # Every task draws on the department budget, not just the ones big
+        # enough to need approval - otherwise routine work is free and only
+        # large tasks are resource-constrained, which understates real cost.
         if decision.approval_required:
             approved, reason = budget_manager.approve_decision(
                 decision, department=self.department, cost_per_hour=self.cost_per_hour
             )
-            self._emit("budget_check", {"approved": approved, "reason": reason})
-            if not approved:
-                self._emit("task_escalated", {"reasoning": f"Budget denied: {reason}"})
-                return {
-                    "analysis": f"Escalated, not executed: {reason}",
-                    "department": self.department,
-                    "agent_id": self.agent_id,
-                    "status": "escalated",
-                    "approved": False
-                }
+        else:
+            approved, reason = budget_manager.request_expense(
+                department=self.department, amount=estimated_hours * self.cost_per_hour,
+                category="labor", description=decision.reasoning, agent_id=self.agent_id
+            )
+        self._emit("budget_check", {
+            "approved": approved, "reason": reason, "approval_required": decision.approval_required
+        })
+        if not approved:
+            self._emit("task_escalated", {"reasoning": f"Budget denied: {reason}"})
+            return {
+                "analysis": f"Escalated, not executed: {reason}",
+                "department": self.department,
+                "agent_id": self.agent_id,
+                "status": "escalated",
+                "approved": False
+            }
 
         # Check workload
         self.agent_state.add_task()

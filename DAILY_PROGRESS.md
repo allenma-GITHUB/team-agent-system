@@ -105,6 +105,47 @@
 
 ---
 
+## 🎯 THIRD CHECKPOINT TODAY: ROUTINE TASKS ARE NO LONGER FREE
+
+**Summary:** Both checkpoints above only drew from the budget on the *approval-required* path — a routine task with `estimated_hours` under the ~16h/complexity threshold ran for free, no matter how many of them a department processed. That understated cost and meant a department's budget could never actually run out from ordinary work, only from big one-off asks. Closed that.
+
+### ✅ What Changed
+
+**`task_executor_v2.py`**
+- `DepartmentHeadAgent.run()`: when a decision does *not* require approval, it now calls `budget_manager.request_expense()` directly for `estimated_hours * cost_per_hour`, the same way the approval path already called `approve_decision()`. Both paths now emit the same `budget_check` event (with an `approval_required` flag added so traces can tell them apart) and escalate the same way on denial.
+- Net effect: **every** executed task costs something and can be blocked by a fully depleted budget, not just the large/complex ones.
+
+**`test_resource_gating.py`**
+- Renamed/updated scenario 1 to assert the (small) spend that now happens even without approval, and that it emits exactly one `budget_check` event with `approval_required: False`
+- Added scenario 5: a department with less money than a single hour of labor costs escalates a routine task with `$0` spent — the gate blocks *before* work starts, it doesn't run first and fail to bill after
+- Fixed a real bug this surfaced: scenario 1 originally didn't call `budget_manager.allocate()` before running, so on a second local run it read the department's already-spent budget back from `data/budgets.json` and the hardcoded `assert budget.spent == 100` failed — spend had accumulated to `$200`. All budget-asserting scenarios now explicitly `allocate()` a fresh starting budget so they're safe to run repeatedly against the persisted (and, day-to-day, intentionally *not* reset) global `budget_manager`.
+
+### 🔧 Design Decisions
+
+- **Same event, one new field, not a second event type.** Adding `approval_required` to the existing `budget_check` payload keeps a single place to look at trace time instead of two similar-but-different event types for what's conceptually one check.
+- **This test bug is a real lesson about the shared singleton.** `budget_manager`/`agent_state_registry` persist to disk and are shared across every process in this repo (by design — it's how the system remembers spend/relationships between CLI invocations). Any test that asserts an absolute spend value against a department name must `allocate()` it first; asserting deltas or using an `ensure_allocated`-seeded fresh name isn't enough on its own if a previous run already touched that name.
+
+### ✅ Validation
+
+- `python -m py_compile` clean on all `.py` files
+- `test_resource_gating.py` run twice back-to-back from the same un-reset `data/budgets.json` (i.e. the realistic case) to confirm the fix actually makes it idempotent, not just clean-slate-passing
+- Full suite (`test_agent_decisions.py`, `test_performance.py`, `test_workflows.py`, `test_budgets.py`, `test_resource_gating.py`, `test_workflow_budget.py`): all pass
+
+### 📝 Next Steps
+
+- A `resume_step()`/retry path for `BLOCKED` workflow steps once budget frees up
+- Give the `bug_fix` workflow's "Verification" step a real cost too
+- Surface `WorkflowStatus.ESCALATED` / a depleted department budget somewhere a human would actually see it (today it's only in-process state and trace events)
+- Add a spend/capacity view to `performance.generate_report()` so one report covers quality, cost, and resource utilization together
+
+### 📂 Files Modified
+
+- `task_executor_v2.py` (non-approval tasks now draw from budget too)
+- `test_resource_gating.py` (new scenario + accumulation-bug fix)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT

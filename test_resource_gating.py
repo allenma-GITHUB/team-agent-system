@@ -19,21 +19,29 @@ def print_section(title: str):
     print(f"{'='*60}\n")
 
 
-def test_default_task_executes_without_approval():
-    """A normal, short task shouldn't need approval and should just run."""
-    print_section("1. Default Task Executes Without Approval")
+def test_default_task_executes_without_approval_but_still_spends():
+    """A normal, short task shouldn't need approval - but it still isn't free."""
+    print_section("1. Default Task Executes Without Approval, But Still Costs Something")
+
+    department = "qa_default"
+    budget_manager.allocate(department, 10000)  # fixed starting point, independent of prior runs
 
     bus = EventBus()
-    agent = DepartmentHeadAgent("qa_default", llm_provider=LLMProvider(), bus=bus)
-    result = agent.run("Investigate a minor UI glitch")
+    agent = DepartmentHeadAgent(department, llm_provider=LLMProvider(), bus=bus, cost_per_hour=100)
+    result = agent.run("Investigate a minor UI glitch", estimated_hours=1.0)
 
     print(f"  Status: {result['status']}, Approved: {result['approved']}")
     assert result["status"] == "completed"
     assert result["approved"] is True
 
     budget_check_events = bus.get_traces("budget_check")
-    print(f"  Budget checks performed: {len(budget_check_events)} (none expected)")
-    assert len(budget_check_events) == 0
+    print(f"  Budget checks performed: {len(budget_check_events)}")
+    assert len(budget_check_events) == 1
+    assert budget_check_events[0].data["approval_required"] is False
+
+    budget = budget_manager.get_budget(department)
+    print(f"  Spent: ${budget.spent:,.2f} (1h * $100/hr = $100 expected, even with no approval)")
+    assert budget.spent == 100
 
 
 def test_capacity_check_is_emitted():
@@ -96,15 +104,37 @@ def test_high_cost_task_escalates_when_budget_is_insufficient():
     print(f"  Escalation reasoning: {escalations[0].data['reasoning']}")
 
 
+def test_routine_task_escalates_once_budget_is_fully_depleted():
+    """Even a small, no-approval task can't run once the department is broke."""
+    print_section("5. Routine Task Escalates When The Department Is Out Of Money")
+
+    department = "qa_depleted"
+    budget_manager.allocate(department, 50)  # less than a single $100 hour of labor
+
+    bus = EventBus()
+    agent = DepartmentHeadAgent(department, llm_provider=LLMProvider(), bus=bus, cost_per_hour=100)
+    result = agent.run("Routine cleanup task", estimated_hours=1.0)
+
+    print(f"  Status: {result['status']}, Approved: {result['approved']}")
+    print(f"  Analysis: {result['analysis']}")
+    assert result["status"] == "escalated"
+    assert result["approved"] is False
+
+    budget = budget_manager.get_budget(department)
+    print(f"  Spent: ${budget.spent:,.2f} (should be $0 - budget was depleted before work started)")
+    assert budget.spent == 0
+
+
 def main():
     print("\n" + "=" * 60)
     print("  RESOURCE-GATED TASK EXECUTION DEMONSTRATION")
     print("=" * 60)
 
-    test_default_task_executes_without_approval()
+    test_default_task_executes_without_approval_but_still_spends()
     test_capacity_check_is_emitted()
     test_high_cost_task_draws_from_budget_when_affordable()
     test_high_cost_task_escalates_when_budget_is_insufficient()
+    test_routine_task_escalates_once_budget_is_fully_depleted()
 
     print("\n" + "=" * 60)
     print("  [OK] All resource-gating tests passed!")
