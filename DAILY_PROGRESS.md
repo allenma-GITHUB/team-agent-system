@@ -146,6 +146,48 @@
 
 ---
 
+## 🎯 FOURTH CHECKPOINT TODAY: BUDGET & CAPACITY IN THE PERFORMANCE REPORT
+
+**Summary:** Quality, cost, budget, and capacity have been three separate, unconnected stories all day: `performance.generate_report()` only ever showed quality/cost/success metrics, with no visibility into what any of it actually cost against a real budget or how staffed each department was. This was called out as a next step in both of today's earlier checkpoints. Closed it.
+
+### ✅ What Changed
+
+**`performance.py`**
+- Added `PerformanceAnalytics.get_resource_summary(budgets=None, capacity=None)`: pulls `organization_summary()` and `over_budget_departments()` from a `BudgetManager`, and `organization_utilization()`/`recommend_actions()` from a `CapacityManager`. Defaults to the shared global `budget_manager`/`capacity_manager` (the same singletons `task_executor_v2.py` and `workflows.py` already draw from), but takes injected instances too.
+- `generate_report()` now takes the same optional `budgets`/`capacity` params and appends a "Resource Overview" section (allocated/spent/reserved/available, capacity utilization, an over-budget-departments flag, and any capacity recommendations) — but only when something has actually been allocated, so a fresh system's report doesn't show an empty, confusing section.
+
+**`test_performance_resources.py` (new)** — three scenarios, all passing:
+1. `get_resource_summary()` reflects whatever `BudgetManager`/`CapacityManager` it's given (injected, not the global singletons)
+2. `generate_report()` renders the resource section, including the over-budget flag, when a department has real spend
+3. The section is cleanly omitted when nothing's been allocated yet, while the rest of the report still renders
+
+### 🔧 Design Decisions
+
+- **Optional injection, not a required dependency.** `get_resource_summary()`/`generate_report()` default to the global singletons so existing callers (`analytics.generate_report()` with no args) don't change behavior, but accept overrides so tests don't have to touch shared state — the exact "injectable dependency" gap flagged as a next step after the very first `budgets.py` checkpoint two days ago, generalized here instead of only fixed for `DepartmentHeadAgent`.
+- **Fully isolated test, this time.** Every earlier test today used the shared global registries/managers for at least one department and needed manual cleanup (`git checkout -- data/agent_states.json`, deleting stray `data/budgets.json`) afterward. `test_performance_resources.py` is the first one that touches *zero* shared state — three isolated `data_file`s for `BudgetManager`, `AgentRegistry`, and `PerformanceAnalytics` each, verified idempotent by running it twice back-to-back with no cleanup in between.
+- **Guarded, not unconditional.** The section only appears once `total_allocated > 0` — showing "$0.00 allocated, 0% utilized" on every report before anyone's configured budgets would just be noise.
+
+### ✅ Validation
+
+- `python -m py_compile` clean on all `.py` files; `import performance` confirmed no circular import with `budgets.py`
+- `test_performance_resources.py`: all 3 scenarios pass, run twice back-to-back with no cleanup between runs (fully isolated, so no accumulation possible)
+- Full suite (`test_agent_decisions.py`, `test_performance.py`, `test_workflows.py`, `test_budgets.py`, `test_resource_gating.py`, `test_workflow_budget.py`, `test_performance_resources.py`): all pass
+
+### 📝 Next Steps
+
+- Apply the same injectable-dependency pattern to `DepartmentHeadAgent` (registry) so `test_resource_gating.py` and `test_workflow_budget.py` can stop touching shared state too
+- A `resume_step()`/retry path for `BLOCKED` workflow steps once budget frees up
+- Give the `bug_fix` workflow's "Verification" step a real cost too
+- Wire `get_resource_summary()`/the new report section into `main_v2.py`'s CLI `status` command so it's reachable without writing a script
+
+### 📂 Files Modified
+
+- `performance.py` (`get_resource_summary()`, resource section in `generate_report()`)
+- `test_performance_resources.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT

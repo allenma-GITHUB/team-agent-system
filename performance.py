@@ -3,11 +3,13 @@ Performance Tracking & Analytics - Measures and reports on agent and system metr
 Provides data-driven insights for optimization and learning.
 """
 from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime, timedelta
 from pathlib import Path
 import json
 import statistics
+
+from budgets import budget_manager as _default_budget_manager, capacity_manager as _default_capacity_manager
 
 
 @dataclass
@@ -243,7 +245,23 @@ class PerformanceAnalytics:
 
         return recommendations
 
-    def generate_report(self) -> str:
+    def get_resource_summary(self, budgets=None, capacity=None) -> Dict[str, Any]:
+        """Budget and capacity snapshot to sit alongside quality/cost metrics.
+
+        Defaults to the shared global budget_manager/capacity_manager (same
+        singletons task_executor_v2.py and workflows.py draw from); callers
+        that want an isolated view (e.g. tests) can inject their own.
+        """
+        budgets = budgets or _default_budget_manager
+        capacity = capacity or _default_capacity_manager
+        return {
+            "budget": budgets.organization_summary(),
+            "over_budget_departments": budgets.over_budget_departments(),
+            "capacity_utilization": capacity.organization_utilization(),
+            "capacity_recommendations": capacity.recommend_actions(),
+        }
+
+    def generate_report(self, budgets=None, capacity=None) -> str:
         """Generate text report of all metrics."""
         report = []
         report.append("\n" + "="*60)
@@ -272,6 +290,26 @@ class PerformanceAnalytics:
             report.append(f"\nRecommendations:")
             for rec in recs:
                 report.append(f"  - {rec['agent']}: {rec['action']}")
+
+        # Resource overview (budget + capacity) - only shown once something's
+        # actually been allocated, so a fresh system's report stays clean.
+        resources = self.get_resource_summary(budgets=budgets, capacity=capacity)
+        budget_summary = resources["budget"]
+        if budget_summary["total_allocated"] > 0:
+            report.append(f"\nResource Overview:")
+            report.append(f"  Budget Allocated: ${budget_summary['total_allocated']:,.2f}")
+            report.append(f"  Budget Spent: ${budget_summary['total_spent']:,.2f}")
+            report.append(f"  Budget Reserved: ${budget_summary['total_reserved']:,.2f}")
+            report.append(f"  Budget Available: ${budget_summary['total_available']:,.2f}")
+            report.append(f"  Capacity Utilization: {resources['capacity_utilization']:.0%}")
+
+            if resources["over_budget_departments"]:
+                report.append(f"  [!] Over-Budget Departments: {', '.join(resources['over_budget_departments'])}")
+
+            if resources["capacity_recommendations"]:
+                report.append(f"\nCapacity Recommendations:")
+                for rec in resources["capacity_recommendations"]:
+                    report.append(f"  - {rec['department']}: {rec['action']}")
 
         report.append("\n" + "="*60 + "\n")
         return "\n".join(report)
