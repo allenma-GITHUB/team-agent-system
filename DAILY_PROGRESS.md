@@ -833,6 +833,51 @@ Ran the real bridge - `TaskExecutor`, real `LLMProvider`, real budgets - end to 
 
 ---
 
+## 🎯 NINETEENTH CHECKPOINT TODAY: THE README DOCUMENTED A SYSTEM THAT NO LONGER EXISTS
+
+**Summary:** The previous checkpoint's Next Steps flagged it directly: `README.md` hadn't been touched since before today. Checking just how stale it was turned up something worse than "outdated" - it documented `python main.py submit ...` and referenced `task_executor.py`, and **neither file exists in this repo.** `main.py`/`task_executor.py` were the pre-`_v2` originals; the repo only has `main_v2.py`/`task_executor_v2.py` now. Anyone following the README's own Quick Start would hit "file not found" on the very first command.
+
+### ✅ What Changed
+
+**`README.md`** — full rewrite, `main_v2.py` as the only entry point:
+- Features list rewritten to describe what the system actually does today (compensation, real budgets, capacity, persisted budget-gated workflows, strategic reallocation, combined analytics) instead of the original v1 feature set
+- A CLI reference table covering all thirteen commands/subcommands, including every `workflow` subcommand and `strategy`, none of which existed in the old doc
+- A worked example session, run for real end-to-end (not written from memory) to get exact output
+- `config.json`'s `departments`/`agents` sections documented with real examples
+- An architecture table mapping every module (including today's three new ones - `budgets.py`, `workflows.py`'s current form, `strategy.py`) to its responsibility
+- A "how a task actually runs" walkthrough of the five-step `DepartmentHeadAgent.run()` pipeline built across today's checkpoints
+- A Testing section explaining the DI-vs-shared-singleton split from the previous checkpoint
+- Extending/Troubleshooting sections rewritten against the current commands
+
+### 🔧 Two Inaccuracies Caught By Verifying Rather Than Writing From Memory
+
+Drafted the example session's numbers first, then ran the actual commands to check them - caught two mistakes before they shipped:
+1. Guessed engineering's spend at `$3,570`; the real run showed `$3,465` - a 16.0h task doesn't trigger approval-required billing (the threshold is strictly `estimated_hours > 16`, so exactly `16.0` doesn't cross it), so both tasks bill through the flat `estimated_hours * cost_per_hour` path, not the approval path a draft comment claimed
+2. The `strategy` command's sample output was invented, not run - replaced with real output from an actual reallocation (`engineering -> research: $2,352.94`, verified against a genuine 95%-utilized `research` department)
+
+### 🔧 Design Decisions
+
+- **Document the real DI/shared-singleton split plainly, not just "run the tests."** The Testing section explains *why* some tests use isolated instances and others deliberately don't (from the previous checkpoint's reasoning) - a future contributor reading only the README, not eighteen `DAILY_PROGRESS.md` checkpoints, should understand the pattern without archaeology.
+- **Verify example output by running it, not by reasoning about what it should be.** Exactly the lesson from checkpoints 5 and 7 today, applied to documentation instead of code - a plausible-looking number is not the same as a correct one.
+
+### ✅ Validation
+
+- Every command shown in the README's example session was actually run in an isolated temp directory to confirm its output, including a deliberately-constructed budget imbalance to get real `strategy` output
+- No code changed, so no test suite impact - confirmed `git status` shows only `README.md` modified
+
+### 📝 Next Steps
+
+- The other top-level docs (`SUMMARY.md`, `SESSION_SUMMARY.md`, `IMPROVEMENTS.md`, `QUICKSTART.md`, `UPGRADE_GUIDE.md`, `TEST_REPORT.md`) are likely similarly stale (several predate `main_v2.py` too) - not addressed today; `README.md` was the one a new reader would hit first
+- No execution path exists for `ceo`/`tech_lead`/`product_coordinator` roles specifically
+- `workflow_next()` still only shows the next step rather than auto-executing non-approval ones (deliberately left as-is)
+
+### 📂 Files Modified
+
+- `README.md` (full rewrite)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT
