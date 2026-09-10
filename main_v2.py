@@ -84,6 +84,31 @@ def submit_task(description: str, department=None, estimated_hours: float = None
     return task_id
 
 
+def _task_status_for_result(result: dict) -> str:
+    """Map an executor result to a task status. `"error"` (a crashed
+    thread - see TaskExecutor.execute_parallel()) is a real failure;
+    `status == "escalated"` (budget/capacity/decision-engine declined the
+    work, from DepartmentHeadAgent.run()) is neither a crash nor a real
+    completion - it must not be reported as "completed", or the budget
+    and capacity gates added earlier become invisible to the task queue
+    the CLI actually shows users."""
+    if "error" in result:
+        return "failed"
+    if result.get("status") == "escalated":
+        return "escalated"
+    return "completed"
+
+
+def _print_task_result(task: dict, result: dict):
+    dept = task["department"].upper()
+    if task["status"] == "completed":
+        print(f"✓ Task {task['id']:<4} [{dept:<12}] completed")
+    elif task["status"] == "escalated":
+        print(f"⚠ Task {task['id']:<4} [{dept:<12}] escalated: {result.get('analysis', '')}")
+    else:
+        print(f"✗ Task {task['id']:<4} [{dept:<12}] failed: {result.get('error', 'unknown error')}")
+
+
 def process_tasks(parallel=True):
     """Process queued tasks with optional parallel execution."""
     init_system()
@@ -116,24 +141,19 @@ def process_tasks(parallel=True):
 
         for i, (task, result) in enumerate(zip(queued, results)):
             task["completed_at"] = datetime.now().isoformat()
-            if "error" not in result:
-                task["status"] = "completed"
-                task["result"] = result
-                print(f"✓ Task {task['id']:<4} [{task['department'].upper():<12}] completed")
-            else:
-                task["status"] = "failed"
-                task["result"] = result
-                print(f"✗ Task {task['id']:<4} [{task['department'].upper():<12}] failed: {result['error']}")
+            task["status"] = _task_status_for_result(result)
+            task["result"] = result
+            _print_task_result(task, result)
     else:
         # Sequential execution
         for task in queued:
             result = executor.execute(
                 task["department"], task["description"], task.get("estimated_hours", 1.0)
             )
-            task["status"] = "completed"
+            task["status"] = _task_status_for_result(result)
             task["result"] = result
             task["completed_at"] = datetime.now().isoformat()
-            print(f"✓ Task {task['id']:<4} [{task['department'].upper():<12}] completed")
+            _print_task_result(task, result)
 
     total_duration = time.time() - start_time
     TASKS_FILE.write_text(json.dumps(tasks, indent=2))

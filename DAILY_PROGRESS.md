@@ -1,5 +1,24 @@
 # Daily Progress Report - September 10, 2026
 
+## 🐛 CHECKPOINT 27: BUDGET/CAPACITY ESCALATIONS WERE SILENTLY REPORTED AS "COMPLETED"
+
+**The most significant bug found this session.** Found while auditing the bridge between `TaskExecutor` and the budget/capacity gating that checkpoints 2 and 4 added to `DepartmentHeadAgent.run()` — that gating can legitimately decide *not* to do a task (insufficient budget, no capacity, decision engine escalates) and returns `status="escalated", approved=False` instead of doing the work. `TaskExecutor.execute()` threw all of that away and unconditionally built `{"summary": f"{dept} team completed task in {duration}s", ...}` with no `status`/`approved` key at all, no matter what `agent.run()` actually returned.
+
+Two real call sites trusted that fabricated cheerfulness:
+- **`main_v2.process_tasks()`** (both the parallel and — worse — the *sequential* path) decided "completed" vs "failed" by checking `"error" not in result`. That key is only ever set when a worker thread genuinely crashes (`execute_parallel`'s `except Exception`). A department that declined a task for a real, working-as-designed business reason was printed `✓ Task ... completed` and permanently written into `tasks.json` as `"status": "completed"` — indistinguishable from a task the system actually did. The sequential branch was even worse: it marked every task completed with **no check at all**.
+- **`workflows.py`'s `execute_step()`** has the identical hole (confirmed via repro: draining a department's budget, then running `workflow_complete` on a step owned by that department marks the step `COMPLETED` with a step_result whose own `analysis` field says "Escalated, not executed..."). Left as a follow-up for a future checkpoint — this one closes the more commonly hit gap in the plain task queue that `process`/`list`/`show`/`status` all read from.
+
+**Confirmed with a concrete repro:** drained a department's budget to $0, ran a task through it via `TaskExecutor.execute()` directly, and via the full `submit` → `process` → `list`/`show` CLI pipeline — every layer reported `✓ ... completed` despite the department having explicitly declined the work and never touching the LLM, the workload counters, or performance metrics.
+
+### ✅ Fix
+
+- **`task_executor_v2.py` `TaskExecutor.execute()`** now passes through the real `status` (default `"completed"` for callers/paths that never escalate) and `approved` from the agent's result, and builds an honest `summary` (`"... escalated task after Xs: <reason>"` instead of `"... completed task in Xs"`) and a matching `task_execute_end` event.
+- **`main_v2.py`** adds `_task_status_for_result()` (maps a result to `"failed"` on a real `"error"` key, `"escalated"` on `status == "escalated"`, else `"completed"`) and `_print_task_result()`, used by both the parallel and sequential branches of `process_tasks()` — so a declined task is now recorded as `"escalated"`, shown with a `⚠` marker and the real reason, and never confused with either a genuine completion or a crash.
+
+**New test:** `test_task_escalation_visibility.py` — unit-level checks that `execute()`/`execute_parallel()` propagate `status`/`approved` correctly (both the escalated and the normal-completion case, plus a mixed-batch parallel run), and two full CLI-level checks (`process_tasks(parallel=True)` and `parallel=False`) that a task submitted against a drained department ends up `"escalated"` in `tasks.json`, not `"completed"`. Run twice back-to-back (clean both times); full 25-file suite re-run clean afterward. Verified live end-to-end via the real CLI in an isolated temp dir: `submit` → `process` → `list` → `show` all correctly show `escalated` for an unaffordable task.
+
+---
+
 ## 🐛 CHECKPOINT 26: MALFORMED CLI FLAGS CRASHED WITH RAW TRACEBACKS
 
 **Found immediately after checkpoint 25**, while re-checking the same CLI parsing code the negative-hours fix touched: `submit "test" --hours` (flag as the last argument, no value), `submit "test" --dept` (same), and `submit "test" --hours abc` (non-numeric value) all raised an uncaught `IndexError`/`ValueError` and dumped a raw Python traceback to the user instead of a usage message. `list --status` (no value) had the identical hole. Root cause in all four: `sys.argv[sys.argv.index(flag) + 1]` assumes the flag is never last and that `float()` on its value never fails.

@@ -357,20 +357,26 @@ class TaskExecutor:
         agent = self.get_agent_for_department(department)
         result = agent.run(task_description, estimated_hours=estimated_hours)
         duration = time.time() - start
+        status = result.get("status", "completed")
 
         self.bus.emit("task_execute_end", {
             "duration": duration,
             "department": department,
-            "status": "completed"
+            "status": status
         })
 
         execution_steps = result.get("staff_contributions", [])
+        summary = (f"{department.title()} team completed task in {duration:.2f}s"
+                   if status != "escalated"
+                   else f"{department.title()} team escalated task after {duration:.2f}s: {result.get('analysis', '')}")
         return {
             "department": department,
             "analysis": result.get("analysis", ""),
+            "status": status,
+            "approved": result.get("approved", True),
             "staff_count": len(execution_steps),
             "execution_steps": execution_steps,
-            "summary": f"{department.title()} team completed task in {duration:.2f}s",
+            "summary": summary,
             "details": f"Task: {task_description[:60]}..."
         }
 
