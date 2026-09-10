@@ -169,13 +169,20 @@ free, and nothing runs work no one approved the resources for.
 
 ## Testing
 
-Every feature has a corresponding `test_*.py` script - run any of them
-directly (`python test_budgets.py`) or as a suite. Tests either construct
-fully isolated dependencies (an `AgentRegistry`/`BudgetManager`/etc. pointed
-at a throwaway `data/test_*.json` file, cleaned up in `main()`) or - for a
-handful of Day-1 tests whose whole point is exercising persistence - the
-shared global singletons deliberately. No test suite requires a network
+Every feature has a corresponding `test_*.py` script under `tests/` - run
+any of them directly from the repo root (`python tests/test_budgets.py`)
+or as a suite (`for f in tests/test_*.py; do python3 "$f"; done`). Tests
+either construct fully isolated dependencies (an
+`AgentRegistry`/`BudgetManager`/etc. pointed at a throwaway
+`data/test_*.json` file, cleaned up in `main()`) or - for a handful of
+Day-1 tests whose whole point is exercising persistence - the shared
+global singletons deliberately. No test suite requires a network
 connection or an API key; the mock LLM provider is always available.
+
+New test files belong in `tests/` too - each one starts with a small
+`sys.path` bootstrap (`sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))`)
+so `import budgets`/`main_v2`/etc. resolve regardless of where it's
+invoked from; copy that from any existing test rather than reinventing it.
 
 ## Extending the System
 

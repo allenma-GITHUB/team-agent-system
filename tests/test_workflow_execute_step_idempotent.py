@@ -18,6 +18,11 @@ executor, when the step is already COMPLETED or APPROVED - the same
 "idempotent no-op for already-done work" pattern used elsewhere in this
 codebase (get_next_step()'s already-in-progress short-circuit).
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from workflows import WorkflowEngine, WorkflowStep, WorkflowTemplate, StepStatus, WorkflowStatus
 
 

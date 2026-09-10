@@ -11,6 +11,11 @@ Every prior checkpoint today that exercised DepartmentHeadAgent needed a
 afterward. This is what makes that no longer required, for tests written
 against the injected form.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import hashlib
 from pathlib import Path
 

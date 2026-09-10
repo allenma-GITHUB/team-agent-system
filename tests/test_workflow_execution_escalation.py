@@ -17,6 +17,11 @@ Uses a FakeExecutor (same pattern as test_workflow_execution.py) so this
 tests the workflow-engine bridge mechanics in isolation from any real
 budget/LLM dependency.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from workflows import WorkflowEngine, WorkflowStep, WorkflowTemplate, StepStatus, WorkflowStatus
 
 

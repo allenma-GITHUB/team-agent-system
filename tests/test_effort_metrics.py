@@ -6,6 +6,11 @@ recorded duration was near-zero regardless of its estimated_hours, which made
 avg_turnaround_time and every duration-based recommendation in performance.py
 (workload_rebalance, skill_gap) permanently dead - they could never trigger.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from core import EventBus
 from llm_provider import LLMProvider
 from task_executor_v2 import DepartmentHeadAgent

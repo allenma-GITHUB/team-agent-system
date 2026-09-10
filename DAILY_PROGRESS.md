@@ -1,5 +1,28 @@
 # Daily Progress Report - September 10, 2026
 
+## 🧹 CHECKPOINT 31: MOVED ALL TEST FILES INTO `tests/`
+
+**User request:** all 28 `test_*.py` files were sitting in the repo root alongside the application code; moved them into a `tests/` directory and made that the permanent convention going forward.
+
+### ✅ What changed
+
+- `git mv test_*.py tests/` for all 28 files.
+- Each moved file gained a small `sys.path` bootstrap right after its module docstring:
+  ```python
+  import os
+  import sys
+  sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+  ```
+  Needed because `import budgets`/`main_v2`/etc. only resolve if the repo root is on `sys.path` — running `python3 tests/test_x.py` puts `tests/` there by default, not the repo root.
+- The 4 files that compute `REPO_ROOT` to locate `config.json` for an isolated CLI test (`test_main_cli_core.py`, `test_cli_flag_parsing.py`, `test_negative_hours_validation.py`, `test_task_escalation_visibility.py`) now go up two directories (`tests/test_x.py` → repo root) instead of one.
+- Relative `data/test_*.json` paths inside the tests are untouched and still correct — they're resolved against the current working directory (the repo root, since tests are invoked as `python3 tests/test_x.py` from there), not against the test file's own location.
+- `README.md`'s Testing section updated to reflect the new location and document the bootstrap convention for new tests.
+- Added `CLAUDE.md` to record this as a durable project convention (all test files belong in `tests/`, with the bootstrap snippet) so it survives across sessions rather than living only in this progress log.
+
+**Verification:** full 28-file suite re-run clean from the new location (`for f in tests/test_*.py; do python3 "$f"; done`), plus a second idempotency pass on the 4 REPO_ROOT-adjusted files specifically. No test logic changed — only where files live and how they resolve imports/paths.
+
+---
+
 ## 🐛 CHECKPOINT 30: `report` CRASHED ON ALL-ZERO-DURATION METRICS (A SIDE EFFECT OF CHECKPOINT 25's OWN FIX)
 
 **Found while re-checking the consequences of checkpoint 25's own change** (allowing `--hours 0` as a legitimate estimate for a genuinely free/instant task): `performance.py`'s `get_system_metrics()`, `DepartmentMetrics.compute_from_agents()`, and `get_recommendations()` all computed averages with a `statistics.mean([a.X for a in agents if a.X > 0])` filter — apparently meant to skip agents with "no data yet" (whose metrics default to `0.0` before any task is recorded). That filter can't distinguish "no data" from "real data whose average happens to be exactly 0" — and once `--hours 0` became a legal, supported input, an agent whose only recorded task took 0 hours produces exactly that: a real, meaningful `avg_duration_hours` of `0.0`.

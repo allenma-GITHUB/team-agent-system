@@ -21,6 +21,11 @@ tasks_completed short by exactly the number of racing first-creations,
 or the shared expense_log missing an entry) before this fix; 15/15 clean
 runs after it.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from core import EventBus
 from llm_provider import LLMProvider
 from task_executor_v2 import TaskExecutor

@@ -19,6 +19,11 @@ letting it propagate.
 Runs main_v2.main() directly with a crafted sys.argv inside an isolated
 temp directory - never touches the real repo's data/ files.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import contextlib
 import io
 import os
@@ -28,7 +33,7 @@ import tempfile
 
 import main_v2
 
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # tests/ -> repo root
 
 
 def print_section(title: str):

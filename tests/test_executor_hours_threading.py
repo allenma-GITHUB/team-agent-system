@@ -6,6 +6,11 @@ execute()/execute_parallel() always used run()'s default of 1.0h regardless
 of what a task really represented, so every task's budget cost and recorded
 duration were identical no matter how big or small the task actually was.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from core import EventBus
 from llm_provider import LLMProvider
 from task_executor_v2 import TaskExecutor

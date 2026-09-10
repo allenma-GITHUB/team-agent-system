@@ -6,6 +6,11 @@ every task defaulted to a flat 1.0h regardless of what it actually said,
 so "fix a typo" and "full platform migration" would be billed and measured
 identically unless a human remembered to pass --hours by hand.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from departments import DepartmentManager
 from main_v2 import submit_task, TASKS_FILE, init_system
 import json

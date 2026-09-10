@@ -13,6 +13,11 @@ thread - no lock. A concrete repro (30 concurrent same-department tasks,
 budget spend, with zero errors reported to the caller - the tasks
 themselves succeeded, their bookkeeping silently vanished.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from core import EventBus
 from llm_provider import LLMProvider
 from task_executor_v2 import TaskExecutor

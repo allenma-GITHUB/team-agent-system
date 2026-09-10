@@ -3,6 +3,11 @@
 Test script demonstrating autonomous agent decision-making.
 Shows agents making smart decisions about task execution, delegation, and escalation.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from agent_state import AgentProfile, AgentState, agent_registry
 from agent_decisions import AgentDecisionEngine, DecisionContext, OrganizationDecisionMaker
 import json

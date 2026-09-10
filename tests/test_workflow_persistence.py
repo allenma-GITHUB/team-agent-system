@@ -7,6 +7,11 @@ Python process with no shared memory. Before this, WorkflowEngine kept
 everything in a plain in-memory dict with no persistence at all, so any
 workflow state would vanish the moment the process exited.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from pathlib import Path
 
 from workflows import (

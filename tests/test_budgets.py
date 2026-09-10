@@ -4,6 +4,11 @@ Test budget tracking and capacity management.
 Demonstrates department budgets, expense approval, reservation flows,
 and staffing capacity reports built on top of the existing agent registry.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from agent_state import AgentProfile, AgentRegistry
 from agent_decisions import DecisionResult
 from budgets import BudgetManager, CapacityManager

@@ -18,6 +18,11 @@ without injection, WorkflowEngine silently uses the shared global
 BudgetManager, which made an earlier version of this exact check look like
 it passed when it hadn't actually been isolated at all.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from workflows import WorkflowEngine, WorkflowStep, WorkflowTemplate, WorkflowStatus, StepStatus
 from budgets import BudgetManager
 

@@ -9,6 +9,11 @@ compensation checkpoint: engineering_head/design_head both showed
 identical, generic skill_level=3 profiles despite config.json defining
 skill_level=4 for both.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from agent_state import AgentRegistry
 from budgets import BudgetManager
 from core import EventBus

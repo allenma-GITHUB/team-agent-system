@@ -6,6 +6,11 @@ reservation into spend on approval, and releases it on rejection. A step the
 department can't afford blocks instead of proceeding into an approval gate
 no one can actually fund.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from workflows import WorkflowEngine, WorkflowStep, WorkflowTemplate, WorkflowStatus, StepStatus
 from budgets import BudgetManager
 

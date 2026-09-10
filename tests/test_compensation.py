@@ -4,6 +4,11 @@ Test AgentProfile.hourly_rate() and its wiring into DepartmentHeadAgent:
 compensation now derives from agent_type/skill_level instead of every
 agent billing at a flat $100/hr regardless of seniority.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from agent_state import AgentProfile, AgentRegistry
 from budgets import BudgetManager
 from core import EventBus

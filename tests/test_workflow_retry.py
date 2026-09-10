@@ -5,6 +5,11 @@ afford its estimated_cost) previously stayed stuck forever - there was no
 way to resume a workflow once the department's budget was topped up. This
 adds and tests that path.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from workflows import WorkflowEngine, WorkflowStep, WorkflowTemplate, WorkflowStatus, StepStatus
 from budgets import BudgetManager
 

@@ -10,6 +10,11 @@ that gap.
 Runs entirely in an isolated tempfile.TemporaryDirectory() with a copy of
 the real config.json, so it never touches the actual repo's data/ files.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import contextlib
 import io
 import json
@@ -19,7 +24,7 @@ import tempfile
 
 import main_v2
 
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # tests/ -> repo root
 
 
 def print_section(title: str):

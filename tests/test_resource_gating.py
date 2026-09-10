@@ -7,6 +7,11 @@ Covers the integration gap called out in prior daily progress notes:
 budgets.py/CapacityManager existed but nothing in the execution path used
 them, and decide_on_task() was defined but never called from run().
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from core import EventBus
 from llm_provider import LLMProvider
 from task_executor_v2 import DepartmentHeadAgent

@@ -3,6 +3,11 @@
 Test script demonstrating workflow orchestration.
 Shows multi-step workflows with approval gates and dependencies.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from workflows import (
     workflow_engine, create_feature_request_workflow,
     create_bug_fix_workflow, WorkflowStatus, StepStatus

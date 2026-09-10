@@ -24,6 +24,11 @@ only ever wrongly excluding the latter (which also silently skewed the
 mean upward whenever some agents had a real zero value alongside others
 that didn't).
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from performance import PerformanceAnalytics
 
 

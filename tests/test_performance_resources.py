@@ -7,6 +7,11 @@ three separate reports nobody looks at together.
 Uses injected, isolated BudgetManager/CapacityManager/AgentRegistry
 instances throughout so this doesn't touch the shared data/ files.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from agent_state import AgentProfile, AgentRegistry
 from performance import PerformanceAnalytics
 from budgets import BudgetManager, CapacityManager

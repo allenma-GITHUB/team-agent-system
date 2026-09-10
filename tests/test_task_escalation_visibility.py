@@ -38,6 +38,11 @@ a future checkpoint; this one closes the more common and more damaging
 gap in the plain task queue that main_v2.py process/list/show/status
 all read from.)
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import contextlib
 import io
 import json
@@ -53,7 +58,7 @@ from budgets import BudgetManager, CapacityManager
 from performance import PerformanceAnalytics
 from llm_provider import LLMProvider
 
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # tests/ -> repo root
 
 
 def print_section(title: str):

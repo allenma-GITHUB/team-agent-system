@@ -26,6 +26,11 @@ Runs in an isolated tempfile.TemporaryDirectory() (main_v2 pieces) plus
 isolated BudgetManager data files (budgets pieces) - never touches the
 real repo's data/ files.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import contextlib
 import io
 import json
@@ -38,7 +43,7 @@ import tempfile
 import main_v2
 from budgets import BudgetManager
 
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # tests/ -> repo root
 
 
 def print_section(title: str):

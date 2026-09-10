@@ -6,6 +6,11 @@ them. Before this, a department stuck at 95% utilization stayed there
 forever even while another sat at 5% - nothing ever acted on the signal.
 Uses isolated BudgetManager instances throughout, matching today's DI pattern.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from budgets import BudgetManager, CapacityManager
 from agent_state import AgentRegistry
 from strategy import StrategicPlanner

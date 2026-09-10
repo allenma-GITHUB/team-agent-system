@@ -7,6 +7,11 @@ actually did. Uses a fake executor here (no real LLM/budget dependency) to
 test the bridge mechanics in isolation; the real bridge to
 task_executor_v2.TaskExecutor is validated separately via the CLI.
 """
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from workflows import WorkflowEngine, WorkflowStep, WorkflowTemplate, StepStatus
 
 
