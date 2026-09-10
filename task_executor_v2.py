@@ -44,17 +44,37 @@ class DepartmentHeadAgent(BaseAgent):
         else:
             self.agent_state = self.agent_state_registry.get(self.agent_id)
             if not self.agent_state:
-                # Fallback: create default state for this department
-                profile = AgentProfile(
-                    agent_id=self.agent_id,
-                    name=f"{department.title()} Manager",
-                    agent_type="ManagerAgent",
-                    department=department,
-                    expertise_areas=[department],
-                    skill_level=3,
-                    capabilities=["delegation", "execution"],
-                    constraints=[]
-                )
+                # Prefer config.json's own definition for this specific
+                # agent_id (e.g. "engineering_head": skill_level 4,
+                # SpecialistAgent, real capabilities/constraints) over a
+                # generic stub - config.json already describes richer
+                # profiles for the five built-in department heads, but
+                # nothing was reading them until now.
+                agent_config = DepartmentManager.get_agent_config(self.agent_id)
+                if agent_config:
+                    profile = AgentProfile(
+                        agent_id=self.agent_id,
+                        name=agent_config.get("name", f"{department.title()} Manager"),
+                        agent_type=agent_config.get("type", "ManagerAgent"),
+                        department=department,
+                        expertise_areas=agent_config.get("expertise_areas", [department]),
+                        skill_level=agent_config.get("skill_level", 3),
+                        capabilities=agent_config.get("capabilities", ["delegation", "execution"]),
+                        constraints=agent_config.get("constraints", []),
+                        max_concurrent_tasks=agent_config.get("max_concurrent_tasks", 3)
+                    )
+                else:
+                    # Fallback: generic default state for a department config.json doesn't name
+                    profile = AgentProfile(
+                        agent_id=self.agent_id,
+                        name=f"{department.title()} Manager",
+                        agent_type="ManagerAgent",
+                        department=department,
+                        expertise_areas=[department],
+                        skill_level=3,
+                        capabilities=["delegation", "execution"],
+                        constraints=[]
+                    )
                 self.agent_state = self.agent_state_registry.register(profile)
 
         # Compensation: derived from the agent's own seniority (agent_type,

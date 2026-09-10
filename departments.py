@@ -3,7 +3,7 @@ Department Management - Routing and department definitions.
 """
 import json
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 # Keyword-based effort tiers for estimate_hours(). Deliberately coarse: this
 # is a starting default for --hours when a caller doesn't supply one, not a
@@ -94,6 +94,19 @@ class DepartmentManager:
         config = DepartmentManager.load_config()
         dept_config = config.get("departments", {}).get(department, {})
         return dept_config.get("monthly_budget", 10000)
+
+    @staticmethod
+    def get_agent_config(agent_id: str) -> Optional[Dict]:
+        """Get this agent's config.json definition (under "agents"), if any.
+
+        agent_id is expected to match config.json's keys directly - e.g.
+        "engineering_head", the same id DepartmentHeadAgent constructs as
+        f"{department}_head". Returns None if config.json has no entry for
+        this specific agent (most departments other than the five defined
+        ones, or a custom department).
+        """
+        config = DepartmentManager.load_config()
+        return config.get("agents", {}).get(agent_id)
 
     @staticmethod
     def create_department(name: str, keywords: List[str], staff_count: int = 5):

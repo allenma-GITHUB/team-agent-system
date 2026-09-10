@@ -660,6 +660,49 @@ Followed the roadmap directly this time rather than a bug-hunt: with Phases 2-4'
 
 ---
 
+## 🎯 FIFTEENTH CHECKPOINT TODAY: config.json'S AGENT PROFILES WERE NEVER LOADED
+
+**Summary:** Flagged as a discovered-but-out-of-scope gap at the end of the previous checkpoint: validating compensation showed `engineering_head` and `design_head` both getting the exact same generic `skill_level=3` fallback profile, despite `config.json` defining `skill_level: 4` for both (and different `max_concurrent_tasks`, capabilities, and constraints per department). Nothing had ever read `config.json`'s `"agents"` section into the registry - every department head was, for compensation and decision-making purposes, identical regardless of what `config.json` said about it.
+
+### ✅ What Changed
+
+**`departments.py`**
+- New `DepartmentManager.get_agent_config(agent_id)`: looks up `config.json`'s `"agents"` section by exact id (`"engineering_head"`, etc. - the same id `DepartmentHeadAgent` already constructs as `f"{department}_head"`), returns `None` if this specific agent isn't named there
+
+**`task_executor_v2.py`**
+- `DepartmentHeadAgent.__init__`'s fallback-profile branch now checks `get_agent_config()` first: if `config.json` defines this agent, builds its `AgentProfile` from that (real `skill_level`, `agent_type`, `expertise_areas`, `capabilities`, `constraints`, `max_concurrent_tasks`); only falls through to the generic stub (`skill_level=3`, `ManagerAgent`, minimal capabilities) for a department `config.json` doesn't name
+
+**`test_config_agent_profiles.py` (new)** — three scenarios, all passing and idempotent:
+1. `engineering_head` loads `config.json`'s real `skill_level` (`4`, not the generic fallback's `3`), `max_concurrent_tasks` (`4`), and capabilities (`code_review`, etc.) - and its derived `cost_per_hour` reflects that real skill level (`$210/hr`, not the `$180/hr` a skill-3 profile would produce)
+2. `engineering` and `design` get *different* profiles from each other (`max_concurrent_tasks` 4 vs. 3) - this was the actual bug: every department head collapsed into one identical generic profile
+3. A department `config.json` doesn't name still falls back to exactly the old generic stub, unchanged - purely additive
+
+### 🔧 Why This Didn't Break Anything Already Passing
+
+Checked before writing a single line: every one of the fifteen existing test files that construct a `DepartmentHeadAgent`/`TaskExecutor.execute()` directly uses a fictional `qa_*`-prefixed department name, never a real one (`engineering`, `design`, etc.) - `config.json` has no entry for any of those, so `get_agent_config()` returns `None` for all of them and every existing test's fallback-stub-based expectations are completely undisturbed. Confirmed by running the full suite immediately after the change, before writing the new test.
+
+### ✅ Validation
+
+- `python -m py_compile` clean
+- End-to-end CLI run in a temp directory: `submit --hours 2` for both `engineering` and `design`, `process`, `status` showed `$420` spent for each (`2h * $210/hr`, up from the pre-fix `$360` at the generic skill-3 rate) and `data/agent_states.json` confirmed both registered at `skill_level: 4`
+- `test_config_agent_profiles.py`: all 3 scenarios pass, run twice back-to-back to confirm idempotency
+- Full suite (17 test files now): all pass unmodified, confirming zero impact on every pre-existing test
+
+### 📝 Next Steps
+
+- Only the five built-in department heads have `config.json` entries; `ceo`, `tech_lead`, and `product_coordinator` are defined there too but nothing in `task_executor_v2.py` ever constructs a `DepartmentHeadAgent` for those roles specifically (there's no leader/specialist/coordinator execution path, just department heads)
+- Optionally migrate the earlier pre-DI test files to use full injection now that the capability exists
+- `main_v2.py`'s task pipeline and `workflows.py`'s workflow pipeline are still two entirely separate systems
+
+### 📂 Files Modified
+
+- `departments.py` (`get_agent_config()`)
+- `task_executor_v2.py` (`DepartmentHeadAgent` prefers `config.json`'s own profile over the generic stub)
+- `test_config_agent_profiles.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT
