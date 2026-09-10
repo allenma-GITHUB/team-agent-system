@@ -60,6 +60,13 @@ class DepartmentManager:
         return dept_config.get("staff", 5)
 
     @staticmethod
+    def get_monthly_budget(department: str) -> float:
+        """Get the configured monthly budget for a department."""
+        config = DepartmentManager.load_config()
+        dept_config = config.get("departments", {}).get(department, {})
+        return dept_config.get("monthly_budget", 10000)
+
+    @staticmethod
     def create_department(name: str, keywords: List[str], staff_count: int = 5):
         """Create a new department."""
         config = DepartmentManager.load_config()

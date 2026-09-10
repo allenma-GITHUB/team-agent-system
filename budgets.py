@@ -107,6 +107,16 @@ class BudgetManager:
         self.save()
         return self.budgets[department]
 
+    def ensure_allocated(self, department: str, amount: float, period: str = "monthly") -> DepartmentBudget:
+        """Allocate a starting budget only if the department doesn't have one yet.
+
+        Lets callers seed a default budget on first use (e.g. from config.json)
+        without resetting spend that's already been tracked for the period.
+        """
+        if department not in self.budgets:
+            return self.allocate(department, amount, period)
+        return self.budgets[department]
+
     def get_budget(self, department: str) -> Optional[DepartmentBudget]:
         return self.budgets.get(department)
 

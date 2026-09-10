@@ -9,6 +9,7 @@ from core import EventBus, agent_registry, BaseAgent
 from departments import DepartmentManager
 from agent_state import agent_registry as agent_state_registry, AgentState, AgentProfile
 from agent_decisions import AgentDecisionEngine, DecisionContext
+from budgets import budget_manager, capacity_manager
 
 
 class DepartmentHeadAgent(BaseAgent):
@@ -19,11 +20,12 @@ class DepartmentHeadAgent(BaseAgent):
     """
 
     def __init__(self, department: str, agent_state: Optional[AgentState] = None,
-                 llm_provider=None, **kwargs):
+                 llm_provider=None, cost_per_hour: float = 100.0, **kwargs):
         super().__init__(**kwargs)
         self.department = department
         self.agent_id = f"{department}_head"
         self.llm = llm_provider
+        self.cost_per_hour = cost_per_hour
 
         # Use provided state or load from registry
         if agent_state:
@@ -43,6 +45,10 @@ class DepartmentHeadAgent(BaseAgent):
                     constraints=[]
                 )
                 self.agent_state = agent_state_registry.register(profile)
+
+        # Seed a department budget from config.json on first use; leaves an
+        # already-tracked period's spend alone on subsequent runs.
+        budget_manager.ensure_allocated(department, DepartmentManager.get_monthly_budget(department))
 
     def decide_on_task(self, task: str, estimated_hours: float = 1.0) -> Dict[str, Any]:
         """Use decision engine to decide how to handle the task."""
@@ -71,12 +77,49 @@ class DepartmentHeadAgent(BaseAgent):
             "assigned_agent_id": decision.assigned_agent_id,
             "requires_approval": decision.approval_required,
             "confidence": decision.confidence,
-            "context": decision_context
+            "context": decision_context,
+            "raw_decision": decision  # agent_decisions.DecisionResult, for the budget bridge below
         }
 
-    def run(self, task: str, **kwargs) -> Dict[str, Any]:
+    def run(self, task: str, estimated_hours: float = 1.0, **kwargs) -> Dict[str, Any]:
         self._emit("agent_start", {"task": task, "department": self.department, "agent_id": self.agent_id})
         start = time.time()
+
+        # Staffing capacity is informational for now (there's no cross-department
+        # rerouting yet), but a stretched-thin department should show up in traces.
+        capacity = capacity_manager.snapshot(self.department)
+        self._emit("capacity_check", {
+            "utilization": capacity.utilization_pct(),
+            "agent_count": capacity.agent_count,
+            "slack": capacity.slack()
+        })
+
+        decision = self.decide_on_task(task, estimated_hours=estimated_hours)["raw_decision"]
+
+        if decision.decision == "escalate":
+            self._emit("task_escalated", {"reasoning": decision.reasoning})
+            return {
+                "analysis": f"Escalated, not executed: {decision.reasoning}",
+                "department": self.department,
+                "agent_id": self.agent_id,
+                "status": "escalated",
+                "approved": False
+            }
+
+        if decision.approval_required:
+            approved, reason = budget_manager.approve_decision(
+                decision, department=self.department, cost_per_hour=self.cost_per_hour
+            )
+            self._emit("budget_check", {"approved": approved, "reason": reason})
+            if not approved:
+                self._emit("task_escalated", {"reasoning": f"Budget denied: {reason}"})
+                return {
+                    "analysis": f"Escalated, not executed: {reason}",
+                    "department": self.department,
+                    "agent_id": self.agent_id,
+                    "status": "escalated",
+                    "approved": False
+                }
 
         # Check workload
         self.agent_state.add_task()
@@ -138,6 +181,8 @@ class DepartmentHeadAgent(BaseAgent):
             "analysis": analysis,
             "department": self.department,
             "agent_id": self.agent_id,
+            "status": "completed",
+            "approved": True,
             "llm_provider": provider_used,
             "tokens_used": tokens_used,
             "quality_score": quality_score,

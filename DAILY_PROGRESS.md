@@ -1,3 +1,63 @@
+# Daily Progress Report - September 10, 2026
+
+## 🎯 PHASE 3 FOLLOW-UP: WIRE BUDGETS & CAPACITY INTO TASK EXECUTION
+
+**Summary:** Yesterday's `budgets.py` was a standalone, tested module — nothing in the execution path actually called it, and `DepartmentHeadAgent.decide_on_task()` (from Phase 1) was defined but never invoked from `run()`. Today closes that gap: department heads now check capacity, run the decision engine, and clear a real budget check *before* doing (and billing) any work, instead of executing unconditionally.
+
+### ✅ What Changed
+
+**`task_executor_v2.py` — `DepartmentHeadAgent`**
+- `run()` now, before touching the LLM:
+  1. Takes a `capacity_manager.snapshot()` of the department and emits it as a `capacity_check` event (informational for now — no cross-department rerouting yet, but a stretched-thin department now shows up in traces)
+  2. Calls `decide_on_task()` (previously defined, never called) and short-circuits to an `escalated` result — no LLM call, no spend — if the decision engine can't find anyone to do the work
+  3. If the decision requires approval, calls `budget_manager.approve_decision()` (the bridge added yesterday) against the department's real budget; a denial escalates the same way, without spending anything
+- Added `cost_per_hour` (default $100) as a constructor param so the estimated cost of approval-requiring work is configurable per agent
+- `decide_on_task()` now also returns the raw `agent_decisions.DecisionResult` (`raw_decision` key) so `run()` can feed it straight into `budget_manager.approve_decision()`
+- Constructor now calls `budget_manager.ensure_allocated(department, ...)` to seed a starting budget from `config.json` on first use
+
+**`departments.py`**
+- Added `DepartmentManager.get_monthly_budget(department)`, reading the `monthly_budget` field added to `config.json` yesterday (falls back to $10,000 if unset), mirroring the existing `get_staff_count()`
+
+**`budgets.py`**
+- Added `BudgetManager.ensure_allocated()`: allocates a starting budget only if the department doesn't have one yet, so re-running the system doesn't reset a period's tracked spend every time an agent is constructed
+
+**`test_resource_gating.py` (new)** — four scenarios, all passing:
+1. A normal short task executes without needing approval (no budget check happens at all)
+2. Every run emits a `capacity_check` event with department utilization
+3. A task big enough to require approval, against a healthy budget, executes and the budget shows the spend
+4. The same task against a budget that can't afford it: escalates, `$0` spent, no LLM call made — the gate actually blocks work rather than just logging a warning
+
+### 🔧 Design Decisions
+
+- **Escalation is a real short-circuit, not a warning.** Both the "no available delegate" and "budget denied" paths return before the workload counter is incremented or the LLM is called — the point of yesterday's budget module was to make spend preventable, not just visible after the fact.
+- **Approval-gated cost only, for now.** Budget is only drawn on when `decision.approval_required` is true (large/complex tasks). Routine tasks still run for free in this model. Metering the actual per-task LLM cost against budget regardless of approval level is a reasonable next step but a separate change — didn't fold it in to keep today's diff reviewable.
+- **Capacity is observational only.** `capacity_check` is emitted every run but nothing yet reroutes work away from an over-capacity department — there's no cross-department task handoff in `TaskExecutor` to reroute *to*. Recording it now means the data needed for that decision already exists in traces once handoff exists.
+- **Test data hygiene.** `test_resource_gating.py` uses fresh `qa_*` department names via the *shared* `agent_state_registry`/`budget_manager` singletons (since `DepartmentHeadAgent` doesn't take a registry override), so after running it I reverted `data/agent_states.json` to HEAD and deleted the freshly-created `data/budgets.json` rather than committing test fixtures into shared state.
+
+### ✅ Validation
+
+- `python -m py_compile` clean on all `.py` files
+- `test_resource_gating.py`: all 4 scenarios pass
+- Re-ran `test_agent_decisions.py`, `test_performance.py`, `test_workflows.py`, `test_budgets.py`: all still pass
+- Re-ran `test_resource_gating.py` a second time from a fully cleaned state to confirm it's reproducible, not order-dependent on leftover files
+
+### 📝 Next Steps
+
+- Meter actual LLM/labor cost against budget on every task, not just approval-gated ones
+- Use an over-capacity `capacity_check` to actually redirect work (once `TaskExecutor` supports cross-department handoff) instead of just logging it
+- Wire the same `reserve_funds()`/`confirm_reservation()` flow into `workflows.py`'s existing "Budget Approval" step
+- Give `DepartmentHeadAgent` an injectable registry (like `test_budgets.py`'s isolated `AgentRegistry`) so integration tests don't have to touch shared state at all
+
+### 📂 Files Modified
+
+- `task_executor_v2.py` (capacity/decision/budget gating in `DepartmentHeadAgent.run()`)
+- `departments.py` (added `get_monthly_budget()`)
+- `budgets.py` (added `BudgetManager.ensure_allocated()`)
+- `test_resource_gating.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT
