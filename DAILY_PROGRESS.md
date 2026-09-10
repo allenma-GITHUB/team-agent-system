@@ -703,6 +703,57 @@ Checked before writing a single line: every one of the fifteen existing test fil
 
 ---
 
+## 🎯 SIXTEENTH CHECKPOINT TODAY: WORKFLOW STEPS ACTUALLY GET DONE NOW
+
+**Summary:** The biggest remaining gap standing between "a tested state machine" and "an autonomous business simulation": `workflow complete <instance_id> <step_id>` marked a step done by recording a hand-typed placeholder (`{"completed_via": "cli"}`) - no department, no agent, no LLM call, no budget draw, ever actually did the work. `main_v2.py`'s task pipeline (`submit`/`process`) and `workflows.py`'s workflow pipeline had been two entirely separate systems all day, flagged as a next step in four earlier checkpoints. Bridged them.
+
+### ✅ What Changed
+
+**`workflows.py`**
+- New `WorkflowEngine.execute_step(instance_id, step_id, executor)`: looks up the step's real department and description, calls `executor.execute(department, description)`, and records the *actual* returned result via the existing `complete_step()` - instead of a caller supplying a placeholder
+- `executor` is duck-typed (any object with `execute(department, description) -> dict`) rather than importing `task_executor_v2.TaskExecutor` directly - keeps `workflows.py` from taking on a hard dependency on the execution layer just to describe workflow shape, while still working directly with the real `TaskExecutor`
+
+**`main_v2.py`**
+- `workflow_complete()` now constructs a `TaskExecutor` and calls `workflow_engine.execute_step()` instead of hand-building a placeholder result - a step's completion now runs through the *exact same* budget/capacity/decision-engine gates every other task in the system goes through
+
+**`test_workflow_execution.py` (new)** — three scenarios, all passing and idempotent, using a `FakeExecutor` (no real LLM/budget dependency, so the bridge mechanics are tested in isolation from the real execution layer):
+1. `execute_step()` calls the executor with the step's real `owner_department` and a description built from the step's name/description, not a placeholder
+2. The step's stored result is the executor's actual return value
+3. An unknown instance or step id fails cleanly (`False`, no crash) and never calls the executor at all
+
+### 🔧 How This Was Validated (And What It Revealed)
+
+Ran the real bridge - `TaskExecutor`, real `LLMProvider`, real budgets - end to end via the CLI in a temp directory, not just the fake-executor unit test:
+- `bug_fix`'s "Bug Triage" step, owned by `support`: `workflow complete` actually spun up `support_head` (loading its real `config.json` profile from checkpoint 15), ran the mock LLM, and drew exactly `$180` (`1h * $180/hr`, `support_head`'s real derived rate) from `support`'s budget - visible immediately in `status`
+- `feature_request`'s "Design Specification" step (`requires_approval`, `$3,000` reservation from checkpoint 2): executing it drew a *separate* `$210` (`design_head`'s own per-task labor cost) on top of the still-held `$3,000` reservation, and approving afterward correctly settled to `$3,210` total (`$210` execution + `$3,000` confirmed reservation) - the two budget mechanisms (a workflow step's own line-item cost vs. the department agent's per-task labor cost) compose additively without double-charging or conflict, which is the economically sensible outcome, not a bug to fix
+
+### 🔧 Design Decisions
+
+- **Duck-typed executor, not an import.** `WorkflowEngine.execute_step()` never imports `TaskExecutor` - it just calls `.execute(department, description)` on whatever it's given. This is exactly the pattern `budgets.py`/`performance.py` already use for injectable dependencies, applied here to avoid a real architectural coupling (workflows describing shape vs. task_executor doing work) rather than just for test isolation.
+- **`execute_step()` performs work, `approve_step()` still grants approval - deliberately not merged.** A step requiring approval still needs both calls in sequence. Collapsing them would mean "the work got done" and "a human/role signed off on it" become the same action, which defeats the purpose of `requires_approval` existing at all.
+
+### ✅ Validation
+
+- `python -m py_compile` clean
+- `test_workflow_execution.py`: all 3 scenarios pass (fake executor, no shared state)
+- Full end-to-end CLI validation of the *real* bridge: `bug_fix`'s triage step (real budget draw, confirmed via `status`) and `feature_request`'s approval-gated design step (confirmed the two budget mechanisms compose correctly)
+- Full suite (18 test files now): all pass
+
+### 📝 Next Steps
+
+- `workflow_next()` still only *shows* the next step - a caller has to separately call `workflow complete` to actually run it. Could auto-execute non-approval steps on `next` directly, closing the loop further
+- Only the five built-in department heads have `config.json` profiles; there's still no execution path at all for `ceo`/`tech_lead`/`product_coordinator` roles
+- Optionally migrate the earlier pre-DI test files to use full injection now that the capability exists
+
+### 📂 Files Modified
+
+- `workflows.py` (`WorkflowEngine.execute_step()`)
+- `main_v2.py` (`workflow_complete()` uses the real executor bridge)
+- `test_workflow_execution.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT

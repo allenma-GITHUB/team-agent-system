@@ -229,6 +229,34 @@ class WorkflowEngine:
         self.save()
         return True
 
+    def execute_step(self, instance_id: str, step_id: str, executor) -> bool:
+        """Run a step through an executor and mark it complete with the
+        real result, instead of requiring a caller to hand-type a
+        placeholder result for work nobody actually did.
+
+        `executor` is duck-typed - anything with an
+        `execute(department, description) -> dict` method works (e.g.
+        task_executor_v2.TaskExecutor). Kept duck-typed rather than
+        importing TaskExecutor directly so workflows.py doesn't take on a
+        hard dependency on the execution layer just to describe workflows.
+
+        A step requiring approval still needs a separate approve_step()
+        call afterward - this only performs and records the work, it
+        doesn't grant approval.
+        """
+        instance = self.instances.get(instance_id)
+        if not instance:
+            return False
+
+        template = self.templates.get(instance.workflow_id)
+        step = template.get_step_by_id(step_id) if template else None
+        if not step:
+            return False
+
+        task_description = f"{step.name}: {step.description}" if step.description else step.name
+        result = executor.execute(step.owner_department, task_description)
+        return self.complete_step(instance_id, step_id, result)
+
     @staticmethod
     def _budget_reference(instance_id: str, step_id: str) -> str:
         """Namespaced reservation key so workflow holds don't collide with

@@ -282,10 +282,20 @@ def workflow_next(instance_id: str):
 
 
 def workflow_complete(instance_id: str, step_id: str):
-    """Mark a (non-approval) step as complete."""
+    """Execute a step through the responsible department (real budget,
+    capacity, and decision-engine checks apply) and mark it complete with
+    the real result, instead of a hand-typed placeholder."""
     init_workflows()
-    ok = workflow_engine.complete_step(instance_id, step_id, {"completed_via": "cli"})
-    print(f"✓ Step '{step_id}' marked complete" if ok else f"Could not complete step '{step_id}'")
+    executor = TaskExecutor(LLMProvider())
+    ok = workflow_engine.execute_step(instance_id, step_id, executor)
+    if ok:
+        instance = workflow_engine.get_instance(instance_id)
+        result = instance.step_results.get(step_id, {})
+        print(f"✓ Step '{step_id}' executed and marked complete")
+        if result.get("summary"):
+            print(f"  {result['summary']}")
+    else:
+        print(f"Could not complete step '{step_id}' (check the instance/step id)")
 
 
 def workflow_approve(instance_id: str, step_id: str, approved: bool):
