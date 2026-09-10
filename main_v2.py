@@ -13,6 +13,12 @@ from departments import DepartmentManager
 from core import EventBus
 from budgets import budget_manager, capacity_manager
 from performance import analytics
+from workflows import workflow_engine, create_feature_request_workflow, create_bug_fix_workflow
+
+WORKFLOW_TEMPLATES = {
+    "feature_request": create_feature_request_workflow,
+    "bug_fix": create_bug_fix_workflow,
+}
 
 DATA_DIR = Path("data")
 TASKS_FILE = DATA_DIR / "tasks.json"
@@ -213,6 +219,106 @@ def show_report():
     print(analytics.generate_report())
 
 
+def init_workflows():
+    """Re-register known workflow templates. They're never persisted (see
+    workflows.py) - only instances are - so this must run before any
+    workflow command that reads or advances an instance."""
+    for factory in WORKFLOW_TEMPLATES.values():
+        workflow_engine.register_template(factory())
+
+
+def workflow_list():
+    """List available workflow templates."""
+    init_workflows()
+    print("\n📋 Available Workflow Templates:")
+    for template_id, factory in WORKFLOW_TEMPLATES.items():
+        template = factory()
+        print(f"  {template_id:<18} {template.name} ({len(template.steps)} steps)")
+
+
+def workflow_start(template_id: str, input_pairs: list):
+    """Create and start a new workflow instance from a template."""
+    init_workflows()
+    if template_id not in WORKFLOW_TEMPLATES:
+        print(f"Unknown workflow template: {template_id}")
+        print(f"Available: {', '.join(WORKFLOW_TEMPLATES.keys())}")
+        return
+
+    input_data = {}
+    for pair in input_pairs:
+        if "=" in pair:
+            key, value = pair.split("=", 1)
+            input_data[key] = value
+
+    instance = workflow_engine.create_instance(template_id, input_data)
+    workflow_engine.start_instance(instance.instance_id)
+    print(f"✓ Started '{instance.workflow_name}' -> instance {instance.instance_id}")
+
+
+def workflow_next(instance_id: str):
+    """Advance to (and show) the next step of a workflow instance."""
+    init_workflows()
+    instance = workflow_engine.get_instance(instance_id)
+    if not instance:
+        print(f"No such workflow instance: {instance_id}")
+        return
+
+    step = workflow_engine.get_next_step(instance_id)
+    if step:
+        approval = f" [needs approval: {step.approval_role}]" if step.requires_approval else ""
+        cost = f" [${step.estimated_cost:,.0f} from {step.budget_dept()}]" if step.estimated_cost > 0 else ""
+        print(f"→ Next step: {step.name} ({step.owner_department}){approval}{cost}")
+        print(f"  step_id: {step.step_id}")
+    elif instance.status.value == "escalated":
+        print(f"⚠ Blocked: {instance.error}")
+        print(f"  Try: python main_v2.py workflow retry {instance_id}")
+    elif instance.is_complete():
+        print(f"✓ Workflow already complete (status: {instance.status.value})")
+    else:
+        print(f"No next step available (status: {instance.status.value})")
+
+
+def workflow_complete(instance_id: str, step_id: str):
+    """Mark a (non-approval) step as complete."""
+    init_workflows()
+    ok = workflow_engine.complete_step(instance_id, step_id, {"completed_via": "cli"})
+    print(f"✓ Step '{step_id}' marked complete" if ok else f"Could not complete step '{step_id}'")
+
+
+def workflow_approve(instance_id: str, step_id: str, approved: bool):
+    """Approve or reject a step requiring approval."""
+    init_workflows()
+    ok = workflow_engine.approve_step(instance_id, step_id, approved)
+    verb = "approved" if approved else "rejected"
+    print(f"✓ Step '{step_id}' {verb}" if ok else f"Could not act on step '{step_id}'")
+
+
+def workflow_retry(instance_id: str):
+    """Retry a step that's BLOCKED on insufficient budget."""
+    init_workflows()
+    resumed, reason = workflow_engine.retry_blocked_step(instance_id)
+    print(f"✓ Resumed: {reason}" if resumed else f"✗ Still blocked: {reason}")
+
+
+def workflow_status(instance_id: str):
+    """Show full status of a workflow instance."""
+    init_workflows()
+    status = workflow_engine.get_status(instance_id)
+    if not status:
+        print(f"No such workflow instance: {instance_id}")
+        return
+
+    print(f"\nWorkflow: {status['workflow_name']} ({status['instance_id']})")
+    print(f"Status: {status['status']}")
+    print(f"Progress: {status['progress']:.0%}")
+    print(f"Current step: {status['current_step']}")
+    if status["error"]:
+        print(f"Error: {status['error']}")
+    print("Steps:")
+    for step_id, step_status in status["step_statuses"].items():
+        print(f"  {step_id:<20} {step_status}")
+
+
 def main():
     if len(sys.argv) < 2:
         print("Team Agent System v2 - CLI with Event Bus & Parallel Execution")
@@ -223,11 +329,19 @@ def main():
         print("  python main_v2.py show <task_id>")
         print("  python main_v2.py status")
         print("  python main_v2.py report")
+        print("  python main_v2.py workflow list")
+        print("  python main_v2.py workflow start <template_id> [key=value ...]")
+        print("  python main_v2.py workflow next <instance_id>")
+        print("  python main_v2.py workflow complete <instance_id> <step_id>")
+        print("  python main_v2.py workflow approve <instance_id> <step_id> [--reject]")
+        print("  python main_v2.py workflow retry <instance_id>")
+        print("  python main_v2.py workflow status <instance_id>")
         print("\nExample:")
         print("  python main_v2.py submit 'Fix login bug'")
         print("  python main_v2.py process          # Parallel by default")
         print("  python main_v2.py process --sequential  # Force sequential")
         print("  python main_v2.py report           # Quality, cost, budget & capacity in one report")
+        print("  python main_v2.py workflow start feature_request title='Dark mode'")
         return
 
     command = sys.argv[1]
@@ -266,6 +380,48 @@ def main():
 
     elif command == "report":
         show_report()
+
+    elif command == "workflow":
+        if len(sys.argv) < 3:
+            print("Usage: python main_v2.py workflow <list|start|next|complete|approve|retry|status> ...")
+            return
+        sub = sys.argv[2]
+
+        if sub == "list":
+            workflow_list()
+        elif sub == "start":
+            if len(sys.argv) < 4:
+                print("Usage: python main_v2.py workflow start <template_id> [key=value ...]")
+                return
+            workflow_start(sys.argv[3], sys.argv[4:])
+        elif sub == "next":
+            if len(sys.argv) < 4:
+                print("Usage: python main_v2.py workflow next <instance_id>")
+                return
+            workflow_next(sys.argv[3])
+        elif sub == "complete":
+            if len(sys.argv) < 5:
+                print("Usage: python main_v2.py workflow complete <instance_id> <step_id>")
+                return
+            workflow_complete(sys.argv[3], sys.argv[4])
+        elif sub == "approve":
+            if len(sys.argv) < 5:
+                print("Usage: python main_v2.py workflow approve <instance_id> <step_id> [--reject]")
+                return
+            approved = "--reject" not in sys.argv
+            workflow_approve(sys.argv[3], sys.argv[4], approved)
+        elif sub == "retry":
+            if len(sys.argv) < 4:
+                print("Usage: python main_v2.py workflow retry <instance_id>")
+                return
+            workflow_retry(sys.argv[3])
+        elif sub == "status":
+            if len(sys.argv) < 4:
+                print("Usage: python main_v2.py workflow status <instance_id>")
+                return
+            workflow_status(sys.argv[3])
+        else:
+            print(f"Unknown workflow subcommand: {sub}")
 
     else:
         print(f"Unknown command: {command}")

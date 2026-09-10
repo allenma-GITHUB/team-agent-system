@@ -466,6 +466,47 @@ Not by running code and seeing a wrong answer, this time - by reading `WorkflowE
 
 ---
 
+## 🎯 ELEVENTH CHECKPOINT TODAY: WORKFLOWS ARE FINALLY REACHABLE FROM THE CLI
+
+**Summary:** The previous checkpoint fixed the reason a workflow CLI would have been pointless (no persistence); this one builds the CLI surface itself. Before today, `workflows.py` was purely test/script-only - a working, tested engine nobody could actually drive without writing Python.
+
+### ✅ What Changed
+
+**`main_v2.py`**
+- New `workflow` command group: `list`, `start <template_id> [key=value ...]`, `next <instance_id>`, `complete <instance_id> <step_id>`, `approve <instance_id> <step_id> [--reject]`, `retry <instance_id>`, `status <instance_id>`
+- `init_workflows()` re-registers both known templates (`feature_request`, `bug_fix`) at the start of every workflow command - required because (per the previous checkpoint) templates are never persisted, only instances are
+- `workflow_next()` distinguishes three outcomes instead of just "step or nothing": an executable next step (with its approval/cost info printed inline), a `BLOCKED`/`ESCALATED` instance (prints the reason and suggests `workflow retry`), or a genuinely complete/exhausted instance
+
+### 🔧 How This Was Found And Validated
+
+Same "run it for real" pattern as every CLI checkpoint today. Ran the entire lifecycle as separate `python3` process invocations (not a single Python session) in an isolated temp directory, proving persistence actually works end-to-end through the CLI, not just in `test_workflow_persistence.py`:
+1. `start feature_request` → `next` (Intake) → `complete` → `next` (Design, `$3,000` from design's budget, needs approval) → `approve` → `status` shows `29%` progress, `design: approved` — then re-ran `status` as a *third* separate process and got the identical output
+2. `start bug_fix` with a deliberately tiny `engineering` budget → `next`/`complete` through triage and fix → `next` on Verification correctly reports `⚠ Blocked: ... Insufficient budget` and suggests the retry command → `retry` (still broke) fails with the same reason → topped up the budget → `retry` succeeds → `status` shows the resumed step `in_progress`
+
+### 🔧 Design Decisions
+
+- **No dedicated CLI unit test file, matching the `status`/`report` commands from earlier today.** These functions are thin wrappers around already-unit-tested `WorkflowEngine` methods; the value is in exercising the real process-boundary behavior (persistence, template re-registration, argument parsing), which only an actual multi-process CLI run demonstrates - a unit test importing the wrapper functions directly would share the same Python process and miss exactly the bug class the previous checkpoint fixed.
+- **`workflow_next()`'s three-way branch is deliberate.** Collapsing "blocked" and "genuinely nothing to do" into one message would hide the one piece of information a user needs most when a workflow stalls: whether there's an action (`retry`) or not.
+
+### ✅ Validation
+
+- `python -m py_compile` clean
+- Full end-to-end CLI runs (multiple separate process invocations) for both `feature_request` (happy path with a real budget-gated approval) and `bug_fix` (block → retry-fails → top-up → retry-succeeds)
+- Full suite (13 test files, unmodified): all pass
+
+### 📝 Next Steps
+
+- Optionally migrate the eight pre-DI test files to use full injection now that the capability exists
+- `DepartmentManager.route_task()` still has no auto-estimation of `estimated_hours` from task text
+- `main_v2.py`'s `submit`/`process` task pipeline and `workflows.py`'s workflow pipeline are still two entirely separate systems (a submitted task never becomes a workflow step and vice versa) - worth deciding whether/how they should connect
+
+### 📂 Files Modified
+
+- `main_v2.py` (new `workflow` command group: list/start/next/complete/approve/retry/status)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT
