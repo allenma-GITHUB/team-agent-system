@@ -507,6 +507,54 @@ Same "run it for real" pattern as every CLI checkpoint today. Ran the entire lif
 
 ---
 
+## 🎯 TWELFTH CHECKPOINT TODAY: TASKS NO LONGER DEFAULT TO A FLAT 1.0h
+
+**Summary:** The last standing item from the "estimated_hours" thread that's run through several of today's checkpoints: `submit`ting a task without `--hours` always defaulted to exactly `1.0h`, so "fix a typo" and "full platform migration" were billed and measured identically unless a human remembered the flag. Added a small keyword-based heuristic default - always overridable, never a substitute for a real estimate.
+
+### ✅ What Changed
+
+**`departments.py`**
+- New `DepartmentManager.estimate_hours(description)`: scans the description for `HIGH_EFFORT_KEYWORDS` (migration, redesign, overhaul, rewrite, rearchitect, platform → `16.0h`) or `LOW_EFFORT_KEYWORDS` (typo, quick, small, minor, tweak, trivial, copy change → `0.5h`), falling back to the unchanged `1.0h` default when neither matches. If a description matches both tiers, high-effort wins - understating a genuinely large task is the worse failure mode of the two.
+
+**`main_v2.py`**
+- `submit_task()`'s `estimated_hours` param now defaults to `None`, and resolves via `DepartmentManager.estimate_hours(description)` when the caller doesn't supply one - mirroring the existing `department=None` → `route_task()` pattern already used for department routing
+- The `submit` CLI command's `--hours` parsing simplified accordingly: `None` when not given, letting `submit_task()` do the heuristic lookup, instead of computing it in the argument-parsing block
+
+**`test_effort_estimation.py` (new)** — five scenarios, all passing and idempotent:
+1. Low-effort keywords estimate `0.5h`
+2. High-effort keywords estimate `16.0h`
+3. A neutral description falls back to `1.0h`
+4. A description matching both tiers resolves to the high-effort estimate
+5. `submit_task()` uses the heuristic by default but an explicit `estimated_hours` still overrides it - run against a fully isolated `tempfile.TemporaryDirectory()`, not the shared `data/tasks.json`
+
+### 🔧 Design Decisions
+
+- **The default lives in `submit_task()`, not the CLI argument parser.** Resolving `None` → heuristic inside the function itself (like `department=None` → `route_task()`) means *any* caller of `submit_task()` gets the smart default, not just the one CLI code path that happened to compute it. A future second caller (a batch import script, say) gets this for free.
+- **Explicit always beats heuristic, unconditionally.** `--hours 99` on a description containing "quick" and "typo" still resolves to `99.0`, verified directly - the heuristic is scoped strictly to "the caller didn't say," never treated as a correction to what they did say.
+- **Coarse and keyword-only, deliberately.** This isn't meant to be a good estimator - it's meant to stop a flat, uniform default from making every duration/cost metric in the system (several of which today's earlier checkpoints just went to the trouble of fixing) trivially wrong for the common case of *not* passing `--hours`. A real system would get its estimate from a human or the `feature_request` workflow's own "Engineering Estimate" step.
+
+### ✅ Validation
+
+- `python -m py_compile` clean
+- End-to-end CLI run in a temp directory: four submits (typo fix, platform migration, ordinary task, and an explicit `--hours 99` override) all produced the expected `estimated_hours` in `data/tasks.json`
+- `test_effort_estimation.py`: all 5 scenarios pass, run twice back-to-back to confirm idempotency (fully isolated via `tempfile.TemporaryDirectory()`, so no shared-state cleanup needed for this one)
+- Full suite (14 test files now): all pass
+
+### 📝 Next Steps
+
+- Optionally migrate the eight pre-DI test files to use full injection now that the capability exists
+- `main_v2.py`'s task pipeline (`submit`/`process`) and `workflows.py`'s workflow pipeline are still two entirely separate systems
+- The keyword lists are hardcoded constants in `departments.py`; if departments end up wanting different effort vocabularies, they'd need to move into `config.json` the way department keywords already did
+
+### 📂 Files Modified
+
+- `departments.py` (`estimate_hours()`, effort-tier keyword constants)
+- `main_v2.py` (`submit_task()` defaults to the heuristic when `estimated_hours` isn't given)
+- `test_effort_estimation.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT

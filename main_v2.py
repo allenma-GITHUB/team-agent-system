@@ -34,7 +34,7 @@ def init_system():
         TASKS_FILE.write_text(json.dumps([], indent=2))
 
 
-def submit_task(description: str, department=None, estimated_hours: float = 1.0):
+def submit_task(description: str, department=None, estimated_hours: float = None):
     """Submit a new task."""
     init_system()
 
@@ -43,6 +43,8 @@ def submit_task(description: str, department=None, estimated_hours: float = 1.0)
 
     if not department:
         department = DepartmentManager.route_task(description)
+    if estimated_hours is None:
+        estimated_hours = DepartmentManager.estimate_hours(description)
 
     task = {
         "id": task_id,
@@ -354,7 +356,9 @@ def main():
         dept = None
         if "--dept" in sys.argv:
             dept = sys.argv[sys.argv.index("--dept") + 1]
-        hours = 1.0
+        # None -> submit_task() falls back to a keyword-based estimate
+        # instead of a flat 1.0h; --hours always wins if supplied.
+        hours = None
         if "--hours" in sys.argv:
             hours = float(sys.argv[sys.argv.index("--hours") + 1])
         submit_task(desc, dept, estimated_hours=hours)
