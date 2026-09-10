@@ -324,6 +324,52 @@ Same as the previous checkpoint - running the real CLI pipeline (`submit --hours
 
 ---
 
+## 🎯 EIGHTH CHECKPOINT TODAY: WORKFLOW RETRY, BUG-FIX COST PARITY, AND A REAL BUG CAUGHT BY THE NEW TEST
+
+**Summary:** Two remaining items from the workflow-budget checkpoint: the `bug_fix` template's "Verification" step had no cost (an asymmetry with `feature_request`'s costed steps), and a `BLOCKED` workflow step had no way to resume - it stayed stuck forever even after the department's budget was topped up. Fixing the second one surfaced a real bug in the first workflow-budget checkpoint's code.
+
+### ✅ What Changed
+
+**`workflows.py`**
+- `create_bug_fix_workflow()`'s "Verification" step now costs `$500` against `engineering`'s budget (lighter than the feature workflow's `$3,000`/`$15,000` steps, matching a fast-track bug fix)
+- New `WorkflowEngine.retry_blocked_step(instance_id)`: re-attempts a `BLOCKED` step's budget reservation (e.g. after a top-up or reallocation). On success, flips the step back to `IN_PROGRESS` and the workflow back to `IN_PROGRESS`; on failure, updates the error message and stays blocked - it doesn't raise or silently no-op
+- **Bug fix**: `get_next_step()`'s blocked branch never set `instance.current_step` before returning `None` - so a blocked instance had no record of *which* step was blocked, and `retry_blocked_step()` (which reads `instance.current_step`) could never find it. Now sets it in both the success and blocked paths.
+
+**`test_workflow_retry.py` (new)** — three scenarios, all passing and idempotent:
+1. A step blocked for insufficient funds resumes correctly once the department's budget is topped up, and can then be approved normally
+2. Retrying again with still-insufficient funds fails cleanly (correct error message, stays blocked) rather than crashing
+3. Retrying a workflow with nothing blocked is a clean no-op ("No blocked step to retry"), not a silent success
+
+### 🔧 How This Was Found
+
+Writing the retry test the straightforward way - block a step, top up the budget, call `retry_blocked_step()`, expect it to succeed - failed immediately with "No blocked step to retry" even though the step was visibly `BLOCKED` in `instance.step_status`. That's what led to checking `get_next_step()`'s blocked branch and finding `instance.current_step` was never assigned there, only in the success path a few lines below it.
+
+### 🔧 Design Decisions
+
+- **Retry doesn't retry automatically.** `retry_blocked_step()` is deliberately a manual call, not something the engine polls for on its own - there's no background loop in this system, and auto-retrying on every unrelated event would be surprising. A caller (CLI command, scheduled check, etc.) decides when it's worth trying again.
+- **Bug caught by writing the test the way a real caller would use the feature**, not by reading the implementation and confirming it matched itself - the same "run the actual pipeline" lesson from the two checkpoints before this one, just applied to a unit test instead of the CLI.
+
+### ✅ Validation
+
+- `python -m py_compile` clean
+- `test_workflow_retry.py`: all 3 scenarios pass, run twice back-to-back to confirm idempotency
+- Full suite (11 test files now, spanning all eight of today's checkpoints): all pass
+- Re-ran `test_workflows.py` specifically to confirm the bug_fix workflow's new `$500` verification cost doesn't change its existing (unmodified) test's behavior
+
+### 📝 Next Steps
+
+- Apply the injectable-dependency pattern to `DepartmentHeadAgent` so its own tests can stop touching the shared global registries
+- `DepartmentManager.route_task()` still has no auto-estimation of `estimated_hours` from task text - it's a manual `--hours` flag only
+- `retry_blocked_step()` has no CLI surface yet (`main_v2.py` has no workflow commands at all - workflows are still test/script-only, unlike task execution)
+
+### 📂 Files Modified
+
+- `workflows.py` (`retry_blocked_step()`, bug_fix "Verification" cost, `current_step` bug fix)
+- `test_workflow_retry.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT

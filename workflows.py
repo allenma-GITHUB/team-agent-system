@@ -3,7 +3,7 @@ Workflow Engine - Coordinates multi-step tasks across agents and departments.
 Enables complex business processes like feature requests, bug fixes, and reviews.
 """
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Callable, Any
+from typing import Dict, List, Optional, Callable, Any, Tuple
 from enum import Enum
 import json
 import time
@@ -203,6 +203,36 @@ class WorkflowEngine:
 
         return True
 
+    def retry_blocked_step(self, instance_id: str) -> Tuple[bool, str]:
+        """Re-attempt a BLOCKED step's budget reservation - e.g. after the
+        department's budget has been topped up for a new period. A step
+        stays BLOCKED/the workflow stays ESCALATED forever otherwise; this
+        is the only way out short of abandoning the instance."""
+        instance = self.instances.get(instance_id)
+        if not instance:
+            return False, "Instance not found"
+
+        step_id = instance.current_step
+        if not step_id or instance.step_status.get(step_id) != StepStatus.BLOCKED:
+            return False, "No blocked step to retry"
+
+        template = self.templates.get(instance.workflow_id)
+        step = template.get_step_by_id(step_id) if template else None
+        if not step:
+            return False, "Step definition not found"
+
+        department = step.budget_dept()
+        reference = self._budget_reference(instance_id, step_id)
+        reserved, reason = budget_manager.reserve_funds(department, reference, step.estimated_cost)
+        if not reserved:
+            instance.error = f"Step '{step.name}' still blocked: {reason}"
+            return False, reason
+
+        instance.step_status[step_id] = StepStatus.IN_PROGRESS
+        instance.status = WorkflowStatus.IN_PROGRESS
+        instance.error = None
+        return True, "Resumed"
+
     def get_next_step(self, instance_id: str) -> Optional[WorkflowStep]:
         """Get next step to execute. A step requiring approval with a non-zero
         estimated_cost must first reserve that amount from its department's
@@ -232,6 +262,7 @@ class WorkflowEngine:
             reference = self._budget_reference(instance_id, next_step.step_id)
             reserved, reason = budget_manager.reserve_funds(department, reference, next_step.estimated_cost)
             if not reserved:
+                instance.current_step = next_step.step_id
                 instance.step_status[next_step.step_id] = StepStatus.BLOCKED
                 instance.status = WorkflowStatus.ESCALATED
                 instance.error = f"Step '{next_step.name}' blocked: {reason}"
@@ -386,7 +417,8 @@ def create_bug_fix_workflow() -> WorkflowTemplate:
                 description="Verify fix works",
                 depends_on=["fix"],
                 requires_approval=True,
-                approval_role="tech_lead"
+                approval_role="tech_lead",
+                estimated_cost=500  # fast-track bug fix: lighter cost than a full feature's QA step
             ),
             WorkflowStep(
                 step_id="deploy",
