@@ -10,6 +10,7 @@ from departments import DepartmentManager
 from agent_state import agent_registry as agent_state_registry, AgentState, AgentProfile
 from agent_decisions import AgentDecisionEngine, DecisionContext
 from budgets import budget_manager, capacity_manager
+from performance import analytics
 
 
 class DepartmentHeadAgent(BaseAgent):
@@ -161,12 +162,24 @@ class DepartmentHeadAgent(BaseAgent):
                 quality_score = 2.0
 
         duration = time.time() - start
+        mock_cost = tokens_used * 0.00001
 
-        # Record performance
+        # Record performance - both the per-agent learning state (used for
+        # delegation/preference decisions) and the org-wide analytics report
+        # (performance.py), which otherwise never hears about any task run.
         self.agent_state.record_performance(
             quality=quality_score,
             hours=duration / 3600.0,
-            cost=tokens_used * 0.00001,  # Mock cost
+            cost=mock_cost,
+            success=quality_score >= 3.0
+        )
+        analytics.record_task(
+            agent_id=self.agent_id,
+            agent_name=self.agent_state.profile.name,
+            department=self.department,
+            quality=quality_score,
+            duration=duration / 3600.0,
+            cost=mock_cost,
             success=quality_score >= 3.0
         )
 

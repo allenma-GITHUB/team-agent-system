@@ -188,6 +188,56 @@
 
 ---
 
+## 🎯 FIFTH CHECKPOINT TODAY: CLI ACCESS + A REAL ANALYTICS-WIRING GAP
+
+**Summary:** Everything built today lived behind test scripts - there was no way to see budget, capacity, or the new resource report through the actual CLI (`main_v2.py`). Wiring that in surfaced a second, more fundamental gap while validating it end-to-end: `performance.analytics.record_task()` - the whole point of Phase 4 - was defined but **never called from anywhere**. Running real tasks through the CLI updated `agent_state`'s own per-agent metrics but never told `PerformanceAnalytics` a single task had happened, so `report`'s "Total Tasks" was always `0` no matter how much work ran. Fixed both.
+
+### ✅ What Changed
+
+**`main_v2.py`**
+- `show_status()` now prints a "Budget & Capacity" section per department (spent/allocated, utilization, capacity slots used) plus an over-budget flag, instead of only ever showing task counts
+- Added a `report` command that prints `performance.analytics.generate_report()` - the single quality+cost+budget+capacity view built earlier today, now reachable without writing a script
+
+**`task_executor_v2.py`**
+- `DepartmentHeadAgent.run()` now calls `analytics.record_task()` right alongside the existing `self.agent_state.record_performance()` call, using the same quality/duration/cost/success values. An escalated task (no work done) still correctly records nothing.
+
+**`test_analytics_wiring.py` (new)** — three scenarios, all passing and idempotent (verified by running twice back-to-back):
+1. A completed task increments that agent's `AgentMetrics.tasks_completed` in `performance.analytics`
+2. An escalated task (budget denied) records nothing - no phantom "completed" work for something that never ran
+3. `generate_report()`'s System Overview reflects tasks recorded this way
+
+### 🔧 How This Was Found
+
+Validating the new `report` CLI command end-to-end (not just unit tests) against a temp working directory: after `submit` + `process`-ing two real tasks, `report` showed `Total Tasks: 0`. That's the kind of gap a unit test written against the same blind spot wouldn't have caught - the fix came from actually running the feature, per the "test in a browser/CLI, not just the test suite" principle.
+
+### 🔧 Design Decisions
+
+- **Isolated CLI validation, not a repo-polluting one.** Every path `main_v2.py` touches (`config.json`, `data/tasks.json`, `data/agent_states.json`, `data/budgets.json`) is relative to the process's *working directory*, not the script's location - so `submit`/`process`/`report` were exercised from a throwaway temp directory (with `config.json` copied in) rather than against the real committed `data/tasks.json`, which already had genuine task history in it.
+- **Record the same numbers, don't recompute them.** `analytics.record_task()` is called with the exact same `quality_score`/`duration`/`mock_cost`/`success` values already computed for `agent_state.record_performance()`, so the two metrics systems can't silently disagree about what happened in a given run.
+
+### ✅ Validation
+
+- `python -m py_compile` clean on all `.py` files
+- End-to-end CLI run in an isolated temp directory: `submit` x2 → `process` → `status` (shows real budget/capacity per department) → `report` (showed `Total Tasks: 0` before the fix, `Total Tasks: 2` after)
+- `test_analytics_wiring.py`: all 3 scenarios pass, run twice back-to-back to confirm idempotency
+- Full suite (all 8 test files including today's five checkpoints): all pass
+
+### 📝 Next Steps
+
+- `avg_turnaround_time` in the report is currently near-zero because mock-mode LLM calls are instant wall-clock time, not the task's real `estimated_hours` - worth deciding which of the two "duration" concepts (wall-clock vs. business estimate) `performance.py` should actually track
+- A `resume_step()`/retry path for `BLOCKED` workflow steps once budget frees up
+- Give the `bug_fix` workflow's "Verification" step a real cost too
+- Apply the injectable-dependency pattern (used for `PerformanceAnalytics.generate_report()` today) to `DepartmentHeadAgent` so its own tests can stop touching the shared global registries
+
+### 📂 Files Modified
+
+- `main_v2.py` (`status` shows budget/capacity, new `report` command)
+- `task_executor_v2.py` (`run()` now calls `analytics.record_task()`)
+- `test_analytics_wiring.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT

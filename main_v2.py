@@ -11,6 +11,8 @@ from llm_provider import LLMProvider
 from task_executor_v2 import TaskExecutor
 from departments import DepartmentManager
 from core import EventBus
+from budgets import budget_manager, capacity_manager
+from performance import analytics
 
 DATA_DIR = Path("data")
 TASKS_FILE = DATA_DIR / "tasks.json"
@@ -185,6 +187,28 @@ def show_status():
         dept_tasks = [t for t in tasks if t["department"] == dept]
         print(f"  {dept.title():<15} {len(dept_tasks):>2} tasks")
 
+    print(f"\n💰 Budget & Capacity:")
+    for dept in DepartmentManager.get_departments():
+        budget = budget_manager.get_budget(dept)
+        snapshot = capacity_manager.snapshot(dept)
+        if budget:
+            budget_str = f"${budget.spent:,.0f}/${budget.allocated:,.0f} spent ({budget.utilization_pct():.0%})"
+        else:
+            budget_str = "not yet allocated"
+        capacity_str = (f"{snapshot.current_workload}/{snapshot.total_capacity} tasks "
+                         f"({snapshot.utilization_pct():.0%})" if snapshot.total_capacity > 0
+                         else "no agents registered")
+        print(f"  {dept.title():<15} budget: {budget_str:<38} capacity: {capacity_str}")
+
+    over_budget = budget_manager.over_budget_departments()
+    if over_budget:
+        print(f"\n  [!] Over-budget: {', '.join(over_budget)}")
+
+
+def show_report():
+    """Show the full performance report: quality, cost, budget, and capacity together."""
+    print(analytics.generate_report())
+
 
 def main():
     if len(sys.argv) < 2:
@@ -195,10 +219,12 @@ def main():
         print("  python main_v2.py list [--status STATUS]")
         print("  python main_v2.py show <task_id>")
         print("  python main_v2.py status")
+        print("  python main_v2.py report")
         print("\nExample:")
         print("  python main_v2.py submit 'Fix login bug'")
         print("  python main_v2.py process          # Parallel by default")
         print("  python main_v2.py process --sequential  # Force sequential")
+        print("  python main_v2.py report           # Quality, cost, budget & capacity in one report")
         return
 
     command = sys.argv[1]
@@ -231,6 +257,9 @@ def main():
 
     elif command == "status":
         show_status()
+
+    elif command == "report":
+        show_report()
 
     else:
         print(f"Unknown command: {command}")
