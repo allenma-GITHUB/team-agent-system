@@ -4,6 +4,7 @@ Now with autonomous agent decision-making and performance tracking.
 """
 from typing import Dict, Any, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 import time
 from core import EventBus, agent_registry, BaseAgent
 from departments import DepartmentManager
@@ -28,6 +29,16 @@ class DepartmentHeadAgent(BaseAgent):
         self.department = department
         self.agent_id = f"{department}_head"
         self.llm = llm_provider
+
+        # TaskExecutor caches one DepartmentHeadAgent per department and
+        # reuses it across worker threads, so two tasks routed to the same
+        # department can call run() on this exact object concurrently. Every
+        # mutation below (workload, budget spend, performance metrics) is a
+        # non-atomic read-modify-write on shared state - without this lock,
+        # concurrent runs silently lose updates (confirmed: 30 concurrent
+        # same-department tasks recorded as few as 28 completions and
+        # correspondingly short budget spend, with zero errors reported).
+        self._lock = threading.Lock()
 
         # Every dependency below defaults to the shared global singleton
         # (same behavior as before), but a caller - typically a test that
@@ -119,6 +130,22 @@ class DepartmentHeadAgent(BaseAgent):
         }
 
     def run(self, task: str, estimated_hours: float = 1.0, **kwargs) -> Dict[str, Any]:
+        """Serialized per-agent: TaskExecutor reuses one DepartmentHeadAgent
+        per department across worker threads, and every mutation this method
+        makes (workload, budget, performance metrics) is a non-atomic
+        read-modify-write on state shared by every task in this department.
+        Concurrent runs on the same agent without this lock silently lose
+        updates - see the comment on self._lock in __init__ for the
+        confirmed repro. Tasks in *different* departments still run fully
+        in parallel; only same-department tasks serialize here, which is
+        also the correct place to pay that cost - a real (non-mock) LLM
+        call's network latency happens inside this lock too, but that's the
+        same tradeoff every other resource-constrained system makes to stay
+        correct rather than merely fast."""
+        with self._lock:
+            return self._run_locked(task, estimated_hours, **kwargs)
+
+    def _run_locked(self, task: str, estimated_hours: float = 1.0, **kwargs) -> Dict[str, Any]:
         self._emit("agent_start", {"task": task, "department": self.department, "agent_id": self.agent_id})
         start = time.time()
 

@@ -964,6 +964,54 @@ While isolating a test to investigate the bug cleanly, discovered `WorkflowEngin
 
 ---
 
+## 🎯 TWENTY-SECOND CHECKPOINT TODAY: A SECOND, MORE SERIOUS CONCURRENCY BUG
+
+**Summary:** The previous checkpoint's own Next Steps said to apply the same "called twice" review angle elsewhere rather than assume the rest of today's work was equally clean. Took that literally and looked at `TaskExecutor.execute_parallel()` - the one feature that predates today entirely (Day 1's "parallel execution") but which today's checkpoints (budget spend, workload tracking, analytics recording) gave real, observable failure consequences for the first time. Found a second, more serious bug: silent data loss under concurrent load, with zero errors reported to the caller.
+
+### 🐛 The Bug
+
+`TaskExecutor.get_agent_for_department()` caches one `DepartmentHeadAgent` per department and reuses it across every worker thread in the pool. Two tasks routed to the *same* department in the same `execute_parallel()` batch therefore call `run()` on the exact same agent object concurrently. Every mutation inside `run()` - `self.agent_state.add_task()`/`remove_task()`, the budget check and spend, `agent_state.record_performance()`, `analytics.record_task()` - is a non-atomic read-modify-write on state shared by every thread touching that department, with no lock anywhere.
+
+Confirmed with a concrete repro: 30 tasks submitted to one department, processed with 8 worker threads. `execute_parallel()` reported **zero errors** - every task individually "succeeded" - but `analytics.get_agent_metrics()` showed only **28** `tasks_completed`, and the department's budget was short by exactly the two missing tasks' cost. Two completions' bookkeeping vanished into a lost-update race with no trace of failure anywhere a caller would see.
+
+### ✅ What Changed
+
+**`task_executor_v2.py`**
+- `DepartmentHeadAgent.__init__` gains `self._lock = threading.Lock()`
+- `run()` is now a thin wrapper that acquires the lock and delegates to a new `_run_locked()` holding the original body - same fix as checkpoint 21's `get_next_step()`, but here the fix is "serialize this agent's work" rather than "make this call idempotent," since the correctness problem is genuinely about protecting one agent's mutable state across threads
+
+**`test_concurrent_same_department.py` (new)** — three scenarios, all passing and idempotent:
+1. 30 concurrent same-department tasks (8 workers) record exactly 30 completions and exactly `30 * hourly_rate` spent - not fewer, and workload settles back to exactly `0`
+2. The same stress scenario repeated three times stays correct each time - a race that only shows up occasionally would still be a real bug, so "passed once" wasn't good enough
+3. Four different-department tasks still complete well under a wall-clock bound that would only be possible if they ran concurrently, confirming the fix serializes only *same*-department work and doesn't collapse the whole feature into sequential execution
+
+### 🔧 Design Decisions
+
+- **Whole-method lock, not fine-grained locks scattered across `agent_state.py`/`budgets.py`/`performance.py`.** All the at-risk mutations funnel through this one method for a given agent; locking at that single choke point guarantees nothing is missed, at the cost of serializing a real (non-mock) LLM call's network latency for same-department tasks too. That's the correct tradeoff: correctness over a micro-optimization that would need three separate modules' internals touched and re-verified to get right, and different-department tasks - the common case - are unaffected.
+- **Verified the fix doesn't just fix task 1 - reran the exact repro three times, plus a wall-clock check that cross-department parallelism survived.** The stress test is randomized-timing-dependent by nature; a single passing run proves less than three, and "the bug is gone" isn't the same claim as "concurrent code still runs concurrently."
+
+### ✅ Validation
+
+- `python -m py_compile` clean
+- The exact 30-task repro re-run three times after the fix: `tasks_completed`, `workload`, and `spent` exactly correct every time (previously non-deterministic and short)
+- Re-verified through the real CLI: 10 tasks submitted to `engineering` in one batch, processed in parallel, `report` showed exactly `Total Tasks: 10` and `Budget Spent: $2,100.00` (`10 * $210/hr`, `engineering_head`'s real config-derived rate) - no loss
+- `test_concurrent_same_department.py`: all 3 scenarios pass, run twice back-to-back
+- Full suite (21 test files now): all pass
+
+### 📝 Next Steps
+
+- No execution path exists for `ceo`/`tech_lead`/`product_coordinator` roles specifically
+- `workflow_next()` still only shows the next step rather than auto-executing non-approval ones (deliberately left as-is)
+- Two real bugs found by deliberate review in two consecutive checkpoints suggests a third pass is worth doing before assuming the review is complete - `agent_decisions.py`'s `find_best_delegate()` and `OrganizationDecisionMaker` haven't been looked at with this lens yet
+
+### 📂 Files Modified
+
+- `task_executor_v2.py` (per-agent lock around `run()`)
+- `test_concurrent_same_department.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT
