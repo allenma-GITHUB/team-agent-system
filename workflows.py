@@ -252,6 +252,15 @@ class WorkflowEngine:
         if not instance:
             return False
 
+        # Idempotent no-op for a step that's already done - without this,
+        # calling `workflow complete` again on the same step (e.g. a
+        # confused retry, or a double-click in some future UI) silently
+        # re-runs the department's task a second time: double billing,
+        # double workload/performance-metric increments, all through code
+        # that has no idea it's redoing already-completed work.
+        if instance.step_status.get(step_id) in (StepStatus.COMPLETED, StepStatus.APPROVED):
+            return True
+
         template = self.templates.get(instance.workflow_id)
         step = template.get_step_by_id(step_id) if template else None
         if not step:

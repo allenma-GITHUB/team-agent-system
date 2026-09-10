@@ -1,5 +1,19 @@
 # Daily Progress Report - September 10, 2026
 
+## 🐛 CHECKPOINT 29: `workflow complete` WAS NOT IDEMPOTENT - DOUBLE BILLING ON A REPEAT CALL
+
+**Found while probing workflow CLI idempotency** — the same class of bug fixed for `get_next_step()` back in checkpoint 21 (calling it twice re-attempted a reservation and wrongly blocked a healthy step), but this time in `execute_step()`: calling `workflow complete <instance> <step>` a *second* time on a step that was already `COMPLETED` re-ran the department's task through the executor all over again. `complete_step()` just overwrote `step_results[step_id]` with the new result, with no check that the step was already done.
+
+**Confirmed via a real repro:** `workflow start bug_fix`, `workflow next`, then `workflow complete <iid> triage` three times in a row. Support's `budget.spent` went from the correct `$180` (one real execution) to `$360` after a second call — a full second charge for work that had already been billed, plus a second round of workload/performance-metric increments on the department's agent, for a step the workflow itself still only counted once in its progress percentage.
+
+### ✅ Fix
+
+`WorkflowEngine.execute_step()` (`workflows.py`) now checks `instance.step_status.get(step_id)` before touching the executor: if it's already `COMPLETED` or `APPROVED`, it returns `True` immediately without re-running anything or re-billing — the same "idempotent no-op for already-done work" shape as the earlier `get_next_step()` fix.
+
+**New test:** `test_workflow_execute_step_idempotent.py` — a `CountingExecutor` that tracks real invocations; asserts calling `execute_step()` three times on the same step only executes once, and that an already-`APPROVED` step is likewise skipped. Run twice back-to-back (clean both times); full 27-file suite re-run clean afterward. Verified live via the real CLI: three `workflow complete` calls on the same step leave `budget.spent` at $180, not $540.
+
+---
+
 ## 🐛 CHECKPOINT 28: WORKFLOW STEPS HAD THE SAME "ESCALATED = COMPLETED" BUG
 
 **Direct follow-up to checkpoint 27**, closing the gap explicitly flagged as left for later: `WorkflowEngine.execute_step()` had the identical hole as `TaskExecutor.execute()`/`process_tasks()` (now fixed), just one layer up. It called `executor.execute(...)` and then unconditionally `self.complete_step(instance_id, step_id, result)` — marking the step `COMPLETED` even when the executor's result said `status == "escalated"`. Confirmed via the same repro used to discover checkpoint 27: drain a department's budget, `workflow start bug_fix`, `workflow complete <iid> triage` — the step was marked `COMPLETED` with a `step_result` whose own `analysis` field read "Escalated, not executed: Insufficient budget...".
