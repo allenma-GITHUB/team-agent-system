@@ -159,7 +159,7 @@ class AgentDecisionEngine:
         needs_approval = self.requires_approval(context)
 
         return DecisionResult(
-            decision="execute" if not needs_approval else "execute",
+            decision="execute",
             assigned_agent_id=self.agent.profile.agent_id,
             reasoning=f"Executing with skill level {self.agent.profile.skill_level}/5, affinity: {self.agent.learned_preferences.get(context.task_type, 0):.1f}",
             confidence=min(0.95, 0.5 + self.agent.profile.skill_level * 0.1),
