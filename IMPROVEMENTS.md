@@ -1,5 +1,14 @@
 # Team Agent System - Improvements from OpenJarvis
 
+> **⚠️ Historical design proposal, not current documentation.** Written
+> during the v1→v2 transition; its "Current" examples describe the
+> then-existing `main.py`/v1 behavior, which no longer exists in this repo.
+> Most of what's proposed below has since been built (and much more besides
+> - see **[README.md](README.md)** for the current system and
+> **[DAILY_PROGRESS.md](DAILY_PROGRESS.md)** for what was actually
+> implemented and when). Left below unedited as a historical record of the
+> original rationale.
+
 ## OpenJarvis Learnings
 
 OpenJarvis (Stanford SAIL) is a local-first AI framework that shows best practices for:

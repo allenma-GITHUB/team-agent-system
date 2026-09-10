@@ -3,10 +3,24 @@ Agent State & Profile - Tracks agent identity, performance, and learned preferen
 Enables autonomous decision-making based on past experience and capabilities.
 """
 import json
+import threading
 from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional
 from datetime import datetime
 from pathlib import Path
+
+# Base hourly compensation by agent_type, before the skill_level multiplier.
+# An unrecognized agent_type falls back to the flat rate this system used
+# uniformly for every agent before compensation existed.
+BASE_HOURLY_RATE_BY_TYPE = {
+    "LeaderAgent": 250.0,
+    "SpecialistAgent": 180.0,
+    "ManagerAgent": 150.0,
+    "CoordinatorAgent": 120.0,
+}
+DEFAULT_BASE_HOURLY_RATE = 100.0
+SKILL_MULTIPLIER_BASE = 0.6
+SKILL_MULTIPLIER_PER_LEVEL = 0.2  # skill 1 -> 0.8x, skill 3 -> 1.2x, skill 5 -> 1.6x
 
 
 @dataclass
@@ -22,6 +36,13 @@ class AgentProfile:
     constraints: List[str]
     max_concurrent_tasks: int = 3
     max_hours_per_week: float = 40.0
+
+    def hourly_rate(self) -> float:
+        """Derive an hourly cost from agent_type and skill_level, instead of
+        billing every agent identically regardless of seniority."""
+        base = BASE_HOURLY_RATE_BY_TYPE.get(self.agent_type, DEFAULT_BASE_HOURLY_RATE)
+        multiplier = SKILL_MULTIPLIER_BASE + (SKILL_MULTIPLIER_PER_LEVEL * self.skill_level)
+        return round(base * multiplier, 2)
 
 
 @dataclass
@@ -104,6 +125,11 @@ class AgentRegistry:
     def __init__(self, data_file: str = "data/agent_states.json"):
         self.data_file = Path(data_file)
         self.agents: Dict[str, AgentState] = {}
+        # Guards register()'s check-then-act (below) - two threads racing to
+        # register the same brand-new agent_id for the first time could
+        # otherwise each create and cache a separate AgentState, one of
+        # which silently loses every update made to it afterward.
+        self._register_lock = threading.Lock()
         self.load()
 
     def load(self):
@@ -151,13 +177,17 @@ class AgentRegistry:
             json.dump(data, f, indent=2)
 
     def register(self, profile: AgentProfile) -> AgentState:
-        """Register a new agent or return existing."""
+        """Register a new agent or return existing. Double-checked locking:
+        the common case (already registered) never touches the lock."""
         if profile.agent_id in self.agents:
             return self.agents[profile.agent_id]
 
-        state = AgentState(profile=profile)
-        self.agents[profile.agent_id] = state
-        self.save()
+        with self._register_lock:
+            if profile.agent_id in self.agents:  # another thread may have won the race
+                return self.agents[profile.agent_id]
+            state = AgentState(profile=profile)
+            self.agents[profile.agent_id] = state
+            self.save()
         return state
 
     def get(self, agent_id: str) -> Optional[AgentState]:

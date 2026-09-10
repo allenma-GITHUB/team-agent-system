@@ -13,7 +13,8 @@
         "fix",
         "error"
       ],
-      "staff": 5
+      "staff": 5,
+      "monthly_budget": 50000
     },
     "design": {
       "keywords": [
@@ -27,7 +28,8 @@
         "interface",
         "styling"
       ],
-      "staff": 5
+      "staff": 5,
+      "monthly_budget": 30000
     },
     "support": {
       "keywords": [
@@ -40,7 +42,8 @@
         "problem",
         "complaint"
       ],
-      "staff": 5
+      "staff": 5,
+      "monthly_budget": 25000
     },
     "research": {
       "keywords": [
@@ -53,7 +56,8 @@
         "findings",
         "statistics"
       ],
-      "staff": 5
+      "staff": 5,
+      "monthly_budget": 20000
     },
     "sales": {
       "keywords": [
@@ -66,7 +70,8 @@
         "business",
         "contract"
       ],
-      "staff": 5
+      "staff": 5,
+      "monthly_budget": 35000
     }
   },
   "agents": {

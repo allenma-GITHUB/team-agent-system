@@ -1,5 +1,14 @@
 # Team Agent System - Complete Summary
 
+> **⚠️ Historical snapshot, not current documentation.** This was written on
+> day one (references `main.py`/`task_executor.py`, Windows `.bat` launchers,
+> and a roadmap that predates everything actually built) and none of that
+> reflects the system today. For accurate, current documentation see
+> **[README.md](README.md)** and **[QUICKSTART.md](QUICKSTART.md)**; for a
+> day-by-day history of what was actually built, see
+> **[DAILY_PROGRESS.md](DAILY_PROGRESS.md)**. Left below unedited as a
+> historical record.
+
 ## 🎯 What You Have
 
 A **production-grade multi-department AI orchestration system** running locally on your PC with:
