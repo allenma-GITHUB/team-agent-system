@@ -1048,6 +1048,57 @@ Confirmed with a concrete repro: 30 tasks submitted to one department, processed
 
 ---
 
+## 🎯 TWENTY-FOURTH CHECKPOINT TODAY: THE CONCURRENCY FIX HAD ITS OWN RACE CONDITION
+
+**Summary:** Stress-tested checkpoint 22's own fix rather than trusting a single clean run - and it wasn't actually clean. Running the exact 15-department, 5-tasks-each concurrent load repeatedly (not once) failed roughly 1 in 4 times, in a way checkpoint 22's per-agent lock should have prevented. The lock itself was correct; what wasn't protected was *creating* the locked object in the first place.
+
+### 🐛 The Bug
+
+`TaskExecutor.get_agent_for_department()` caches one `DepartmentHeadAgent` per department with a plain `if department not in self.agents: self.agents[department] = DepartmentHeadAgent(...)` - classic check-then-act, no lock. Two worker threads racing to process the *first* task ever routed to a brand-new department can each see "not cached yet" and each construct their own separate `DepartmentHeadAgent` - each with its own separate `threading.Lock()` from checkpoint 22. Two objects for "the same" department don't share a lock, so that fix did nothing to protect them from each other. `AgentRegistry.register()` had the identical check-then-act pattern one layer down, for the same reason.
+
+Confirmed by running the checkpoint-22 repro (30 same-department tasks) many times cleanly, then testing a *different* shape - 15 brand-new departments, 5 tasks each, 16 workers - which failed about 1 run in 4: a department's own recorded completions short by exactly the number of racing duplicate-agent creations, or the shared `expense_log` missing an entry.
+
+### ✅ What Changed
+
+**`task_executor_v2.py`**
+- `TaskExecutor.__init__` gains `self._agents_lock = threading.Lock()`
+- `get_agent_for_department()` now uses double-checked locking: the fast path (agent already cached) never touches the lock; only first-creation re-checks inside it
+
+**`agent_state.py`**
+- `AgentRegistry.__init__` gains `self._register_lock = threading.Lock()`; `register()` gets the same double-checked-locking treatment, for defense in depth at the actual source of the shared state - not just the one call path (`DepartmentHeadAgent.__init__`) that happens to be protected transitively by the `TaskExecutor` fix today
+
+**`test_concurrent_first_creation.py` (new)** — two scenarios, all passing and idempotent:
+1. The 15-brand-new-departments/5-tasks-each/16-workers scenario run 5 times in a row: every run gets exactly 75 total completions, exactly 75 `expense_log` entries, and - checked individually, not just as an aggregate - every single department gets exactly its own 5, not just the right sum
+2. 50 concurrent calls to `get_agent_for_department()` for one never-before-seen department, checked directly: exactly one `DepartmentHeadAgent` object (by identity, not just by department name) is ever created
+
+### 🔧 Design Decisions
+
+- **Distrust a single clean run of a concurrency fix.** Checkpoint 22's fix was correct as far as it went and passed its own test every time - the bug it missed was in a different part of the same code path, only visible under a different load shape (many first-time departments, not many repeats of one). "The lock exists and the test passes" isn't the same claim as "this is race-free" - only running many trials of several different shapes earns that.
+- **Double-checked locking, not a lock held for the whole method.** The common case (an already-cached agent, which is nearly every call after the first) never touches the lock at all; only the narrow first-creation window pays for it.
+- **Fixed it at both the call site and the source.** `TaskExecutor`'s fix alone would have covered the one path exercised today, but `AgentRegistry.register()`'s identical unprotected pattern is a landmine for any future caller that doesn't happen to go through `TaskExecutor` first - fixed there too rather than declaring it out of scope.
+
+### ✅ Validation
+
+- `python -m py_compile` clean
+- The exact bug reproduced first (roughly 1-in-4 failure rate across 15 manual runs), then the fix verified against 15 consecutive clean runs of the same load with zero failures
+- `test_concurrent_first_creation.py`: both scenarios pass, run twice back-to-back
+- Full suite (22 test files now): all pass
+
+### 📝 Next Steps
+
+- A third stress shape worth trying before assuming this area is now clean: many *different* department names created concurrently while an *existing* department is simultaneously under heavy same-department load, mixing both race windows in one run
+- No execution path exists for `ceo`/`tech_lead`/`product_coordinator` roles specifically
+- The two `agent_decisions.py` findings from the previous checkpoint remain open design questions, not further autonomous fixes
+
+### 📂 Files Modified
+
+- `task_executor_v2.py` (`TaskExecutor._agents_lock`, double-checked locking in `get_agent_for_department()`)
+- `agent_state.py` (`AgentRegistry._register_lock`, double-checked locking in `register()`)
+- `test_concurrent_first_creation.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT

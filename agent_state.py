@@ -3,6 +3,7 @@ Agent State & Profile - Tracks agent identity, performance, and learned preferen
 Enables autonomous decision-making based on past experience and capabilities.
 """
 import json
+import threading
 from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional
 from datetime import datetime
@@ -124,6 +125,11 @@ class AgentRegistry:
     def __init__(self, data_file: str = "data/agent_states.json"):
         self.data_file = Path(data_file)
         self.agents: Dict[str, AgentState] = {}
+        # Guards register()'s check-then-act (below) - two threads racing to
+        # register the same brand-new agent_id for the first time could
+        # otherwise each create and cache a separate AgentState, one of
+        # which silently loses every update made to it afterward.
+        self._register_lock = threading.Lock()
         self.load()
 
     def load(self):
@@ -171,13 +177,17 @@ class AgentRegistry:
             json.dump(data, f, indent=2)
 
     def register(self, profile: AgentProfile) -> AgentState:
-        """Register a new agent or return existing."""
+        """Register a new agent or return existing. Double-checked locking:
+        the common case (already registered) never touches the lock."""
         if profile.agent_id in self.agents:
             return self.agents[profile.agent_id]
 
-        state = AgentState(profile=profile)
-        self.agents[profile.agent_id] = state
-        self.save()
+        with self._register_lock:
+            if profile.agent_id in self.agents:  # another thread may have won the race
+                return self.agents[profile.agent_id]
+            state = AgentState(profile=profile)
+            self.agents[profile.agent_id] = state
+            self.save()
         return state
 
     def get(self, agent_id: str) -> Optional[AgentState]:

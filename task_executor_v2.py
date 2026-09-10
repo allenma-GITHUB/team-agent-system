@@ -303,6 +303,16 @@ class TaskExecutor:
         self.bus = bus or EventBus()
         self.max_workers = max_workers
         self.agents = {}
+        # Guards first-creation of each department's cached agent (below) -
+        # without it, two worker threads racing to process the first task
+        # for a brand-new department can each see "not cached yet" and each
+        # construct their own separate DepartmentHeadAgent, each with its
+        # own separate lock. That defeats DepartmentHeadAgent's own
+        # per-agent lock entirely, since it only protects one object at a
+        # time - two objects for "the same" department don't share a lock.
+        # Confirmed by repro: this raced roughly 1 in 4 runs of a
+        # 15-department, 5-tasks-each concurrent load before this fix.
+        self._agents_lock = threading.Lock()
         # Passed through to every DepartmentHeadAgent this executor creates -
         # None means "use the shared global singletons" (unchanged default
         # behavior); a caller can inject isolated instances for full
@@ -314,19 +324,25 @@ class TaskExecutor:
 
     def get_agent_for_department(self, department: str) -> BaseAgent:
         """Get or create an agent for a department. Uses a registered override if
-        one exists (see agent_registry), otherwise the generic LLM-backed head."""
+        one exists (see agent_registry), otherwise the generic LLM-backed head.
+
+        Double-checked locking: the common case (agent already cached) never
+        touches the lock; only the rare first-creation race window does.
+        """
         if department not in self.agents:
-            agent_name = f"{department}_head"
-            if agent_registry.get(agent_name):
-                self.agents[department] = agent_registry.create(agent_name, bus=self.bus, llm_provider=self.llm)
-            else:
-                self.agents[department] = DepartmentHeadAgent(
-                    department, bus=self.bus, llm_provider=self.llm,
-                    agent_state_registry=self.agent_state_registry,
-                    budget_manager=self.budget_manager,
-                    capacity_manager=self.capacity_manager,
-                    analytics=self.analytics
-                )
+            with self._agents_lock:
+                if department not in self.agents:  # re-check: another thread may have won the race
+                    agent_name = f"{department}_head"
+                    if agent_registry.get(agent_name):
+                        self.agents[department] = agent_registry.create(agent_name, bus=self.bus, llm_provider=self.llm)
+                    else:
+                        self.agents[department] = DepartmentHeadAgent(
+                            department, bus=self.bus, llm_provider=self.llm,
+                            agent_state_registry=self.agent_state_registry,
+                            budget_manager=self.budget_manager,
+                            capacity_manager=self.capacity_manager,
+                            analytics=self.analytics
+                        )
 
         return self.agents[department]
 
