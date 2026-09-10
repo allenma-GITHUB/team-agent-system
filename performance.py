@@ -90,10 +90,16 @@ class DepartmentMetrics:
         if not agents:
             return
 
+        # No "> 0" filter here: every entry in `agents` already has at least
+        # one completed task (AgentMetrics is only created by record_task(),
+        # which updates it immediately), so a genuine zero average (e.g. an
+        # agent whose tasks all took 0 hours) is real data, not "no data
+        # yet" - filtering it out would both skew the mean and, when it's
+        # the only agent, crash statistics.mean() on an empty list.
         self.total_tasks = sum(a.tasks_completed for a in agents)
-        self.avg_quality = statistics.mean([a.avg_quality for a in agents if a.avg_quality > 0])
-        self.avg_cost_per_task = statistics.mean([a.cost_per_task for a in agents if a.cost_per_task > 0])
-        self.success_rate = statistics.mean([a.success_rate for a in agents if a.success_rate > 0])
+        self.avg_quality = statistics.mean([a.avg_quality for a in agents])
+        self.avg_cost_per_task = statistics.mean([a.cost_per_task for a in agents])
+        self.success_rate = statistics.mean([a.success_rate for a in agents])
 
 
 @dataclass
@@ -174,11 +180,17 @@ class PerformanceAnalytics:
 
         agents = list(self.agent_metrics.values())
 
+        # No "> 0" filter: `agents` is non-empty (guarded above) and every
+        # entry already has at least one completed task, so a real zero
+        # average is data, not absence of data - see compute_from_agents()
+        # for the crash this used to cause (statistics.mean([]) whenever
+        # every agent's average happened to be exactly 0, e.g. all-0-hour
+        # tasks) and the silent skew it caused otherwise.
         self.system_metrics.total_tasks = sum(a.tasks_completed for a in agents)
         self.system_metrics.total_cost = sum(a.total_cost for a in agents)
-        self.system_metrics.avg_quality = statistics.mean([a.avg_quality for a in agents if a.avg_quality > 0])
-        self.system_metrics.avg_turnaround_time = statistics.mean([a.avg_duration_hours for a in agents if a.avg_duration_hours > 0])
-        self.system_metrics.system_success_rate = statistics.mean([a.success_rate for a in agents if a.success_rate > 0])
+        self.system_metrics.avg_quality = statistics.mean([a.avg_quality for a in agents])
+        self.system_metrics.avg_turnaround_time = statistics.mean([a.avg_duration_hours for a in agents])
+        self.system_metrics.system_success_rate = statistics.mean([a.success_rate for a in agents])
 
         # Find bottlenecks
         slowest_agent = max(agents, key=lambda a: a.avg_duration_hours, default=None)
@@ -232,8 +244,13 @@ class PerformanceAnalytics:
                     "action": f"Redistribute work or expand {agent.name}'s capacity"
                 })
 
-        # Check for bottlenecks
-        system_avg = statistics.mean([a.avg_duration_hours for a in self.agent_metrics.values() if a.avg_duration_hours > 0])
+        # Check for bottlenecks. No "> 0" filter: self.agent_metrics is
+        # non-empty (guarded above) and every entry has at least one
+        # completed task, so a real zero average is data, not "no data"
+        # (see AgentMetrics.update()/record_task()) - filtering it out
+        # both skews this average and can crash statistics.mean() on an
+        # empty list if every agent's average happens to be exactly 0.
+        system_avg = statistics.mean([a.avg_duration_hours for a in self.agent_metrics.values()])
         for agent in self.agent_metrics.values():
             if agent.avg_duration_hours > system_avg * 1.5:
                 recommendations.append({

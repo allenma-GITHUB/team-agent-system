@@ -1,5 +1,21 @@
 # Daily Progress Report - September 10, 2026
 
+## 🐛 CHECKPOINT 30: `report` CRASHED ON ALL-ZERO-DURATION METRICS (A SIDE EFFECT OF CHECKPOINT 25's OWN FIX)
+
+**Found while re-checking the consequences of checkpoint 25's own change** (allowing `--hours 0` as a legitimate estimate for a genuinely free/instant task): `performance.py`'s `get_system_metrics()`, `DepartmentMetrics.compute_from_agents()`, and `get_recommendations()` all computed averages with a `statistics.mean([a.X for a in agents if a.X > 0])` filter — apparently meant to skip agents with "no data yet" (whose metrics default to `0.0` before any task is recorded). That filter can't distinguish "no data" from "real data whose average happens to be exactly 0" — and once `--hours 0` became a legal, supported input, an agent whose only recorded task took 0 hours produces exactly that: a real, meaningful `avg_duration_hours` of `0.0`.
+
+**Confirmed via a real repro:** `submit "free zero-hour task" --dept engineering --hours 0`, `process`, then `report` — crashed with an uncaught `statistics.StatisticsError: mean requires at least one data point`, because the one recorded agent's `avg_duration_hours` was exactly `0.0` and got filtered out, leaving `statistics.mean([])`.
+
+**This was never just a crash risk — it was already silently wrong before checkpoint 25 too:** whenever *some* agents had a real zero value alongside others that didn't (rare before `--hours 0` was legal, but not impossible — e.g. `cost_per_task` can be a real `0.0` if a mocked LLM call used 0 tokens), the filter silently excluded the zero from the average, skewing every "system average"/"department average" upward without anyone knowing.
+
+### ✅ Fix
+
+Removed the `"> 0"` filter everywhere it appeared (7 spots across `get_system_metrics()`, `compute_from_agents()`, and `get_recommendations()`). This is safe unconditionally: `AgentMetrics` entries are only ever created inside `record_task()`, immediately followed by `.update()` (which increments `tasks_completed` to at least 1) — so every agent reachable in these functions already has real recorded data, and the filter was never actually telling "no data" apart from "zero average"; it only ever wrongly excluded the latter.
+
+**New test:** `test_performance_zero_average_crash.py` — records an agent with an all-zero duration/cost and confirms `generate_report()`/`get_system_metrics()`/`get_recommendations()` no longer crash; separately confirms a mixed zero-and-nonzero pair of agents now averages correctly (`(0+4)/2 = 2.0`, not `4.0` from only counting the nonzero one) for both the system-wide and department-level aggregates. Run twice back-to-back (clean both times); full 28-file suite re-run clean afterward, including the pre-existing `test_performance.py`/`test_performance_resources.py`. Verified live via the real CLI: the exact repro sequence that used to crash `report` now prints a correct report.
+
+---
+
 ## 🐛 CHECKPOINT 29: `workflow complete` WAS NOT IDEMPOTENT - DOUBLE BILLING ON A REPEAT CALL
 
 **Found while probing workflow CLI idempotency** — the same class of bug fixed for `get_next_step()` back in checkpoint 21 (calling it twice re-attempted a reservation and wrongly blocked a healthy step), but this time in `execute_step()`: calling `workflow complete <instance> <step>` a *second* time on a step that was already `COMPLETED` re-ran the department's task through the executor all over again. `complete_step()` just overwrote `step_results[step_id]` with the new result, with no check that the step was already done.
