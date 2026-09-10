@@ -1,5 +1,21 @@
 # Daily Progress Report - September 10, 2026
 
+## 🐛 CHECKPOINT 32: AGENT PERFORMANCE "AVERAGES" WEREN'T AVERAGES
+
+**Found while auditing `agent_state.py`'s `PerformanceMetrics`** - a second, separate metrics tracker that runs alongside `performance.py`'s `AgentMetrics` (the one `report` reads from). `PerformanceMetrics.update()` is what feeds `agent_state.metrics.avg_quality_score`/`avg_completion_time_hours`/`avg_cost_per_task`, which `task_executor_v2.py`'s `execute()` puts straight into every task's persisted `result["metrics"]` (written to `tasks.json` via `main_v2.py`'s `task["result"] = result`), and which is also what the delegation/decision logic in `agent_decisions.py` would read if it ranked on measured performance instead of just learned preference.
+
+**The bug:** each average was computed as `(running_average + new_value) / 2` - not a mean. After a single `quality=5.0` task, `avg_quality_score` came out `2.5` (`(0.0 + 5.0) / 2`), 50% off the only data point that exists. Three tasks in a row at `quality=5.0` averaged to `3.75`, never converging on `5.0` no matter how many identical tasks ran - the formula permanently overweights old values and can never equal a constant input, let alone a real mean of varied ones.
+
+`error_rate` had the mirror-image bug: it was only ever recomputed on a *failing* task (`(error_rate + 1) / tasks_completed`), so a success right after a failure left it stuck at the old (now stale) value instead of shrinking. Confirmed via a repro that isolates the staleness: fail, succeed, succeed, fail should read `2 errors / 4 tasks = 0.5` throughout the settling process; the old formula reported `1.0` after the failure-then-two-successes instead of the true `0.333`, silently *understating* an agent's real failure rate.
+
+### ✅ Fix
+
+`PerformanceMetrics.update()` (`agent_state.py`) now uses the standard incremental-mean formula (`avg += (new_value - avg) / n`) for all three averages - mathematically exact, doesn't need the full history stored (matching this dataclass's existing shape, unlike `performance.py`'s `AgentMetrics` which keeps a `quality_scores` list). Added a real `error_count` field so `error_rate` recomputes as `error_count / tasks_completed` on *every* update, not just failures.
+
+**New test:** `tests/test_agent_state_metrics_average.py` - asserts a single task's average equals that task exactly (not half of it), that N identical values average to that value (not asymptotically approach it), that varied values match the true arithmetic mean, and that `error_rate` recomputes correctly across an interleaved fail/succeed/succeed/fail sequence. Run twice back-to-back (clean both times); full 29-file suite re-run clean afterward, including the pre-existing `test_agent_decisions.py` (whose `demo_performance_tracking()` exercises the same code path without asserting exact values, so it wasn't masking this).
+
+---
+
 ## 🧹 CHECKPOINT 31: MOVED ALL TEST FILES INTO `tests/`
 
 **User request:** all 28 `test_*.py` files were sitting in the repo root alongside the application code; moved them into a `tests/` directory and made that the permanent convention going forward.

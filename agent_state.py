@@ -54,15 +54,27 @@ class PerformanceMetrics:
     avg_cost_per_task: float = 0.0
     error_rate: float = 0.0  # 0-1 scale
     customer_satisfaction: float = 0.0  # 1-5 scale
+    # Raw error count backing error_rate. Needed because error_rate itself
+    # can't be un-averaged once a later success has diluted it - see the
+    # bug this replaced, where error_rate only ever changed on a failing
+    # task and so went stale (and then wrong) the moment a success followed.
+    error_count: int = 0
 
     def update(self, quality: float, hours: float, cost: float, success: bool = True):
-        """Update metrics with new task result."""
+        """Update metrics with new task result using the incremental-mean
+        formula (avg += (new - avg) / n) instead of averaging the running
+        average with each new value. The latter isn't a mean at all: after
+        a single task it's already off by 50% (avg = (0 + first_value) / 2),
+        and it keeps overweighting whichever value arrived most recently
+        rather than converging on the true per-task average.
+        """
         self.tasks_completed += 1
-        self.avg_quality_score = (self.avg_quality_score + quality) / 2
-        self.avg_completion_time_hours = (self.avg_completion_time_hours + hours) / 2
-        self.avg_cost_per_task = (self.avg_cost_per_task + cost) / 2
+        self.avg_quality_score += (quality - self.avg_quality_score) / self.tasks_completed
+        self.avg_completion_time_hours += (hours - self.avg_completion_time_hours) / self.tasks_completed
+        self.avg_cost_per_task += (cost - self.avg_cost_per_task) / self.tasks_completed
         if not success:
-            self.error_rate = (self.error_rate + 1) / self.tasks_completed
+            self.error_count += 1
+        self.error_rate = self.error_count / self.tasks_completed
 
 
 @dataclass
