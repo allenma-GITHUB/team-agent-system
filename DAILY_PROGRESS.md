@@ -238,6 +238,46 @@ Validating the new `report` CLI command end-to-end (not just unit tests) against
 
 ---
 
+## 🎯 SIXTH CHECKPOINT TODAY: DURATION METRICS WERE MEASURING THE WRONG THING
+
+**Summary:** The previous checkpoint's own "Next Steps" flagged this immediately: `run()` recorded `time.time() - start` (real wall-clock time of a mock LLM call - milliseconds) as a task's "duration" in both `agent_state` and `performance.analytics`, regardless of whether the task represented 1 hour or 40. That makes `avg_turnaround_time`, `get_top_performers("speed")`, and the `workload_rebalance`/`skill_gap` recommendations in `performance.py` permanently dead code - none of them could ever see anything but near-zero.
+
+### ✅ What Changed
+
+**`task_executor_v2.py`**
+- `DepartmentHeadAgent.run()` now records `effort_hours = estimated_hours` (the same business-hours estimate the budget check upstream already priced the task at) as the task's duration in both `agent_state.record_performance()` and `analytics.record_task()`, instead of the wall-clock `time.time() - start` of the mock LLM call
+- The real wall-clock `duration` is kept exactly as before for the `agent_complete` trace event and `TaskExecutor.execute()`'s own timing - this is about what gets recorded as *business* effort in the analytics layer, not about removing wall-clock tracing
+
+**`test_effort_metrics.py` (new)** — two scenarios, both passing and idempotent:
+1. A task estimated at 6 hours records `avg_duration_hours == 6.0`, not a fraction of a millisecond - while the `agent_complete` event still separately shows the real (sub-second) wall-clock time of the mock call
+2. Three consecutive 12-hour tasks push `avg_duration_hours` over the `workload_rebalance` threshold (`> 8`) and the recommendation actually fires - previously impossible since `avg_duration_hours` could never exceed a fraction of a second in mock mode
+
+### 🔧 Design Decisions
+
+- **One duration concept per purpose, not one number doing two jobs.** Wall-clock time answers "how long did the system take to process this" (ops/tracing question); business-hours effort answers "how much work did this represent" (capacity/workload question). Conflating them meant the wall-clock answer wasn't wrong for tracing, but silently broke every business-facing metric derived from it. This mirrors the cost model already in place: cost = `estimated_hours * cost_per_hour`, so duration = `estimated_hours` keeps the two consistent.
+- **Idempotent by construction, again.** Both new test scenarios use a task whose `estimated_hours` never varies across repeated runs against the department name, so the running average stays exactly `6.0`/`12.0` no matter how many times the test has run before - no need for delta-based assertions this time.
+
+### ✅ Validation
+
+- `python -m py_compile` clean
+- `test_effort_metrics.py`: both scenarios pass, run twice back-to-back to confirm idempotency
+- Full suite (all 9 test files now, including today's six checkpoints): all pass
+
+### 📝 Next Steps
+
+- A `resume_step()`/retry path for `BLOCKED` workflow steps once budget frees up
+- Give the `bug_fix` workflow's "Verification" step a real cost too
+- Apply the injectable-dependency pattern to `DepartmentHeadAgent` so its own tests can stop touching the shared global registries
+- `TaskExecutor.execute_parallel()` doesn't pass `estimated_hours` through at all (always defaults to `1.0`) - CLI-submitted tasks never get a real business-hours estimate unless a future change routes one in from task metadata
+
+### 📂 Files Modified
+
+- `task_executor_v2.py` (duration metrics now record business effort hours, not wall-clock time)
+- `test_effort_metrics.py` (new)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT

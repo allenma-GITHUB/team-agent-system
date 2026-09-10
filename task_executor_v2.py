@@ -161,15 +161,24 @@ class DepartmentHeadAgent(BaseAgent):
                 self._emit("llm_error", {"error": str(e), "provider": provider_used})
                 quality_score = 2.0
 
-        duration = time.time() - start
+        duration = time.time() - start  # wall-clock time of this call - near-instant for a mock LLM
         mock_cost = tokens_used * 0.00001
+
+        # Metrics track effort in business hours (the same estimated_hours the
+        # budget check above priced this task at), not wall-clock duration.
+        # A mock LLM call finishes in milliseconds regardless of whether the
+        # task represents 1 hour or 40 - recording wall-clock time here would
+        # make every duration-based metric (avg_turnaround_time, the
+        # workload_rebalance/skill_gap recommendations) permanently near-zero
+        # and meaningless.
+        effort_hours = estimated_hours
 
         # Record performance - both the per-agent learning state (used for
         # delegation/preference decisions) and the org-wide analytics report
         # (performance.py), which otherwise never hears about any task run.
         self.agent_state.record_performance(
             quality=quality_score,
-            hours=duration / 3600.0,
+            hours=effort_hours,
             cost=mock_cost,
             success=quality_score >= 3.0
         )
@@ -178,7 +187,7 @@ class DepartmentHeadAgent(BaseAgent):
             agent_name=self.agent_state.profile.name,
             department=self.department,
             quality=quality_score,
-            duration=duration / 3600.0,
+            duration=effort_hours,
             cost=mock_cost,
             success=quality_score >= 3.0
         )
