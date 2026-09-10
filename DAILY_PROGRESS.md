@@ -1,5 +1,25 @@
 # Daily Progress Report - September 10, 2026
 
+## 🐛 CHECKPOINT 25: NEGATIVE `--hours` COULD MANUFACTURE BUDGET OUT OF THIN AIR
+
+**Found while probing `main_v2.py`'s CLI with edge-case inputs** (a new review angle after several checkpoints of concurrency-bug hunting): `submit "test" --dept engineering --hours -5` was accepted silently — `✓ Task 0001 submitted to ENGINEERING (est. -5.0h)`.
+
+**Why this mattered, not just cosmetic:** that `-5.0` flows straight into `task_executor_v2.py`'s budget check as `amount = estimated_hours * self.cost_per_hour` (a negative number), which reaches `BudgetManager.request_expense()`. `DepartmentBudget.can_afford()` is `amount <= available()`, which any negative amount trivially satisfies, and then `budget.spent += amount` *decreases* recorded spend instead of increasing it. Submitting enough negative-hours tasks could drive a department's `spent` arbitrarily negative — manufacturing budget capacity rather than consuming it, and corrupting every downstream utilization/report figure built on `spent`. `BudgetManager.reserve_funds()` → `DepartmentBudget.reserve()` had the identical hole on the reservation path used by workflow approval gates.
+
+### ✅ Fix — three layers, innermost is the one that actually matters
+
+1. **`budgets.py` (the real fix)** — `BudgetManager.request_expense()` and `reserve_funds()` now reject `amount < 0` outright, before touching any budget, regardless of what fed them the bad number. This is the actual money-mutation boundary, so it's the layer that protects the invariant no matter which caller (CLI today, anything else tomorrow) gets it wrong.
+2. **`main_v2.py` `submit_task()`** — rejects a negative `estimated_hours` up front with a clear `✗ estimated_hours must be >= 0, got X` message and returns `None` instead of queuing the task, so any direct caller (not just the CLI) is covered.
+3. **`main_v2.py` CLI `--hours` parsing** — rejects a negative value immediately with a usage-style error, before ever calling `submit_task()`, for the fastest/clearest feedback at the actual point of bad input.
+
+Zero hours remains valid (a legitimately free/instant task) — only negative values are rejected.
+
+**Also checked, decided not to fix:** `submit ""` (empty description) is accepted and routed to the default department with a 1.0h estimate. Doesn't corrupt any state — just a minor UX gap, not a bug — so left alone rather than adding validation nothing actually needs.
+
+**New test:** `test_negative_hours_validation.py` — covers `submit_task()` rejecting negative hours (task not queued), zero/positive hours still working, the CLI `--hours -5` path being rejected before any file write, and `BudgetManager.request_expense()`/`reserve_funds()` rejecting negative amounts directly with `spent`/`reserved` left untouched. Run twice back-to-back to confirm no accumulation; full 23-file test suite (all pre-existing tests plus this one) re-run clean afterward. Verified live via the real CLI in an isolated temp dir: `--hours -5` is rejected and never appears in `list`, while `--hours 0` and `--hours 5` both queue normally.
+
+---
+
 ## 🎯 PHASE 3 FOLLOW-UP: WIRE BUDGETS & CAPACITY INTO TASK EXECUTION
 
 **Summary:** Yesterday's `budgets.py` was a standalone, tested module — nothing in the execution path actually called it, and `DepartmentHeadAgent.decide_on_task()` (from Phase 1) was defined but never invoked from `run()`. Today closes that gap: department heads now check capacity, run the decision engine, and clear a real budget check *before* doing (and billing) any work, instead of executing unconditionally.

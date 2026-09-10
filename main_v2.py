@@ -37,6 +37,14 @@ def init_system():
 
 def submit_task(description: str, department=None, estimated_hours: float = None):
     """Submit a new task."""
+    if estimated_hours is not None and estimated_hours < 0:
+        # A negative estimate would flow into cost = estimated_hours * rate
+        # downstream (task_executor_v2.py), and a negative "expense" reduces
+        # a department's recorded spend instead of increasing it - silently
+        # manufacturing budget out of thin air rather than raising an error.
+        print(f"✗ estimated_hours must be >= 0, got {estimated_hours}")
+        return None
+
     init_system()
 
     tasks = json.loads(TASKS_FILE.read_text())
@@ -395,6 +403,9 @@ def main():
         hours = None
         if "--hours" in sys.argv:
             hours = float(sys.argv[sys.argv.index("--hours") + 1])
+            if hours < 0:
+                print(f"✗ --hours must be >= 0, got {hours}")
+                return
         submit_task(desc, dept, estimated_hours=hours)
 
     elif command == "process":

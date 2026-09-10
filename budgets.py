@@ -124,6 +124,11 @@ class BudgetManager:
                          description: str = "", task_id: Optional[str] = None,
                          agent_id: Optional[str] = None) -> Tuple[bool, str]:
         """Commit an immediate expense if the department can afford it."""
+        if amount < 0:
+            # A negative "expense" would decrease spent instead of increasing
+            # it, manufacturing available budget rather than spending it.
+            return False, f"Expense amount cannot be negative: ${amount:,.2f}"
+
         budget = self.budgets.get(department)
         if not budget:
             return False, f"No budget allocated for '{department}'"
@@ -142,6 +147,9 @@ class BudgetManager:
 
     def reserve_funds(self, department: str, reference_id: str, amount: float) -> Tuple[bool, str]:
         """Hold funds for a task pending approval (e.g., a workflow approval gate)."""
+        if amount < 0:
+            return False, f"Reservation amount cannot be negative: ${amount:,.2f}"
+
         budget = self.budgets.get(department)
         if not budget:
             return False, f"No budget allocated for '{department}'"
