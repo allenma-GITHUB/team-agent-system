@@ -9,8 +9,23 @@ avg_turnaround_time and every duration-based recommendation in performance.py
 from core import EventBus
 from llm_provider import LLMProvider
 from task_executor_v2 import DepartmentHeadAgent
-from budgets import budget_manager
-from performance import analytics
+from agent_state import AgentRegistry
+from budgets import BudgetManager, CapacityManager
+from performance import PerformanceAnalytics
+
+# Isolated instances instead of the shared global singletons.
+agent_registry = AgentRegistry(data_file="data/test_em_agents.json")
+budget_manager = BudgetManager(data_file="data/test_em_budgets.json")
+capacity_manager = CapacityManager(registry=agent_registry)
+analytics = PerformanceAnalytics(data_file="data/test_em_metrics.json")
+
+
+def _agent(department: str, **kwargs) -> DepartmentHeadAgent:
+    return DepartmentHeadAgent(
+        department, llm_provider=LLMProvider(),
+        agent_state_registry=agent_registry, budget_manager=budget_manager,
+        capacity_manager=capacity_manager, analytics=analytics, **kwargs
+    )
 
 
 def print_section(title: str):
@@ -27,7 +42,7 @@ def test_recorded_duration_matches_estimated_hours_not_wall_clock():
     budget_manager.allocate(department, 10000)
 
     bus = EventBus()
-    agent = DepartmentHeadAgent(department, llm_provider=LLMProvider(), bus=bus, cost_per_hour=50)
+    agent = _agent(department, bus=bus, cost_per_hour=50)
     agent.run("A task that represents six hours of real work", estimated_hours=6.0)
 
     metrics = analytics.get_agent_metrics(f"{department}_head")
@@ -49,7 +64,7 @@ def test_workload_rebalance_recommendation_can_actually_fire():
     budget_manager.allocate(department, 100000)
 
     bus = EventBus()
-    agent = DepartmentHeadAgent(department, llm_provider=LLMProvider(), bus=bus, cost_per_hour=50)
+    agent = _agent(department, bus=bus, cost_per_hour=50)
     for _ in range(3):
         agent.run("A consistently heavy task", estimated_hours=12.0)
 
@@ -74,6 +89,10 @@ def main():
     print("\n" + "=" * 60)
     print("  [OK] All effort-metrics tests passed!")
     print("=" * 60 + "\n")
+
+    import pathlib
+    for f in ["data/test_em_agents.json", "data/test_em_budgets.json", "data/test_em_metrics.json"]:
+        pathlib.Path(f).unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

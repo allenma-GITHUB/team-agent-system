@@ -795,6 +795,44 @@ Ran the real bridge - `TaskExecutor`, real `LLMProvider`, real budgets - end to 
 
 ---
 
+## 🎯 EIGHTEENTH CHECKPOINT TODAY: RETIRING THE MANUAL CLEANUP RITUAL
+
+**Summary:** "Optionally migrate the earlier pre-DI test files to use full injection" has been on the Next Steps list since checkpoint 9 and deferred every time since as lower priority than whatever feature was next. Reframed it while thinking about whether `data/budgets.json`/`data/workflows.json`/`data/performance_metrics.json` should finally be added to `.gitignore` (to stop needing the `git checkout --`/`rm -f` ritual repeated after all seventeen prior checkpoints): gitignoring them would be the wrong fix. In a real deployment those files hold genuine state - budget spend history, workflow instances - exactly as real as `data/agent_states.json`/`data/tasks.json`, which *are* tracked. The actual problem was that four of today's test files still exercised the shared global singletons directly instead of injected instances, which is what caused the pollution requiring cleanup in the first place. Fixed the actual problem instead of hiding it.
+
+### ✅ What Changed
+
+**`test_resource_gating.py`, `test_analytics_wiring.py`, `test_effort_metrics.py`, `test_executor_hours_threading.py`**
+- Each now constructs its own isolated `AgentRegistry`/`BudgetManager`/`CapacityManager`/`PerformanceAnalytics` (module-level, shared across that file's own test functions) and threads them into every `DepartmentHeadAgent`/`TaskExecutor` construction via a small `_agent()`/`_executor()` helper, instead of relying on the shared global defaults
+- Each cleans up its own scratch files at the end of `main()`
+- Assertions and printed output are byte-for-byte unchanged - confirmed by diffing behavior before/after the migration on every one of the twenty scenarios across these four files
+
+**`test_budgets.py`, `test_performance_resources.py`, `test_workflow_budget.py`, `test_workflow_retry.py`**
+- These already used isolated `data_file` paths (from earlier checkpoints) but never cleaned them up afterward. Added the missing `pathlib.Path(...).unlink(missing_ok=True)` cleanup to each.
+
+### 🔧 What's Left, And Why It's Fine To Leave
+
+`test_agent_decisions.py` and `test_performance.py` (both from Day 1/Day 2, before today) still use the shared global registry/analytics singletons *by original design* - they're explicitly testing persistence and cross-invocation state, which is the whole point of those singletons existing. Migrating them to isolated instances would defeat their own purpose, not fix a gap. `test_workflows.py` (also pre-existing) drives the global `workflow_engine` and, through it, the global `budget_manager` for the feature-request template's costed steps - same reasoning. These three are the only remaining sources of the (much smaller now) cleanup ritual, and they're not bugs.
+
+### ✅ Validation
+
+- `python -m py_compile` clean on all eight modified files
+- Full suite (19 test files) run twice back-to-back: all pass both times, identical output
+- `git status` diffed after each run: pollution reduced from ~12 stray/modified files down to exactly the 3 expected ones (`data/agent_states.json` modified, `data/budgets.json`/`data/workflows.json` created) - all traceable to the three pre-existing files named above, none to anything touched today
+
+### 📝 Next Steps
+
+- `workflow_next()` still only shows the next step rather than auto-executing non-approval ones (deliberately left as-is, per checkpoint 17's reasoning)
+- No execution path exists for `ceo`/`tech_lead`/`product_coordinator` roles specifically
+- `README.md` and the other top-level docs (`SUMMARY.md`, `SESSION_SUMMARY.md`, etc.) haven't been touched since before today's eighteen checkpoints - worth a pass to reflect what actually exists now
+
+### 📂 Files Modified
+
+- `test_resource_gating.py` / `test_analytics_wiring.py` / `test_effort_metrics.py` / `test_executor_hours_threading.py` (migrated to full dependency injection)
+- `test_budgets.py` / `test_performance_resources.py` / `test_workflow_budget.py` / `test_workflow_retry.py` (added missing scratch-file cleanup)
+- `DAILY_PROGRESS.md` (this report)
+
+---
+
 # Daily Progress Report - September 9, 2026
 
 ## 🎯 PHASE 3 (RESOURCES): BUDGET & CAPACITY MANAGEMENT

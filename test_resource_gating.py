@@ -10,7 +10,26 @@ them, and decide_on_task() was defined but never called from run().
 from core import EventBus
 from llm_provider import LLMProvider
 from task_executor_v2 import DepartmentHeadAgent
-from budgets import budget_manager, capacity_manager
+from agent_state import AgentRegistry
+from budgets import BudgetManager, CapacityManager
+from performance import PerformanceAnalytics
+
+# Isolated instances instead of the shared global singletons - this test
+# used to require manual cleanup (data/agent_states.json, data/budgets.json,
+# data/performance_metrics.json) after every run; with DI (added in an
+# earlier checkpoint) it no longer touches shared state at all.
+agent_registry = AgentRegistry(data_file="data/test_rg_agents.json")
+budget_manager = BudgetManager(data_file="data/test_rg_budgets.json")
+capacity_manager = CapacityManager(registry=agent_registry)
+analytics = PerformanceAnalytics(data_file="data/test_rg_metrics.json")
+
+
+def _agent(department: str, **kwargs) -> DepartmentHeadAgent:
+    return DepartmentHeadAgent(
+        department, llm_provider=LLMProvider(),
+        agent_state_registry=agent_registry, budget_manager=budget_manager,
+        capacity_manager=capacity_manager, analytics=analytics, **kwargs
+    )
 
 
 def print_section(title: str):
@@ -27,7 +46,7 @@ def test_default_task_executes_without_approval_but_still_spends():
     budget_manager.allocate(department, 10000)  # fixed starting point, independent of prior runs
 
     bus = EventBus()
-    agent = DepartmentHeadAgent(department, llm_provider=LLMProvider(), bus=bus, cost_per_hour=100)
+    agent = _agent(department, bus=bus, cost_per_hour=100)
     result = agent.run("Investigate a minor UI glitch", estimated_hours=1.0)
 
     print(f"  Status: {result['status']}, Approved: {result['approved']}")
@@ -49,7 +68,7 @@ def test_capacity_check_is_emitted():
     print_section("2. Capacity Check Emitted On Every Run")
 
     bus = EventBus()
-    agent = DepartmentHeadAgent("qa_capacity", llm_provider=LLMProvider(), bus=bus)
+    agent = _agent("qa_capacity", bus=bus)
     agent.run("Small task")
 
     events = bus.get_traces("capacity_check")
@@ -67,7 +86,7 @@ def test_high_cost_task_draws_from_budget_when_affordable():
     budget_manager.allocate(department, 100000)  # plenty of runway
 
     bus = EventBus()
-    agent = DepartmentHeadAgent(department, llm_provider=LLMProvider(), bus=bus, cost_per_hour=100)
+    agent = _agent(department, bus=bus, cost_per_hour=100)
     result = agent.run("Major system redesign", estimated_hours=20)
 
     print(f"  Status: {result['status']}, Approved: {result['approved']}")
@@ -87,7 +106,7 @@ def test_high_cost_task_escalates_when_budget_is_insufficient():
     budget_manager.allocate(department, 500)  # not enough for a 20h task at $100/hr
 
     bus = EventBus()
-    agent = DepartmentHeadAgent(department, llm_provider=LLMProvider(), bus=bus, cost_per_hour=100)
+    agent = _agent(department, bus=bus, cost_per_hour=100)
     result = agent.run("Major system redesign", estimated_hours=20)
 
     print(f"  Status: {result['status']}, Approved: {result['approved']}")
@@ -112,7 +131,7 @@ def test_routine_task_escalates_once_budget_is_fully_depleted():
     budget_manager.allocate(department, 50)  # less than a single $100 hour of labor
 
     bus = EventBus()
-    agent = DepartmentHeadAgent(department, llm_provider=LLMProvider(), bus=bus, cost_per_hour=100)
+    agent = _agent(department, bus=bus, cost_per_hour=100)
     result = agent.run("Routine cleanup task", estimated_hours=1.0)
 
     print(f"  Status: {result['status']}, Approved: {result['approved']}")
@@ -139,6 +158,10 @@ def main():
     print("\n" + "=" * 60)
     print("  [OK] All resource-gating tests passed!")
     print("=" * 60 + "\n")
+
+    import pathlib
+    for f in ["data/test_rg_agents.json", "data/test_rg_budgets.json", "data/test_rg_metrics.json"]:
+        pathlib.Path(f).unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

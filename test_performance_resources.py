@@ -103,6 +103,12 @@ def main():
     print("  [OK] All performance-resource tests passed!")
     print("=" * 60 + "\n")
 
+    import pathlib
+    for f in ["data/test_perf_budgets.json", "data/test_perf_agents.json", "data/test_perf_metrics.json",
+              "data/test_perf_budgets2.json", "data/test_perf_agents2.json", "data/test_perf_metrics2.json",
+              "data/test_perf_budgets3.json", "data/test_perf_agents3.json", "data/test_perf_metrics3.json"]:
+        pathlib.Path(f).unlink(missing_ok=True)
+
 
 if __name__ == "__main__":
     main()

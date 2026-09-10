@@ -167,6 +167,9 @@ def main():
     print("  [OK] All workflow budget-gating tests passed!")
     print("=" * 60 + "\n")
 
+    import pathlib
+    pathlib.Path("data/test_workflow_engine.json").unlink(missing_ok=True)
+
 
 if __name__ == "__main__":
     main()

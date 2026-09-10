@@ -9,8 +9,15 @@ duration were identical no matter how big or small the task actually was.
 from core import EventBus
 from llm_provider import LLMProvider
 from task_executor_v2 import TaskExecutor
-from agent_state import AgentProfile
-from budgets import budget_manager
+from agent_state import AgentProfile, AgentRegistry
+from budgets import BudgetManager, CapacityManager
+from performance import PerformanceAnalytics
+
+# Isolated instances instead of the shared global singletons.
+agent_registry = AgentRegistry(data_file="data/test_eh_agents.json")
+budget_manager = BudgetManager(data_file="data/test_eh_budgets.json")
+capacity_manager = CapacityManager(registry=agent_registry)
+analytics = PerformanceAnalytics(data_file="data/test_eh_metrics.json")
 
 # TaskExecutor's on-demand agents get DepartmentHeadAgent's fallback profile
 # (ManagerAgent, skill_level 3) with no explicit cost_per_hour, so they bill
@@ -21,6 +28,14 @@ FALLBACK_RATE = AgentProfile(
     agent_id="rate_probe", name="", agent_type="ManagerAgent", department="x",
     expertise_areas=[], skill_level=3, capabilities=[], constraints=[]
 ).hourly_rate()
+
+
+def _executor(bus) -> TaskExecutor:
+    return TaskExecutor(
+        LLMProvider(), bus=bus, max_workers=2,
+        agent_state_registry=agent_registry, budget_manager=budget_manager,
+        capacity_manager=capacity_manager, analytics=analytics
+    )
 
 
 def print_section(title: str):
@@ -37,7 +52,7 @@ def test_execute_passes_estimated_hours_through():
     budget_manager.allocate(department, 10000)
 
     bus = EventBus()
-    executor = TaskExecutor(LLMProvider(), bus=bus, max_workers=2)
+    executor = _executor(bus)
     executor.execute(department, "A five-hour task", estimated_hours=5.0)
 
     budget = budget_manager.get_budget(department)
@@ -54,7 +69,7 @@ def test_execute_parallel_passes_per_task_hours_through():
     budget_manager.allocate(department, 10000)
 
     bus = EventBus()
-    executor = TaskExecutor(LLMProvider(), bus=bus, max_workers=2)
+    executor = _executor(bus)
     executor.execute_parallel([
         (department, "A two-hour task", 2.0),
         (department, "A three-hour task", 3.0),
@@ -74,7 +89,7 @@ def test_execute_parallel_still_accepts_two_tuples():
     budget_manager.allocate(department, 10000)
 
     bus = EventBus()
-    executor = TaskExecutor(LLMProvider(), bus=bus, max_workers=2)
+    executor = _executor(bus)
     executor.execute_parallel([(department, "No hours specified")])
 
     budget = budget_manager.get_budget(department)
@@ -95,6 +110,10 @@ def main():
     print("\n" + "=" * 60)
     print("  [OK] All executor-hours-threading tests passed!")
     print("=" * 60 + "\n")
+
+    import pathlib
+    for f in ["data/test_eh_agents.json", "data/test_eh_budgets.json", "data/test_eh_metrics.json"]:
+        pathlib.Path(f).unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

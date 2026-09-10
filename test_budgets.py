@@ -160,6 +160,10 @@ def main():
     print("  [OK] All budget & capacity tests passed!")
     print("=" * 60 + "\n")
 
+    import pathlib
+    for f in ["data/test_budgets.json", "data/test_agent_states.json"]:
+        pathlib.Path(f).unlink(missing_ok=True)
+
 
 if __name__ == "__main__":
     main()
