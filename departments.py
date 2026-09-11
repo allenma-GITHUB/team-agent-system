@@ -16,6 +16,36 @@ LOW_EFFORT_HOURS = 0.5
 DEFAULT_EFFORT_HOURS = 1.0
 HIGH_EFFORT_HOURS = 16.0
 
+# Complexity tiers for estimate_complexity(). Same deliberately-coarse
+# keyword approach as the effort tiers above, and the same caveat: this is a
+# starting signal, not an assessment.
+#
+# The thresholds it has to clear are not arbitrary - agent_decisions.py
+# already tests complexity at two specific points, and both were unreachable
+# while every task was handed a hardcoded 0.5:
+#   > 0.7  the "cannot_execute_alone" constraint (config.json gives it to
+#          engineering_head and design_head)
+#   > 0.8  requires_approval()
+# So HIGH must clear both and LOW must clear neither.
+HIGH_COMPLEXITY_KEYWORDS = [
+    "migration", "redesign", "overhaul", "rewrite", "rearchitect", "platform",
+    "architecture", "security", "compliance", "scale", "refactor", "integration",
+]
+LOW_COMPLEXITY_KEYWORDS = [
+    "typo", "quick", "small", "minor", "tweak", "trivial", "copy change", "rename",
+]
+HIGH_COMPLEXITY = 0.9
+DEFAULT_COMPLEXITY = 0.5
+LOW_COMPLEXITY = 0.2
+
+# Seniority a task's approver needs, by complexity tier. Compared against the
+# deciding agent's own skill_level in requires_approval(), so the same task
+# can need sign-off from a skill-3 support head and not from a skill-4
+# engineering head - which is the point of having the check at all.
+HIGH_APPROVAL_LEVEL = 4
+DEFAULT_APPROVAL_LEVEL = 2
+LOW_APPROVAL_LEVEL = 1
+
 
 class DepartmentManager:
     """Manages departments and task routing."""
@@ -74,6 +104,44 @@ class DepartmentManager:
         if any(kw in desc_lower for kw in LOW_EFFORT_KEYWORDS):
             return LOW_EFFORT_HOURS
         return DEFAULT_EFFORT_HOURS
+
+    @staticmethod
+    def estimate_complexity(description: str) -> float:
+        """Rough task complexity on a 0-1 scale, from the description.
+
+        Exists because every task was handed a hardcoded `complexity=0.5`,
+        which sits below both thresholds agent_decisions.py tests it at - so
+        the "cannot_execute_alone" constraint and the complexity-based
+        approval trigger were unreachable for every task ever submitted. A
+        platform migration and a typo fix were equally complex, forever.
+
+        Coarse on purpose, exactly like estimate_hours(): a real assessment
+        would come from a human or an estimation workflow step, not from
+        scanning prose for nouns. The point is that the number now varies
+        with the task at all.
+        """
+        desc_lower = description.lower()
+
+        if any(kw in desc_lower for kw in HIGH_COMPLEXITY_KEYWORDS):
+            return HIGH_COMPLEXITY
+        if any(kw in desc_lower for kw in LOW_COMPLEXITY_KEYWORDS):
+            return LOW_COMPLEXITY
+        return DEFAULT_COMPLEXITY
+
+    @staticmethod
+    def approval_level_for_complexity(complexity: float) -> int:
+        """Seniority (1-5) a task of this complexity needs to sign it off.
+
+        Paired with estimate_complexity() so that required_approval_level
+        stops being the hardcoded 2 that no department head's skill_level
+        (3-5) could ever fall below - which made that approval trigger dead
+        alongside the other two.
+        """
+        if complexity > 0.8:
+            return HIGH_APPROVAL_LEVEL
+        if complexity <= 0.3:
+            return LOW_APPROVAL_LEVEL
+        return DEFAULT_APPROVAL_LEVEL
 
     @staticmethod
     def get_departments() -> List[str]:

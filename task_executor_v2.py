@@ -139,14 +139,34 @@ class DepartmentHeadAgent(BaseAgent):
 
     def decide_on_task(self, task: str, estimated_hours: float = 1.0) -> Dict[str, Any]:
         """Use decision engine to decide how to handle the task."""
+        # Complexity and the approval level it implies are now read from the
+        # task itself. Both were hardcoded (0.5 and 2), and both constants sat
+        # on the safe side of every threshold agent_decisions.py tests them
+        # against - so "cannot_execute_alone" and two of requires_approval()'s
+        # three triggers could never fire for any task. Approval was reachable
+        # only via estimated_hours > 16, a number typed at the CLI.
+        complexity = DepartmentManager.estimate_complexity(task)
+        approval_level = DepartmentManager.approval_level_for_complexity(complexity)
+
+        # KNOWN TAUTOLOGY, deliberately left in place for now: required_skills
+        # is copied from this agent's own expertise_areas, so can_execute()'s
+        # `set(required_skills) - set(expertise_areas)` is mathematically
+        # always empty and the skill-gap check can never fire. Inferring real
+        # skills from the task is only meaningful once every department has
+        # genuine declared expertise - departments absent from config.json
+        # fall back to expertise_areas=[department], a placeholder that no
+        # inferred skill would ever match, which would escalate nearly every
+        # task on those agents. That is a config data change with its own
+        # blast radius, so it gets its own checkpoint rather than riding
+        # along with this one.
         decision_context = DecisionContext(
             task_id=f"task_{int(time.time())}",
             task_type=self.department,
             required_skills=self.agent_state.profile.expertise_areas,
-            complexity=0.5,  # Simplified
+            complexity=complexity,
             urgency=0.5,
             estimated_hours=estimated_hours,
-            required_approval_level=2
+            required_approval_level=approval_level
         )
 
         engine = AgentDecisionEngine(self.agent_state, registry=self.agent_state_registry)

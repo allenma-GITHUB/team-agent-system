@@ -1,5 +1,50 @@
 # Daily Progress Report - September 11, 2026
 
+## 🧠 CHECKPOINT 37: THE DECISION ENGINE WAS RUNNING ON CONSTANTS
+
+**The decision layer that drives delegation, approval and escalation has been deciding almost nothing since Phase 1.** `decide_on_task()` handed every task `complexity=0.5` and `required_approval_level=2`, and both constants sit on the safe side of every threshold `agent_decisions.py` compares them against. Proven by direct probe before changing anything:
+
+| check in `agent_decisions.py` | needs | got | fired? |
+|---|---|---|---|
+| `can_execute()` → `cannot_execute_alone` | `complexity > 0.7` | `0.5` | **never** |
+| `requires_approval()` | `complexity > 0.8` | `0.5` | **never** |
+| `requires_approval()` | `required_approval_level > skill_level` | `2` vs `3-5` | **never** |
+| `requires_approval()` | `estimated_hours > 16` | from CLI | the only live one |
+
+So `config.json` gives `engineering_head` and `design_head` a `cannot_execute_alone` constraint that had never once applied, and approval was reachable only by typing `--hours 17` or more. A platform migration and a typo fix were equally complex, forever.
+
+### ✅ Fix
+
+- **`DepartmentManager.estimate_complexity(description)`** — keyword tiers returning `0.9 / 0.5 / 0.2`, deliberately coarse and documented as such, mirroring the existing `estimate_hours()` precedent rather than inventing a new pattern.
+- **`DepartmentManager.approval_level_for_complexity()`** — `4 / 2 / 1`, so the level is derived from the work instead of pinned at 2.
+- **`decide_on_task()`** now reads both from the task.
+
+The tier values are chosen specifically to clear the thresholds above — `HIGH = 0.9` must exceed both `0.7` and `0.8`, `DEFAULT = 0.5` must clear neither. That coupling is implicit across two modules, so it is now pinned by its own test: dropping `HIGH_COMPLEXITY` to `0.75` would silently switch the approval trigger back off with every other test still green.
+
+### ⚠️ This changes what ordinary tasks do
+
+`Full platform migration` submitted to engineering now **escalates** — `cannot_execute_alone` applies, and no other agent has matching expertise to take it. Previously it silently "completed". That is the configured constraint finally working, and escalating a migration to a human is the correct outcome, but it is a visible behavior change rather than a refactor. Verified live: the migration escalates with a readable reason, while a typo fix and a routine investigation still complete.
+
+### 🚧 Deliberately NOT fixed, and why
+
+**`required_skills` is a tautology.** `decide_on_task()` passes the agent's *own* `expertise_areas` as the task's required skills, so `can_execute()`'s `set(required_skills) - set(expertise_areas)` is mathematically always empty — the agent is asked "do you have the skills for this?" using its own skill list as the question. The skill-gap check has never been able to fire.
+
+Inferring real skills from the task is only meaningful once every department has genuine declared expertise. Departments absent from `config.json` fall back to `expertise_areas=[department]` — a placeholder no inferred skill would ever match — so switching this on today would fail `can_execute()` for nearly every task on those agents and escalate almost everything. `test_resource_gating.py` would break for an entirely legitimate reason. That is a config data change with its own blast radius and it gets its own checkpoint; the tautology is now documented in place rather than left to be rediscovered.
+
+**The `required_approval_level > skill_level` trigger is reachable but still redundant.** Under this mapping level `4` only occurs when complexity already exceeds `0.8`, so it never fires alone. Making it do independent work means deciding whether junior agents (skill 3: `support_head`, `product_coordinator`) should need sign-off on *routine* work that senior heads don't — a policy question for the owner, not something to settle inside a refactor.
+
+### 🧪 Validation
+
+`tests/test_decision_inputs.py` (new; 36 files total, all passing): complexity varies with the task and is case-insensitive; **tier values cross the thresholds they exist to cross**; `cannot_execute_alone` now applies to complex work and not to simple work; approval now triggers on a 2-hour complex task while the pre-existing `>16h` trigger still works; complex work still executes where no constraint blocks it. Suite verified twice back-to-back and live through the CLI.
+
+### 📝 Next Steps
+
+- **Give every department real declared expertise in `config.json`**, then infer `required_skills` from the task and retire the tautology. That also improves delegate search, which currently looks for "an agent with the delegator's own exact expertise".
+- **`delegate_to` as a tool** remains unblocked and is now more interesting: complexity is real, so an agent has an actual reason to hand work off.
+- **Real token cost is still invisible to budgets** — the loop produces genuine token counts and nothing spends them.
+
+---
+
 ## 🔧 CHECKPOINT 36: THE REAL TASK PIPELINE NOW USES TOOLS
 
 **Closing the gap checkpoint 34 deliberately left open.** The tool-calling loop existed but was reachable only through the side-door `agent-run` command — every task submitted through the actual pipeline (`submit` → `process`, and everything `workflows.py` drives) still went through a single completion with no tools. The capability was built but unused.
