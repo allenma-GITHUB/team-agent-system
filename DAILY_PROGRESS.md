@@ -1,4 +1,32 @@
-# Daily Progress Report - September 10, 2026
+# Daily Progress Report - September 11, 2026
+
+## 🎨 CHECKPOINT 33: ASCII BAR CHARTS FOR `report` AND `status`
+
+**User-requested, not a bug hunt.** Every number in `report`/`status` was plain text - a column of percentages and dollar figures with no way to see relative standing at a glance (is engineering's budget nearly gone while design's sits untouched? which agent is actually top-heavy on quality?). Added a small, zero-dependency visualization layer rather than pulling in a charting library - this project has no third-party dependencies anywhere, and a bar made of Unicode block characters doesn't need one either.
+
+### ✅ What was added
+
+- **`visualization.py`** (new module, mirrors the one-module-per-concern pattern of `budgets.py`/`strategy.py`): two pure functions, no I/O, no state.
+  - `render_bar(label, fraction, display, width, label_width)` → one `"  label [████░░░░]   display"` line. `fraction` drives the fill and is clamped to `[0, 1]` for that purpose only - a genuinely over-100% value (an over-budget department) still draws a full bar, flagged with `!`, rather than silently clamping or corrupting the actual number. The caller always supplies its own formatted `display` string, so the same primitive serves percentages, `"4.0/5.0"` quality scores, and dollar amounts without the chart needing to know about any of them.
+  - `bar_chart(rows)` → renders a list of `(label, fraction, display)` rows, one per line, in the order given (callers sort first). `label_width` is a floor, not a fixed width - it widens to fit the longest label in that particular chart so a longer name (e.g. "Engineering Manager") doesn't push its own bracket out of alignment with shorter ones in the same chart. Empty input renders `""`, not a stray blank line, so callers can splice it into a report unconditionally.
+- **`performance.py`'s `generate_report()`** gained three new bar-chart sections, additive only (every existing line - `System Overview`, `Top Performers`, `Resource Overview`'s totals, `Over-Budget Departments` - is untouched, so nothing that read the old report as text breaks):
+  - `Quality By Agent` - every agent's `avg_quality`, not just the existing top-3 text list, as bars against the 5.0 ceiling.
+  - `Budget Utilization By Department` - every department with a budget, sorted worst-first, `${spent}/${allocated}`.
+  - `Capacity Utilization By Department` - every *staffed* department (same "skip agent_count == 0" rule `CapacityManager.recommend_actions()` already uses), sorted worst-first.
+- **`main_v2.py`'s `show_status()`** - the budget/capacity loop per department now renders two bars (budget, capacity) instead of one dense text line.
+
+### 🧪 Validation
+
+- `tests/test_visualization.py` (new): bar fill matches fraction exactly, zero/full clamping, an over-100% fraction draws a full bar marked with `!` instead of overflowing or crashing, `bar_chart()` preserves row order with one line each, and empty input is `""` not a blank line. Run twice back-to-back (pure/stateless, so identical both times).
+- Full 30-file suite re-run clean, including `test_performance_resources.py` (asserts exact substrings like `"Budget Allocated: $1,000.00"` and `"Over-Budget Departments: qa_perf_over"` still appear - confirms the new sections were additive, not a rewrite) and `test_main_cli_core.py`'s `show_status` check.
+- Verified live via the real CLI in an isolated temp dir (`submit` x2 → `process` → `status`/`report`): bars render correctly for both a normal and an over-100%-would-be case, and label alignment holds across differently-sized agent/department names.
+
+### 📝 Next Steps
+
+- No history is stored for any of these metrics - every bar is a current snapshot. A trend view (quality or spend over time) would need per-task timestamps persisted somewhere they aren't today; worth scoping separately rather than bolting onto this module.
+- `strategy.py`'s reallocation proposals aren't visualized (e.g. a from→to flow) - lower priority than the above since `strategy` proposals are already itemized as text and only fire occasionally.
+
+---
 
 ## 🐛 CHECKPOINT 32: AGENT PERFORMANCE "AVERAGES" WEREN'T AVERAGES
 

@@ -10,6 +10,7 @@ import json
 import statistics
 
 from budgets import budget_manager as _default_budget_manager, capacity_manager as _default_capacity_manager
+from visualization import bar_chart
 
 
 @dataclass
@@ -301,6 +302,17 @@ class PerformanceAnalytics:
             for name, score in top_quality:
                 report.append(f"  - {name}: {score:.1f}/5.0")
 
+        # Quality by agent, as bars - the top-3 list above ranks the best,
+        # this shows where *everyone* stands relative to the 5.0 ceiling
+        # and to each other at a glance, not just as a column of numbers.
+        agents_by_quality = sorted(self.agent_metrics.values(), key=lambda a: a.avg_quality, reverse=True)
+        if agents_by_quality:
+            report.append(f"\nQuality By Agent:")
+            report.append(bar_chart([
+                (a.name, a.avg_quality / 5.0, f"{a.avg_quality:.1f}/5.0")
+                for a in agents_by_quality
+            ]))
+
         # Recommendations
         recs = self.get_recommendations()
         if recs:
@@ -310,6 +322,8 @@ class PerformanceAnalytics:
 
         # Resource overview (budget + capacity) - only shown once something's
         # actually been allocated, so a fresh system's report stays clean.
+        budgets = budgets or _default_budget_manager
+        capacity = capacity or _default_capacity_manager
         resources = self.get_resource_summary(budgets=budgets, capacity=capacity)
         budget_summary = resources["budget"]
         if budget_summary["total_allocated"] > 0:
@@ -322,6 +336,33 @@ class PerformanceAnalytics:
 
             if resources["over_budget_departments"]:
                 report.append(f"  [!] Over-Budget Departments: {', '.join(resources['over_budget_departments'])}")
+
+            # Per-department budget utilization, highest (most strained) first -
+            # the org-wide totals above can't show a department pinned at 95%
+            # hiding behind one that's barely touched its allocation.
+            depts_by_util = sorted(budgets.budgets.values(), key=lambda b: b.utilization_pct(), reverse=True)
+            if depts_by_util:
+                report.append(f"\nBudget Utilization By Department:")
+                report.append(bar_chart([
+                    (b.department, b.utilization_pct(),
+                     f"{b.utilization_pct():.0%} (${b.spent:,.0f}/${b.allocated:,.0f})")
+                    for b in depts_by_util
+                ]))
+
+            # Per-department staffing utilization, same reasoning - and same
+            # "skip unstaffed departments" rule CapacityManager.recommend_actions()
+            # already uses, since a 0/0 department has nothing to show.
+            staffed = sorted(
+                (s for s in capacity.organization_report().values() if s.agent_count > 0),
+                key=lambda s: s.utilization_pct(), reverse=True
+            )
+            if staffed:
+                report.append(f"\nCapacity Utilization By Department:")
+                report.append(bar_chart([
+                    (s.department, s.utilization_pct(),
+                     f"{s.utilization_pct():.0%} ({s.current_workload}/{s.total_capacity} tasks)")
+                    for s in staffed
+                ]))
 
             if resources["capacity_recommendations"]:
                 report.append(f"\nCapacity Recommendations:")

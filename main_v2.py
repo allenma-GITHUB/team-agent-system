@@ -15,6 +15,7 @@ from budgets import budget_manager, capacity_manager
 from performance import analytics
 from workflows import workflow_engine, create_feature_request_workflow, create_bug_fix_workflow
 from strategy import strategic_planner
+from visualization import render_bar
 
 WORKFLOW_TEMPLATES = {
     "feature_request": create_feature_request_workflow,
@@ -244,13 +245,13 @@ def show_status():
         budget = budget_manager.get_budget(dept)
         snapshot = capacity_manager.snapshot(dept)
         if budget:
-            budget_str = f"${budget.spent:,.0f}/${budget.allocated:,.0f} spent ({budget.utilization_pct():.0%})"
+            budget_display = f"${budget.spent:,.0f}/${budget.allocated:,.0f}"
+            print(render_bar(dept.title(), budget.utilization_pct(), budget_display, label_width=15))
         else:
-            budget_str = "not yet allocated"
-        capacity_str = (f"{snapshot.current_workload}/{snapshot.total_capacity} tasks "
-                         f"({snapshot.utilization_pct():.0%})" if snapshot.total_capacity > 0
-                         else "no agents registered")
-        print(f"  {dept.title():<15} budget: {budget_str:<38} capacity: {capacity_str}")
+            print(f"  {dept.title():<15} budget: not yet allocated")
+        if snapshot.total_capacity > 0:
+            capacity_display = f"{snapshot.current_workload}/{snapshot.total_capacity} tasks"
+            print(render_bar("", snapshot.utilization_pct(), capacity_display, label_width=15))
 
     over_budget = budget_manager.over_budget_departments()
     if over_budget:
