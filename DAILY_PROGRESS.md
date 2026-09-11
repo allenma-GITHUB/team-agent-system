@@ -1,5 +1,48 @@
 # Daily Progress Report - September 11, 2026
 
+## 🤖 CHECKPOINT 34: AGENTS CAN NOW LOOK THINGS UP (PHASE 0a - READ-ONLY TOOL CALLING)
+
+**The largest capability change since the project started, and the first one that alters what the system *can do* rather than how well it does it.** Until now every agent was a single stateless completion: `messages=[{"role":"user","content":prompt}]`, no `tools=` parameter, no second turn. An agent asked "can engineering afford this?" answered from whatever the model already believed, produced prose, and was scored a hardcoded `quality_score = 4.0` for it either way (`task_executor_v2.py:217`). Agents described work; they never did any.
+
+This adds the read-only half of giving them hands: a model can now call a tool mid-reasoning, receive **real system state**, and continue with it.
+
+### ✅ What was added
+
+- **`tools.py`** (new): `Tool` (name, description, JSON Schema parameters, handler, `mutates` flag), `ToolResult`, and `ToolRegistry`. Four read-only tools over this system's own business state: `get_department_budget`, `get_department_capacity`, `list_departments`, `list_tasks`. Managers are injectable, matching the DI convention everywhere else.
+- **`llm_provider.py`**: `generate_with_tools()` for Anthropic, OpenAI and mock, plus `supports_tools()`. The conversation is carried in a **provider-neutral message format** so `agent_loop.py` never learns a vendor wire shape; translation lives in pure module-level functions (`to_anthropic_messages`, `to_openai_messages`, `to_anthropic_tools`, `to_openai_tools`) specifically so they are testable without an API key — which matters, because this container has none and mock is the only path CI can ever run.
+- **`agent_loop.py`** (new): `run_agent_loop()` — call provider with tool schemas, execute requested tools, feed results back, repeat to a bound. Returns `AgentRunResult` with the full transcript, per-call records, accumulated tokens, and `stopped_reason`.
+- **`main_v2.py`**: new `agent-run <question> [--max-iterations N]` command, so this is a usable capability rather than dead code.
+
+### 🔒 Why read-only, and why enforced in code
+
+Read-only is the entire safety property of this phase, so `ToolRegistry` **refuses to register** a tool declaring `mutates=True` unless explicitly constructed with `allow_mutating=True`, and re-checks at execute time. The blast radius of a bug in the loop is therefore exactly zero: an agent can be wrong, but it cannot be destructive. That matters more here than in most projects, because this repo is modified nightly by an unattended agent — hands before restraints would be the riskiest change available.
+
+**Deliberately absent: a generic `read_file` tool.** "Read-only" is not "safe". An agent that can read any path can read `.env`, and the contents would land in an LLM prompt and then be persisted verbatim into `tasks.json`. A test (`test_no_filesystem_tool_is_exposed`) pins that decision so it can't be casually reverted.
+
+### 🛑 Two failure modes designed against explicitly
+
+1. **A model WILL hallucinate tool names and malformed arguments.** `ToolRegistry.execute()` therefore never raises — unknown tools, missing/unexpected/non-object arguments, and handler exceptions all come back as a `ToolResult` whose text is fed to the model, which can read "No such tool: x. Available tools: ..." and correct itself. A traceback would kill the run; a readable error costs one turn.
+2. **Running out of iterations must never read as finishing.** This codebase has shipped "unfinished reported as finished" three separate times (checkpoints 27, 28, and escalations stored with a cheerful summary). So the loop sets `stopped_reason="max_iterations"`, `completed()` returns `False`, and the CLI prints an explicit incomplete-answer warning rather than presenting a half-formed sentence as a conclusion.
+
+Also: `generate_with_tools()` does **not** fall back to mock when a real provider fails, unlike `generate()`. A mock turn invents *which tools to call*; silently substituting that for a failed real call would report fabricated agent reasoning as the model's own — the same class of quiet dishonesty as marking an escalated task completed. It raises `ToolCallFailedError` / `ToolsUnsupportedError` instead, and the CLI reports them.
+
+### 🧪 Validation
+
+Three new test files (33 total, all passing):
+- `tests/test_tools.py` — read-only enforcement at register *and* execute; unknown tool / missing / unexpected / non-object arguments / throwing handler all return results rather than raising; tools return real injected state; `list_tasks` caps at 25 and **discloses** the truncation rather than letting the model reason over a partial list it thinks is complete; no filesystem tool exposed.
+- `tests/test_agent_loop.py` — tools really execute with the model's arguments and results reach the next turn; **the iteration cap is never reported as completed**; failed calls are fed back and not counted as successes; parallel calls in one turn all execute in order; tokens accumulate across the whole loop; `max_iterations < 1` rejected.
+- `tests/test_tool_message_translation.py` — pins the two non-obvious vendor rules: Anthropic requires all `tool_result` blocks answering one assistant turn in a **single** user message (emitting one per message works fine until the model first asks for two things at once), and rejects empty text blocks. Plus OpenAI arg-string serialization and malformed-JSON degradation.
+
+Verified live via the real CLI in an isolated temp dir: a budget question routes to `get_department_budget`, a capacity question to `get_department_capacity`, and `--max-iterations 1` correctly reports an incomplete answer.
+
+### 📝 Next Steps
+
+- **Not yet wired into `DepartmentHeadAgent`.** `_run_locked()` still makes its single completion call. Swapping it to the loop changes the path that budget, metrics and task status all flow through, so it's a separate checkpoint with its own validation rather than a rider on this one.
+- **`quality_score` is still the 4.0 constant.** Tool outcomes upgrade the available signal from "did the HTTP call throw" to "did the intended effect occur" — real, but still not quality. Genuine quality measurement needs a verifier (a check, a test, or a judge), which is its own piece of work.
+- **Delegation remains unexecuted, and is now the obvious next capability.** `agent_decisions.py` returns `decision="delegate"` with an `assigned_agent_id`, but `task_executor_v2.py` never branches on it — the original agent executes anyway while the trace claims otherwise. `delegate_to(department, task)` is a natural next tool. **Blocker:** `DepartmentHeadAgent._lock` is a non-reentrant `threading.Lock` and `TaskExecutor` caches one agent per department, so same-department delegation would deadlock on itself and a cross-department cycle would deadlock the pool worker. That must be fixed before delegation is wired, not after.
+
+---
+
 ## 🎨 CHECKPOINT 33: ASCII BAR CHARTS FOR `report` AND `status`
 
 **User-requested, not a bug hunt.** Every number in `report`/`status` was plain text - a column of percentages and dollar figures with no way to see relative standing at a glance (is engineering's budget nearly gone while design's sits untouched? which agent is actually top-heavy on quality?). Added a small, zero-dependency visualization layer rather than pulling in a charting library - this project has no third-party dependencies anywhere, and a bar made of Unicode block characters doesn't need one either.

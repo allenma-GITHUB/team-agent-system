@@ -16,6 +16,9 @@ from performance import analytics
 from workflows import workflow_engine, create_feature_request_workflow, create_bug_fix_workflow
 from strategy import strategic_planner
 from visualization import render_bar
+from tools import build_readonly_registry
+from agent_loop import run_agent_loop
+from llm_provider import ToolsUnsupportedError, ToolCallFailedError
 
 WORKFLOW_TEMPLATES = {
     "feature_request": create_feature_request_workflow,
@@ -396,6 +399,59 @@ def show_strategy(apply: bool):
         print("\n(Dry run - re-run with --apply to actually move the budget.)")
 
 
+def run_agent(question: str, max_iterations: int = 5):
+    """Ask an agent a question it must answer from real system state.
+
+    Unlike `submit`/`process`, which produce prose about a task, this runs
+    the tool-calling loop: the model can look up actual budgets, capacity,
+    departments and task history before answering. Tools are read-only, so
+    nothing here can change system state no matter what the model asks for.
+    """
+    init_system()
+
+    provider = LLMProvider()
+    registry = build_readonly_registry()
+
+    print(f"\n🤖 Agent ({provider.get_status()})")
+    print(f"   Tools available: {', '.join(registry.names())}")
+    print(f"   Question: {question}\n")
+
+    try:
+        result = run_agent_loop(question, provider, registry, max_iterations=max_iterations)
+    except ToolsUnsupportedError as exc:
+        print(f"✗ {exc}")
+        return
+    except ToolCallFailedError as exc:
+        print(f"✗ Provider call failed: {exc}")
+        return
+
+    if result.tool_calls:
+        print("   Tool calls:")
+        for call in result.tool_calls:
+            mark = "✓" if call.ok else "✗"
+            detail = "" if call.ok else f" ({call.error})"
+            print(f"     {mark} {call.name}({_format_args(call.arguments)}){detail}")
+    else:
+        print("   Tool calls: none - answered without looking anything up")
+
+    print(f"\n{result.final_content or '(no answer text)'}\n")
+
+    # Never let an unfinished run read as a finished one: if the loop hit
+    # its cap the model still wanted tools, so the text above is a partial
+    # thought, not a conclusion.
+    if not result.completed():
+        print(f"⚠ Stopped after the {result.iterations}-iteration limit with the agent still "
+              f"requesting tools - this answer is incomplete.")
+        print(f"  Re-run with --max-iterations {max_iterations * 2} to give it more room.")
+
+    print(f"   [{result.iterations} iteration(s), {result.successful_tool_calls()}/{len(result.tool_calls)} "
+          f"tool calls ok, ~{result.tokens_estimate} tokens]")
+
+
+def _format_args(arguments: dict) -> str:
+    return ", ".join(f"{k}={v!r}" for k, v in arguments.items())
+
+
 def main():
     if len(sys.argv) < 2:
         print("Team Agent System v2 - CLI with Event Bus & Parallel Execution")
@@ -414,6 +470,7 @@ def main():
         print("  python main_v2.py workflow retry <instance_id>")
         print("  python main_v2.py workflow status <instance_id>")
         print("  python main_v2.py strategy [--apply]")
+        print("  python main_v2.py agent-run <question> [--max-iterations N]")
         print("\nExample:")
         print("  python main_v2.py submit 'Fix login bug'")
         print("  python main_v2.py process          # Parallel by default")
@@ -421,6 +478,7 @@ def main():
         print("  python main_v2.py report           # Quality, cost, budget & capacity in one report")
         print("  python main_v2.py workflow start feature_request title='Dark mode'")
         print("  python main_v2.py strategy --apply  # Reallocate budget from idle to strained departments")
+        print("  python main_v2.py agent-run 'Can engineering afford a 20-hour task?'")
         return
 
     command = sys.argv[1]
@@ -520,6 +578,25 @@ def main():
 
     elif command == "strategy":
         show_strategy(apply="--apply" in sys.argv)
+
+    elif command == "agent-run":
+        if len(sys.argv) < 3:
+            print("Usage: python main_v2.py agent-run <question> [--max-iterations N]")
+            return
+        max_iterations = 5
+        if "--max-iterations" in sys.argv:
+            raw, ok = _flag_value("--max-iterations")
+            if not ok:
+                return
+            try:
+                max_iterations = int(raw)
+            except ValueError:
+                print(f"✗ --max-iterations must be a whole number, got {raw!r}")
+                return
+            if max_iterations < 1:
+                print(f"✗ --max-iterations must be at least 1, got {max_iterations}")
+                return
+        run_agent(sys.argv[2], max_iterations=max_iterations)
 
     else:
         print(f"Unknown command: {command}")
