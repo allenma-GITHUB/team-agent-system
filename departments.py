@@ -2,6 +2,7 @@
 Department Management - Routing and department definitions.
 """
 import json
+import re
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -45,6 +46,54 @@ LOW_COMPLEXITY = 0.2
 HIGH_APPROVAL_LEVEL = 4
 DEFAULT_APPROVAL_LEVEL = 2
 LOW_APPROVAL_LEVEL = 1
+
+# Task-derived skill tags for infer_required_skills(), checked against the
+# deciding agent's own expertise_areas in can_execute()'s skill-gap test.
+#
+# Restricted deliberately to the exact vocabulary config.json's five
+# department heads already declare as their expertise_areas (e.g.
+# engineering_head: architecture/code_review/deployment) - see checkpoint 37
+# in DAILY_PROGRESS.md. A real skill gap can therefore only be found against
+# expertise that already exists in config, never invented on the fly. A
+# department created via create_department() (no matching "_head" entry, so
+# expertise_areas falls back to the placeholder [department]) is kept out of
+# this check entirely by the caller (task_executor_v2.decide_on_task) - a
+# mismatch against a placeholder would prove the placeholder is incomplete,
+# not that the agent lacks a real capability.
+SKILL_KEYWORDS = {
+    # engineering_head: architecture, code_review, deployment
+    "architecture": "architecture", "rearchitect": "architecture",
+    "code review": "code_review",
+    "deploy": "deployment", "deployment": "deployment", "release": "deployment",
+    # design_head: ui_design, ux_research, design_systems
+    "ui": "ui_design", "interface design": "ui_design",
+    "ux research": "ux_research", "user research": "ux_research", "usability": "ux_research",
+    "design system": "design_systems",
+    # research_head: data_analysis, research_methodology, insights
+    "data analysis": "data_analysis", "analyze data": "data_analysis", "statistics": "data_analysis",
+    "methodology": "research_methodology", "survey": "research_methodology",
+    "insights": "insights",
+    # support_head: customer_service, problem_solving, documentation
+    "customer service": "customer_service", "support ticket": "customer_service",
+    "troubleshoot": "problem_solving", "debug": "problem_solving",
+    "documentation": "documentation", "write docs": "documentation",
+    # sales_head: sales_strategy, negotiation, customer_relations
+    "sales strategy": "sales_strategy", "pricing strategy": "sales_strategy",
+    "negotiation": "negotiation", "negotiate": "negotiation",
+    "customer relations": "customer_relations", "client relationship": "customer_relations",
+}
+
+# Matched with \b word boundaries, not plain substring "in" like the
+# estimate_hours()/estimate_complexity() keyword lists above get away with -
+# their keywords ("migration", "typo", ...) are long enough that an
+# accidental substring hit is implausible. "ui" is not: naive substring
+# matching flagged "Build a thing" as requiring ui_design, because "build"
+# contains "ui" - found live via the test suite (test_delegation.py's
+# "Build a thing" silently stopped delegating, because that phantom
+# requirement got threaded into find_best_delegate()'s candidate filter).
+_SKILL_KEYWORD_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in sorted(SKILL_KEYWORDS, key=len, reverse=True)) + r")\b"
+)
 
 
 class DepartmentManager:
@@ -142,6 +191,29 @@ class DepartmentManager:
         if complexity <= 0.3:
             return LOW_APPROVAL_LEVEL
         return DEFAULT_APPROVAL_LEVEL
+
+    @staticmethod
+    def infer_required_skills(description: str) -> List[str]:
+        """Task-derived skill tags, for the required_skills a decision
+        context hands to can_execute()'s skill-gap check.
+
+        Permissive by design when nothing matches: returns [] rather than
+        guessing a tag, because an empty required_skills list can never
+        produce a gap (set([]) - anything == set()). The alternative -
+        always inferring something - is exactly what checkpoint 37 flagged
+        as too broad a blast radius for one session: it would fail the gap
+        check for nearly every task on a department whose config.json entry
+        is the generic placeholder ([department]). Absence of a recognized
+        keyword is treated as "no specific skill demand", not as license to
+        assume one that isn't in the text.
+        """
+        desc_lower = description.lower()
+        skills = []
+        for match in _SKILL_KEYWORD_PATTERN.finditer(desc_lower):
+            skill = SKILL_KEYWORDS[match.group(1)]
+            if skill not in skills:
+                skills.append(skill)
+        return skills
 
     @staticmethod
     def get_departments() -> List[str]:

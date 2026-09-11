@@ -148,21 +148,37 @@ class DepartmentHeadAgent(BaseAgent):
         complexity = DepartmentManager.estimate_complexity(task)
         approval_level = DepartmentManager.approval_level_for_complexity(complexity)
 
-        # KNOWN TAUTOLOGY, deliberately left in place for now: required_skills
-        # is copied from this agent's own expertise_areas, so can_execute()'s
-        # `set(required_skills) - set(expertise_areas)` is mathematically
-        # always empty and the skill-gap check can never fire. Inferring real
-        # skills from the task is only meaningful once every department has
-        # genuine declared expertise - departments absent from config.json
-        # fall back to expertise_areas=[department], a placeholder that no
-        # inferred skill would ever match, which would escalate nearly every
-        # task on those agents. That is a config data change with its own
-        # blast radius, so it gets its own checkpoint rather than riding
-        # along with this one.
+        # required_skills now comes from the task text itself
+        # (DepartmentManager.infer_required_skills), not from this agent's
+        # own expertise_areas. The previous version copied the deciding
+        # agent's own profile as the task's requirement, so can_execute()'s
+        # `set(required_skills) - set(expertise_areas)` was mathematically
+        # always empty - confirmed live: support_head (expertise
+        # customer_service/problem_solving/documentation, skill_level 3)
+        # executed "Redesign the platform architecture and negotiate a new
+        # sales contract pricing strategy" without a flicker, because its
+        # own expertise list was standing in as the task's requirement.
+        #
+        # Only inferred for agents config.json actually declares expertise
+        # for (the five built-in department heads). A department without a
+        # config.json "agents" entry falls back to expertise_areas =
+        # [department] - a placeholder, not a real skill list - so a
+        # mismatch against it would prove the placeholder is incomplete,
+        # not that the agent lacks a real capability. Confirmed live: with
+        # inference unconditional, "Investigate a minor UI glitch" against
+        # a placeholder test department escalated on a manufactured
+        # "ui_design" gap that had nothing to do with the actual agent.
+        # infer_required_skills() is also permissive when nothing matches
+        # ([], never a gap), so a description with no recognized vocabulary
+        # still can't manufacture a requirement out of nothing.
+        has_declared_expertise = DepartmentManager.get_agent_config(self.agent_id) is not None
+        required_skills = (
+            DepartmentManager.infer_required_skills(task) if has_declared_expertise else []
+        )
         decision_context = DecisionContext(
             task_id=f"task_{int(time.time())}",
             task_type=self.department,
-            required_skills=self.agent_state.profile.expertise_areas,
+            required_skills=required_skills,
             complexity=complexity,
             urgency=0.5,
             estimated_hours=estimated_hours,

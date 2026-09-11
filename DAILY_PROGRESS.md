@@ -1,5 +1,47 @@
 # Daily Progress Report - September 11, 2026
 
+## 🎯 CHECKPOINT 38: `required_skills` STOPPED ASKING AGENTS ABOUT THEMSELVES
+
+**Closes the tautology checkpoint 37 documented and deliberately left open.** `decide_on_task()` built every `DecisionContext` with `required_skills=self.agent_state.profile.expertise_areas` - the deciding agent's *own* skill list, standing in as "what does this task need?". `can_execute()`'s gap check, `set(required_skills) - set(expertise_areas)`, was therefore mathematically always empty: an agent was always asked "do you have the skills for this?" using its own skill list as the question. Confirmed live before touching anything:
+
+```
+support_head expertise_areas: ['customer_service', 'problem_solving', 'documentation']
+support_head skill_level: 3
+decide_on_task("Redesign the platform architecture and negotiate a new
+                sales contract pricing strategy")
+  -> decision: execute | required_skills used: ['customer_service', 'problem_solving', 'documentation']
+```
+
+A task about architecture and sales negotiation - nothing support does - executed without a flicker, because the "required skills" it was checked against were never the task's, they were its own.
+
+### ✅ Fix
+
+- **`departments.py`: `DepartmentManager.infer_required_skills(description)`** - a new keyword-tier inference, same coarse philosophy as `estimate_hours()`/`estimate_complexity()`, restricted deliberately to the exact vocabulary the five configured department heads already declare in `config.json` (e.g. `engineering_head`: architecture/code_review/deployment). A real gap can only be found against expertise that already exists in config, never invented on the fly.
+- **Permissive by default**: no recognized keyword means `required_skills=[]`, which can never produce a gap. Absence of a signal is treated as "no specific demand", not license to guess one - the same design choice as the complexity/hours tiers' `DEFAULT` values, just at the empty end instead of a mid-point.
+- **`task_executor_v2.py`'s `decide_on_task()`** now calls it instead of echoing `self.agent_state.profile.expertise_areas`.
+
+### 🐛 Two defects found while wiring this up, before it shipped
+
+**1. Naive substring matching lies.** The first version matched keywords with plain `in`, the same style `estimate_hours()`/`estimate_complexity()` already use safely - safely there because their keywords ("migration", "typo", "rearchitect", ...) are long enough that an accidental hit is implausible. `"ui"` (for `ui_design`) is not: it matched inside `"build"` ("b**ui**ld"), which meant `test_delegation.py`'s `"Build a thing"` inferred a phantom `ui_design` requirement. That requirement fed `find_best_delegate()`'s candidate filter (`skill_required=required_skills[0]`), which excluded the intended delegate and silently broke a scenario that used to delegate correctly - no exception, just the wrong branch taken. Fixed by matching every keyword on `\b` word boundaries instead of raw substrings.
+
+**2. Inferring *something* unconditionally is too broad.** A department created without a `config.json` "agents" entry (any ad hoc or test department) falls back to `expertise_areas=[department]` - a placeholder, not real data. Checking real vocabulary against a placeholder doesn't measure a capability gap, it just proves the placeholder is incomplete - and with the naive-substring bug already fixed, this was still enough to break two more tests: a bland `"Investigate a minor UI glitch"` against a throwaway `qa_*` test department escalated on a manufactured `ui_design` gap that had nothing to do with the actual agent. **Scoped the fix accordingly**: `required_skills` is only inferred when `DepartmentManager.get_agent_config(self.agent_id)` finds a real config entry (the five built-in heads); a placeholder-expertise department always gets `required_skills=[]` and is never skill-gated. This is the exact blast radius checkpoint 37 predicted and named as the reason to give this its own session rather than ride along.
+
+### 📏 Existing scope limit, unchanged and now worth stating plainly
+
+`can_execute()`'s skill-gap check only blocks when `self.agent.profile.skill_level < 4`. Of the five configured heads, only `support_head` (skill 3) is actually gated by it today - `engineering_head`, `design_head`, `research_head`, and `sales_head` are all skill 4 and bypass the check regardless of any mismatch this checkpoint can now detect. Verified live: `engineering_head` given a low-complexity task requiring `negotiation`/`sales_strategy` still executes it, skill mismatch and all. That guard predates this checkpoint and this work does not touch it - noted here so the fix isn't read as broader than it is.
+
+### 🧪 Validation
+
+`tests/test_required_skills.py` (new; 37 files total, all passing): word-boundary matching rejects the `"build"` → `ui_design` false positive while still matching a real standalone `"UI"`; no-keyword text infers nothing; `support_head` now escalates a genuinely mismatched task with "Missing expertise" in the reason; a task matching its real expertise still executes; a placeholder department is never skill-gated even when the text contains real vocabulary; a skill-4 head stays ungated by design. Each test function gets its own single-department registry/budget files (not a registry shared across the whole module) - a shared one let a later test's registered department head become a legitimate delegate for an earlier test's "must escalate" case once the file's own idempotency loop (run twice back-to-back, per repo convention) hit its second pass with both departments already on disk. Full suite (37 files) verified twice back-to-back, and live via direct probes reproducing the before/after decisions shown above.
+
+### 📝 Next Steps
+
+- **`delegate_to` as a tool** remains unblocked and now more interesting still: a support task requiring `architecture` has a real, matching delegate (`engineering_head`) available in a shared registry - confirmed as a side effect of debugging the test isolation issue above. An agent could make that hand-off explicitly instead of it only being reachable through the decision engine's own ranking.
+- **`find_best_delegate()`'s `skill_required` filter only looks at `required_skills[0]`** - the first inferred tag, not the full set. A task inferring multiple mismatched skills (as in the support_head examples above) is only ever matched for delegate-search purposes on one of them. Not fixed here to keep this checkpoint reviewable; worth revisiting once delegation is driven by a real tool call rather than the decision engine's implicit path.
+- **Real token cost is still invisible to budgets** - unchanged from checkpoint 37.
+
+---
+
 ## 🧠 CHECKPOINT 37: THE DECISION ENGINE WAS RUNNING ON CONSTANTS
 
 **The decision layer that drives delegation, approval and escalation has been deciding almost nothing since Phase 1.** `decide_on_task()` handed every task `complexity=0.5` and `required_approval_level=2`, and both constants sit on the safe side of every threshold `agent_decisions.py` compares them against. Proven by direct probe before changing anything:
