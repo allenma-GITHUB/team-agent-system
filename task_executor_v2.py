@@ -13,6 +13,8 @@ from agent_state import agent_registry as _default_agent_state_registry, AgentSt
 from agent_decisions import AgentDecisionEngine, DecisionContext
 from budgets import budget_manager as _default_budget_manager, capacity_manager as _default_capacity_manager
 from performance import analytics as _default_analytics
+from tools import build_readonly_registry
+from agent_loop import run_agent_loop
 
 
 # How many hand-offs deep a single task may go before escalating. Three is
@@ -20,6 +22,13 @@ from performance import analytics as _default_analytics
 # doing this?" stops having a useful answer, and each extra hop is another
 # department's budget spent re-deciding rather than working.
 MAX_DELEGATION_DEPTH = 3
+
+# Tool-calling rounds one agent may take on a single task. Every round is a
+# full round trip billed to the department, so this bounds cost, not just
+# runtime. Four leaves room to look up two or three facts and then answer;
+# an agent still asking for tools after that has usually misunderstood the
+# task rather than nearly finished it.
+AGENT_MAX_ITERATIONS = 4
 
 
 @dataclass
@@ -42,7 +51,8 @@ class DepartmentHeadAgent(BaseAgent):
                  llm_provider=None, cost_per_hour: Optional[float] = None,
                  agent_state_registry=None, budget_manager=None,
                  capacity_manager=None, analytics=None,
-                 delegate_resolver: Optional[Callable[[str], Any]] = None, **kwargs):
+                 delegate_resolver: Optional[Callable[[str], Any]] = None,
+                 tool_registry=None, **kwargs):
         super().__init__(**kwargs)
         self.department = department
         self.agent_id = f"{department}_head"
@@ -110,6 +120,12 @@ class DepartmentHeadAgent(BaseAgent):
                         constraints=[]
                     )
                 self.agent_state = self.agent_state_registry.register(profile)
+
+        # Read-only tools this agent may call while working. Built from this
+        # agent's own managers, so an agent constructed with isolated budget
+        # and capacity managers looks up those and not the global singletons.
+        self._tool_registry = tool_registry or build_readonly_registry(
+            budgets=self.budget_manager, capacity=self.capacity_manager)
 
         # Compensation: derived from the agent's own seniority (agent_type,
         # skill_level) unless the caller explicitly sets a rate, instead of
@@ -345,24 +361,85 @@ class DepartmentHeadAgent(BaseAgent):
             f"As the {self.department.title()} Head, analyze this task and provide "
             f"a brief plan with key action items:\n{task}"
         )
+        if self.llm and self.llm.supports_tools(self.department):
+            # Say the numbers are available, so the model looks them up rather
+            # than inventing a plausible budget - inventing one is exactly what
+            # it did for every task before tools existed.
+            prompt += (
+                "\n\nYou can look up this organization's real state with the tools "
+                "provided (budgets, staffing capacity, departments, task history). "
+                "Use them for any figure you rely on instead of estimating, then "
+                "give your plan."
+            )
 
         analysis = f"{self.department.title()} team analyzed the task and produced a plan."
         tokens_used = 0
         provider_used = "mock"
         quality_score = 0.0
+        used_tools = False
+        tool_calls_made = 0
+        tool_calls_failed = 0
+        # Set when the agent stopped without finishing. Checked after the
+        # bookkeeping below, which must happen either way - an unfinished
+        # run still consumed budget, workload and tokens.
+        incomplete_reason = None
 
         if self.llm:
             try:
-                result = self.llm.generate(prompt, task_type=self.department)
-                analysis = result.get("content", analysis)
-                tokens_used = result.get("tokens_estimate", 0)
-                provider_used = result.get("provider", "mock")
-                quality_score = 4.0  # Mock quality score
-                self._emit("llm_response", {
-                    "provider": provider_used,
-                    "model": result.get("model", "Unknown"),
-                    "tokens": tokens_used
-                })
+                if self.llm.supports_tools(self.department):
+                    used_tools = True
+                    run = run_agent_loop(
+                        prompt, self.llm, self._tool_registry,
+                        max_iterations=AGENT_MAX_ITERATIONS, task_type=self.department,
+                    )
+                    analysis = run.final_content or analysis
+                    tokens_used = run.tokens_estimate
+                    provider_used = run.provider
+                    tool_calls_made = len(run.tool_calls)
+                    tool_calls_failed = tool_calls_made - run.successful_tool_calls()
+
+                    # quality_score is NOT a quality measurement and never has
+                    # been - it was a hardcoded 4.0 for "the HTTP call didn't
+                    # throw". It is now an execution-health signal: whether the
+                    # agent finished, and whether the tools it reached for
+                    # actually worked. That is a real, varying observable, but
+                    # judging whether the ANSWER was any good still needs a
+                    # verifier this system doesn't have yet.
+                    if not run.completed():
+                        incomplete_reason = (
+                            f"agent stopped after the {run.iterations}-iteration limit "
+                            f"while still requesting tools")
+                        quality_score = 1.0
+                    elif tool_calls_failed:
+                        quality_score = 3.0
+                    else:
+                        quality_score = 4.0
+
+                    self._emit("llm_response", {
+                        "provider": provider_used,
+                        "model": run.model,
+                        "tokens": tokens_used,
+                        "tool_calls": tool_calls_made,
+                        "tool_calls_failed": tool_calls_failed,
+                        "iterations": run.iterations,
+                        "stopped_reason": run.stopped_reason,
+                    })
+                else:
+                    # Provider can't call tools (gemini/groq/nvidia here). Degrade
+                    # to the original single completion rather than failing the
+                    # task - and record that tools were not used, so a report
+                    # never implies a lookup that never happened.
+                    result = self.llm.generate(prompt, task_type=self.department)
+                    analysis = result.get("content", analysis)
+                    tokens_used = result.get("tokens_estimate", 0)
+                    provider_used = result.get("provider", "mock")
+                    quality_score = 4.0
+                    self._emit("llm_response", {
+                        "provider": provider_used,
+                        "model": result.get("model", "Unknown"),
+                        "tokens": tokens_used,
+                        "tool_calls": 0,
+                    })
             except Exception as e:
                 self._emit("llm_error", {"error": str(e), "provider": provider_used})
                 quality_score = 2.0
@@ -402,7 +479,7 @@ class DepartmentHeadAgent(BaseAgent):
         self.agent_state.learn_preference(self.department, 0.3 if quality_score >= 3.0 else -0.2)
 
         self._emit("agent_complete", {
-            "status": "success",
+            "status": "incomplete" if incomplete_reason else "success",
             "duration": duration,
             "tokens": tokens_used,
             "quality": quality_score,
@@ -415,6 +492,31 @@ class DepartmentHeadAgent(BaseAgent):
         self.agent_state.remove_task()
         self.agent_state_registry.save()
 
+        # An agent that ran out of iterations mid-thought has NOT done the
+        # task, and must never be recorded as having done it - that is the
+        # exact defect fixed in checkpoints 27 and 28, and the loop's own
+        # stopped_reason exists so this layer can tell the difference.
+        #
+        # The budget charge above is deliberately NOT refunded: the attempt
+        # really did consume tokens and staff time. Reporting the spend
+        # while reporting the task as unfinished is the accurate pair.
+        if incomplete_reason:
+            self._emit("task_escalated", {"reasoning": incomplete_reason})
+            return {
+                "analysis": f"Escalated, not executed: {incomplete_reason}. "
+                            f"Partial output: {analysis[:200]}",
+                "department": self.department,
+                "agent_id": self.agent_id,
+                "status": "escalated",
+                "approved": False,
+                "llm_provider": provider_used,
+                "tokens_used": tokens_used,
+                "quality_score": quality_score,
+                "used_tools": used_tools,
+                "tool_calls": tool_calls_made,
+                "tool_calls_failed": tool_calls_failed,
+            }
+
         return {
             "analysis": analysis,
             "department": self.department,
@@ -424,6 +526,9 @@ class DepartmentHeadAgent(BaseAgent):
             "llm_provider": provider_used,
             "tokens_used": tokens_used,
             "quality_score": quality_score,
+            "used_tools": used_tools,
+            "tool_calls": tool_calls_made,
+            "tool_calls_failed": tool_calls_failed,
             "metrics": {
                 "avg_quality": self.agent_state.metrics.avg_quality_score,
                 "tasks_completed": self.agent_state.metrics.tasks_completed,

@@ -1,5 +1,52 @@
 # Daily Progress Report - September 11, 2026
 
+## 🔧 CHECKPOINT 36: THE REAL TASK PIPELINE NOW USES TOOLS
+
+**Closing the gap checkpoint 34 deliberately left open.** The tool-calling loop existed but was reachable only through the side-door `agent-run` command — every task submitted through the actual pipeline (`submit` → `process`, and everything `workflows.py` drives) still went through a single completion with no tools. The capability was built but unused.
+
+`DepartmentHeadAgent._run_locked()` now runs the loop. A department head working a real task can look up its own budget, capacity, sibling departments and task history before answering, instead of inventing a plausible figure — which is precisely what it did for every task before this.
+
+### ✅ What changed
+
+- **`_run_locked()` runs `run_agent_loop()`** when the provider supports tool calling, with a read-only registry built from *this agent's own* injected managers (so an agent constructed with isolated managers reads those, not the global singletons).
+- **`AGENT_MAX_ITERATIONS = 4`** bounds cost, not just runtime: every round is a full round trip billed to the department.
+- **The prompt now tells the model the numbers are available** and to look them up rather than estimate. Without that instruction a model will happily answer from assumption even with tools attached.
+- **Graceful degradation, not silent degradation.** Providers this system can't tool-call (gemini/groq/nvidia) fall back to the original single completion, and the result records `used_tools: False` — a report must never imply a lookup that never happened.
+- Results now carry `used_tools`, `tool_calls`, `tool_calls_failed`; the `llm_response` event carries iterations and `stopped_reason` too.
+
+### 🛑 An unfinished run is not a completed task
+
+**This would have been the fourth instance of this codebase's signature bug** (checkpoints 27, 28, and escalations stored with a cheerful summary). The loop reports `stopped_reason`; this layer now acts on it. An agent that exhausts its iteration budget mid-thought returns `status="escalated"` with the partial output attached — never `"completed"`.
+
+Deliberate decision recorded in code: **the budget charge is not refunded** on that path. The attempt really did consume tokens and staff time. Reporting the spend alongside an unfinished task is the accurate pair; refunding would understate real cost. Workload *is* released, otherwise an agent would leak a slot per failure and eventually look permanently busy.
+
+### 📉 `quality_score` finally varies with something real
+
+It has been a hardcoded `4.0` — literally "the HTTP call didn't throw" — since Phase 1, with the entire analytics, top-performer, recommendation and compensation superstructure computed downstream of that constant. It now derives from execution health: `4.0` completed with all tool calls working, `3.0` completed with failures, `2.0` on exception, `1.0` when the agent never finished.
+
+**Stated plainly in the code and here: this is still not a quality measurement.** It measures whether the agent finished and whether its tools worked. Judging whether the *answer* was any good needs a verifier this system doesn't have. The improvement is that the number now varies with a real observable instead of being a constant wearing a metric's name.
+
+### 🧪 Validation
+
+`tests/test_executor_tool_wiring.py` (new; 35 files total, all passing), using fake providers so nothing depends on a model's mood:
+- A normal task goes through the loop, and `tokens_used` sums across the whole loop rather than only the final turn.
+- **Exhausting iterations escalates**: status `escalated`, `error_rate` 1.0, workload released, budget still charged, loop provably bounded at `AGENT_MAX_ITERATIONS`.
+- A non-tool-capable provider degrades to one completion with `used_tools: False`.
+- A failed tool call lowers `quality_score` to 3.0 while the task still completes (the agent read the error and recovered).
+- An agent's tools resolve against its own injected managers, not the globals.
+
+Full suite verified twice back-to-back and live via the CLI: two tasks submitted and processed, each making a real tool lookup, with results persisted to `tasks.json`.
+
+**Caveat worth recording:** the mock provider routes on keywords in the prompt, and the new tool instruction contains the word "budgets" — so in mock mode nearly every task now calls `get_department_budget` regardless of subject. That is a mock artifact, not agent reasoning, and it will disappear with a real provider. Nothing in the tests depends on it.
+
+### 📝 Next Steps
+
+- **`delegate_to` as a tool** is the obvious next capability: checkpoint 35 made delegation safe to execute, this one gives agents a loop to call it from. Delegation would become a decision a model makes explicitly rather than one inferred from a hardcoded `complexity=0.5`.
+- **The decision inputs are still constants.** `task_executor_v2.py` pins `complexity=0.5` and `required_approval_level=2`, so two of `requires_approval()`'s three triggers can never fire and approval is reachable only via `estimated_hours > 16`, typed at the CLI. The agent can now *look up* real state — it still can't feed any of it into its own decision.
+- **Real token cost is still invisible to budgets.** Budgets price `estimated_hours * cost_per_hour`; the loop now produces genuine token counts, and nothing spends them. That is the piece that would make the budget layer govern real money.
+
+---
+
 ## 🔀 CHECKPOINT 35: DELEGATION ACTUALLY DELEGATES (AND CANNOT DEADLOCK)
 
 **Two defects, one of them live since Phase 1 and silently misreporting every delegated task.**
