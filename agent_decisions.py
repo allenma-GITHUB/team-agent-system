@@ -78,10 +78,21 @@ class AgentDecisionEngine:
         return True  # Moderate preference + available = execute
 
     def find_best_delegate(self, context: DecisionContext) -> Optional[AgentState]:
-        """Find best agent to delegate to."""
-        candidates = self.registry.available_agents(
-            skill_required=context.required_skills[0] if context.required_skills else None
-        )
+        """Find best agent to delegate to.
+
+        Excludes this agent: available_agents() returns everyone available,
+        including the caller, so without this filter an agent could rank
+        itself top and "delegate" a task to itself. That was harmless only
+        while nothing acted on a delegate decision - once delegation
+        actually executes, handing work back to the same cached agent
+        re-enters its own non-reentrant lock and deadlocks the thread.
+        """
+        candidates = [
+            candidate for candidate in self.registry.available_agents(
+                skill_required=context.required_skills[0] if context.required_skills else None
+            )
+            if candidate.profile.agent_id != self.agent.profile.agent_id
+        ]
 
         if not candidates:
             return None

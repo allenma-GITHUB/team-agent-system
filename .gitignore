@@ -32,3 +32,10 @@ Thumbs.db
 data/traces/
 *.log
 *.jsonl
+
+# Test fixtures. Tests inject isolated managers pointed at data/test_*.json
+# so they never touch the real data files; those artifacts are recreated by
+# every run and must never be committed. Without this they show up as
+# untracked noise in `git status` after each suite run and eventually get
+# swept into a commit by a stray `git add -A`.
+data/test_*.json

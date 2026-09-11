@@ -1,5 +1,51 @@
 # Daily Progress Report - September 11, 2026
 
+## 🔀 CHECKPOINT 35: DELEGATION ACTUALLY DELEGATES (AND CANNOT DEADLOCK)
+
+**Two defects, one of them live since Phase 1 and silently misreporting every delegated task.**
+
+**Defect 1 - delegation never executed.** `agent_decisions.py` has returned `decision="delegate"` with a ranked `assigned_agent_id` since Phase 1, but `task_executor_v2.py` contained zero references to `"delegate"` — the only decision it branched on was `"escalate"`. A delegated task fell straight through to the budget charge and was **executed by the original agent**, which was also billed for it and credited with it in `performance.py`, while the event trace recorded a hand-off that never happened. Same family as checkpoints 27/28 (escalations reported as completions): the system's own record of what it did was wrong.
+
+**Defect 2 - wiring it up naively would have deadlocked.** Found while designing the fix, before writing it:
+- `find_best_delegate()` ranked `available_agents()` **without excluding the caller**, so an agent could rank itself top and "delegate" to itself.
+- `DepartmentHeadAgent._lock` is a plain non-reentrant `threading.Lock`, and `TaskExecutor` caches exactly **one agent object per department**. So self-delegation re-enters a lock the same thread already holds, and an A→B→A cycle across departments is textbook lock-ordering deadlock. Either one hangs a `ThreadPoolExecutor` worker permanently — no exception, no traceback, just a thread that never returns.
+
+### ✅ Fix
+
+- **`agent_decisions.py`**: `find_best_delegate()` now excludes the calling agent from its candidate list. Correct regardless of execution wiring — an agent is not its own delegate.
+- **`task_executor_v2.py`**: delegation is decided under the lock but **dispatched outside it**. `_run_locked()` never calls another agent; when it decides to delegate it returns an internal `_DelegationRequest`, and `run()` dispatches only after the `with` block has released. A thread therefore never holds two agents' locks at once, which is what makes a delegation cycle structurally incapable of deadlocking rather than merely unlikely to.
+- The delegate branch sits **before the budget charge** on purpose: an agent that hands work away must not be billed for it, and the delegate charges its own department when it runs.
+- **Bounded**: `MAX_DELEGATION_DEPTH = 3`, plus cycle detection against the delegation chain. Both escalate with the chain named in the reason, rather than recursing until a budget drains.
+- **`_resolve_delegate()`** maps a delegate's `agent_id` to the head of that agent's department — the decision engine ranks `AgentState`s that may not be department heads at all (e.g. `eng_lead`), and the department head is the one object per department whose lock genuinely serializes that department's shared state.
+- Every guard ends in one of two honest outcomes — execute here **and record that the hand-off did not happen** (`delegation_declined`, `intended_delegate`), or escalate. No silent fallback that lets the trace keep claiming otherwise; that shape is the bug this work exists to remove.
+
+**One bug found and fixed during testing:** the delegation fields were being assigned on the way out of each frame, so in an A→B→C chain, A overwrote B's entries — reporting that A handed the task to C (B did), and replacing the full three-agent chain with A's shorter view. Caught by noticing a printed chain of length 2 alongside an escalation reason naming three agents. Now `setdefault`, so the innermost frame's more complete record survives stack unwinding; a test asserts the recorded chain and the stated reason agree.
+
+### 🧪 Validation
+
+`tests/test_delegation.py` (new, 34 files total, all passing). The deadlock tests run the scenario in a worker thread with a `join(timeout=20)` — **a regression here does not fail an assertion, it hangs, so the timeout is the assertion**:
+- An agent is excluded from its own delegate ranking.
+- The delegate does the work **and pays for it**: `design_head` executes, design's budget is charged, engineering's stays at exactly `$0`, and `tasks_completed` is credited to the delegate rather than the delegator.
+- An A→B→A cycle escalates naming the chain, charges nobody, and returns promptly.
+- Depth is capped, exercised directly by entering with a pre-seeded chain (left to itself the ranking bounces back and trips the *cycle* guard first, which would leave the depth branch untested).
+- No delegation channel → executes locally and flags it, rather than failing a task that previously succeeded.
+- Ordinary non-delegated execution is unchanged.
+- 12 concurrent runs delegating in opposing directions all return.
+
+Test made idempotent by resetting `state.metrics` explicitly: `register()` returns the *existing* state when a previous run left one on disk, so absolute `tasks_completed` assertions drift every run. Suite verified clean twice back-to-back, and live via the CLI (`submit` ×2 → `process` → `report`).
+
+### 🧹 Also
+
+`.gitignore` now covers `data/test_*.json`. Tests inject isolated managers pointed at those paths, so they are recreated by every run and must never be committed — previously they appeared as untracked noise after each suite run, one `git add -A` away from being swept into a commit.
+
+### 📝 Next Steps
+
+- **`delegate_to` as a *tool*** is now unblocked: checkpoint 34 built the loop, this one made delegation safe to execute. A model could choose delegation explicitly rather than it being inferred from a hardcoded `complexity=0.5`.
+- **The decision inputs are still hardcoded.** `task_executor_v2.py:107-110` pins `complexity=0.5` and `required_approval_level=2`, so of the three approval triggers in `requires_approval()`, two can never fire — approval is reachable only via `estimated_hours > 16`, a number typed at the CLI. Delegation now works; what *drives* it is still mostly constant.
+- Trust relationships (`update_trust_with_agent`) remain unused by the execution path. Delegation is the natural collaboration event to update them from — deliberately left out here to keep this checkpoint reviewable.
+
+---
+
 ## 🤖 CHECKPOINT 34: AGENTS CAN NOW LOOK THINGS UP (PHASE 0a - READ-ONLY TOOL CALLING)
 
 **The largest capability change since the project started, and the first one that alters what the system *can do* rather than how well it does it.** Until now every agent was a single stateless completion: `messages=[{"role":"user","content":prompt}]`, no `tools=` parameter, no second turn. An agent asked "can engineering afford this?" answered from whatever the model already believed, produced prose, and was scored a hardcoded `quality_score = 4.0` for it either way (`task_executor_v2.py:217`). Agents described work; they never did any.

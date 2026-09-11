@@ -2,8 +2,9 @@
 Task Executor v2 - Parallel execution with event bus and agent registry
 Now with autonomous agent decision-making and performance tracking.
 """
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 import threading
 import time
 from core import EventBus, agent_registry, BaseAgent
@@ -12,6 +13,22 @@ from agent_state import agent_registry as _default_agent_state_registry, AgentSt
 from agent_decisions import AgentDecisionEngine, DecisionContext
 from budgets import budget_manager as _default_budget_manager, capacity_manager as _default_capacity_manager
 from performance import analytics as _default_analytics
+
+
+# How many hand-offs deep a single task may go before escalating. Three is
+# an org-chart depth, not a technical limit: past that, "who is actually
+# doing this?" stops having a useful answer, and each extra hop is another
+# department's budget spent re-deciding rather than working.
+MAX_DELEGATION_DEPTH = 3
+
+
+@dataclass
+class _DelegationRequest:
+    """Internal signal from _run_locked() to run(): "delegate this, once
+    you've let go of my lock." Never leaves this module and is never a
+    task result - run() always converts it into one."""
+    agent_id: str
+    reasoning: str
 
 
 class DepartmentHeadAgent(BaseAgent):
@@ -24,11 +41,17 @@ class DepartmentHeadAgent(BaseAgent):
     def __init__(self, department: str, agent_state: Optional[AgentState] = None,
                  llm_provider=None, cost_per_hour: Optional[float] = None,
                  agent_state_registry=None, budget_manager=None,
-                 capacity_manager=None, analytics=None, **kwargs):
+                 capacity_manager=None, analytics=None,
+                 delegate_resolver: Optional[Callable[[str], Any]] = None, **kwargs):
         super().__init__(**kwargs)
         self.department = department
         self.agent_id = f"{department}_head"
         self.llm = llm_provider
+        # Maps an agent_id to a runnable agent, so this agent can hand work
+        # to a sibling. Supplied by TaskExecutor, which owns the per-department
+        # agent cache; None for a standalone agent, which then executes
+        # delegated-away work itself and says so rather than pretending.
+        self._delegate_resolver = delegate_resolver
 
         # TaskExecutor caches one DepartmentHeadAgent per department and
         # reuses it across worker threads, so two tasks routed to the same
@@ -129,7 +152,9 @@ class DepartmentHeadAgent(BaseAgent):
             "raw_decision": decision  # agent_decisions.DecisionResult, for the budget bridge below
         }
 
-    def run(self, task: str, estimated_hours: float = 1.0, **kwargs) -> Dict[str, Any]:
+    def run(self, task: str, estimated_hours: float = 1.0,
+            delegation_chain: Optional[tuple] = None, allow_delegation: bool = True,
+            **kwargs) -> Dict[str, Any]:
         """Serialized per-agent: TaskExecutor reuses one DepartmentHeadAgent
         per department across worker threads, and every mutation this method
         makes (workload, budget, performance metrics) is a non-atomic
@@ -141,11 +166,113 @@ class DepartmentHeadAgent(BaseAgent):
         also the correct place to pay that cost - a real (non-mock) LLM
         call's network latency happens inside this lock too, but that's the
         same tradeoff every other resource-constrained system makes to stay
-        correct rather than merely fast."""
-        with self._lock:
-            return self._run_locked(task, estimated_hours, **kwargs)
+        correct rather than merely fast.
 
-    def _run_locked(self, task: str, estimated_hours: float = 1.0, **kwargs) -> Dict[str, Any]:
+        DELEGATION HAPPENS OUTSIDE THE LOCK, DELIBERATELY. _run_locked()
+        never calls another agent; when it decides to delegate it returns a
+        _DelegationRequest and this method dispatches it only after the
+        `with` block has released. A thread therefore never holds two
+        agents' locks at once, which is what makes an A->B->A delegation
+        cycle impossible to deadlock: the alternative (delegating inline)
+        is a textbook lock-ordering deadlock that would hang a pool worker
+        permanently rather than raising anything you could debug.
+        """
+        chain = tuple(delegation_chain or ())
+
+        with self._lock:
+            outcome = self._run_locked(task, estimated_hours, chain=chain,
+                                       allow_delegation=allow_delegation, **kwargs)
+
+        if isinstance(outcome, _DelegationRequest):
+            return self._dispatch_delegation(outcome, task, estimated_hours, chain)
+        return outcome
+
+    def _dispatch_delegation(self, request: "_DelegationRequest", task: str,
+                             estimated_hours: float, chain: tuple) -> Dict[str, Any]:
+        """Hand a task to another department's agent. Called only with this
+        agent's lock already released (see run()).
+
+        Every guard below ends in one of two honest outcomes - execute here
+        and say the delegation didn't happen, or escalate - never in a
+        silent fallback that lets the trace keep claiming the work went
+        somewhere it didn't. That silent-fallback shape is precisely the
+        bug this method exists to fix.
+        """
+        target_id = request.agent_id
+        new_chain = chain + (self.agent_id,)
+
+        def execute_here(note: str) -> Dict[str, Any]:
+            self._emit("delegation_declined", {"intended_target": target_id, "reason": note})
+            result = self.run(task, estimated_hours, delegation_chain=chain,
+                              allow_delegation=False)
+            result["delegation_declined"] = note
+            result["intended_delegate"] = target_id
+            return result
+
+        def escalate(reason: str) -> Dict[str, Any]:
+            self._emit("task_escalated", {"reasoning": reason})
+            return {
+                "analysis": f"Escalated, not executed: {reason}",
+                "department": self.department,
+                "agent_id": self.agent_id,
+                "status": "escalated",
+                "approved": False,
+                "delegation_chain": list(new_chain),
+            }
+
+        # A cycle would otherwise recurse until the budget ran dry. Escalating
+        # is the honest end state: every agent in the loop has already said it
+        # does not want to do this task.
+        if target_id in new_chain:
+            return escalate(f"Delegation cycle detected: {' -> '.join(new_chain + (target_id,))}")
+
+        if len(new_chain) >= MAX_DELEGATION_DEPTH:
+            return escalate(f"Delegation depth limit ({MAX_DELEGATION_DEPTH}) reached via "
+                            f"{' -> '.join(new_chain)}")
+
+        # No resolver: this agent was constructed standalone rather than by a
+        # TaskExecutor, so there is no way to reach a sibling. Doing the work
+        # and flagging it beats escalating a task that would previously have
+        # completed - but it is recorded, not swallowed.
+        if not self._delegate_resolver:
+            return execute_here("no delegation channel available on this agent")
+
+        target = self._delegate_resolver(target_id)
+        if target is None:
+            return execute_here(f"could not resolve delegate '{target_id}' to a runnable agent")
+
+        # Same department resolves to the same cached object and therefore the
+        # same lock. Self-delegation is already excluded when ranking
+        # candidates; this is the belt-and-braces check that keeps a future
+        # caller from reintroducing the deadlock.
+        if target is self or getattr(target, "department", None) == self.department:
+            return execute_here(f"delegate '{target_id}' belongs to this same department")
+
+        self._emit("task_delegated", {
+            "to_agent": target_id,
+            "to_department": getattr(target, "department", "unknown"),
+            "reasoning": request.reasoning,
+            "chain": list(new_chain),
+        })
+
+        result = target.run(task, estimated_hours, delegation_chain=new_chain)
+        # The delegate's own result stands as the record of who did the work;
+        # these fields record that a hand-off happened and who made it.
+        #
+        # setdefault, not assignment: in an A->B->C chain this runs once per
+        # frame as the stack unwinds, and plain assignment would let A
+        # overwrite B's entries - reporting that A handed the task to C (it
+        # didn't, B did) and replacing the full three-agent chain with A's
+        # shorter view of it. The innermost frame has the most complete
+        # record, so the outer ones must not clobber it.
+        result.setdefault("delegated_from", self.agent_id)
+        result.setdefault("delegation_chain", list(new_chain))
+        result.setdefault("delegation_reasoning", request.reasoning)
+        return result
+
+    def _run_locked(self, task: str, estimated_hours: float = 1.0,
+                    chain: tuple = (), allow_delegation: bool = True,
+                    **kwargs) -> Dict[str, Any]:
         self._emit("agent_start", {"task": task, "department": self.department, "agent_id": self.agent_id})
         start = time.time()
 
@@ -169,6 +296,22 @@ class DepartmentHeadAgent(BaseAgent):
                 "status": "escalated",
                 "approved": False
             }
+
+        # Delegation is decided here but dispatched by run(), after this
+        # method's lock is released - see run()'s docstring for why holding
+        # it across another agent's call deadlocks.
+        #
+        # This return sits BEFORE the budget charge below on purpose: an
+        # agent that hands work to someone else must not be billed for it,
+        # and the delegate charges its own department when it runs. Until
+        # now nothing acted on this decision at all - the task fell through
+        # to the budget charge and was executed here while the event trace
+        # and metrics recorded a handoff that never happened.
+        if allow_delegation and decision.decision == "delegate" and decision.assigned_agent_id:
+            return _DelegationRequest(
+                agent_id=decision.assigned_agent_id,
+                reasoning=decision.reasoning,
+            )
 
         # Every task draws on the department budget, not just the ones big
         # enough to need approval - otherwise routine work is free and only
@@ -341,10 +484,27 @@ class TaskExecutor:
                             agent_state_registry=self.agent_state_registry,
                             budget_manager=self.budget_manager,
                             capacity_manager=self.capacity_manager,
-                            analytics=self.analytics
+                            analytics=self.analytics,
+                            delegate_resolver=self._resolve_delegate
                         )
 
         return self.agents[department]
+
+    def _resolve_delegate(self, agent_id: str) -> Optional[BaseAgent]:
+        """Map a delegate's agent_id to the agent that can actually run it.
+
+        The decision engine ranks AgentStates from the registry, which
+        includes agents that are not department heads and so have no
+        executor of their own (e.g. "eng_lead"). Work is therefore routed
+        to the head of that agent's department - the one object per
+        department that TaskExecutor caches, and so the one whose lock
+        genuinely serializes that department's shared state.
+        """
+        registry = self.agent_state_registry or _default_agent_state_registry
+        state = registry.get(agent_id)
+        if not state:
+            return None
+        return self.get_agent_for_department(state.profile.department)
 
     def execute(self, department: str, task_description: str, estimated_hours: float = 1.0) -> Dict[str, Any]:
         """Execute a task (single, synchronous)."""
