@@ -102,3 +102,16 @@ sections prepended above the previous one, numbering continuing across days.
 Each entry says what was wrong (with evidence), what changed, what was
 validated, what was deliberately left, and what comes next. The most recent
 checkpoint's **Next Steps** is the live backlog.
+
+**`RESEARCH_LOG.md`** holds findings from the daily research pass, newest
+first, so each run builds on what the last one learned instead of
+re-researching settled ground — and so a decision *not* to adopt something
+is recorded with its reasoning rather than relitigated. Judge projects by
+last commit rather than stars, record licenses by name, and treat "nothing
+changed" as a valid entry. Research informs design; it never licenses adding
+a dependency.
+
+**`DAILY_ROUTINE_PROMPT.md`** is the stored prompt for the scheduled daily
+run, kept in git so the standing instruction is reviewable. It cannot be
+updated by an agent session — changes are pasted into the Routine by its
+owner, so keep the two in sync.

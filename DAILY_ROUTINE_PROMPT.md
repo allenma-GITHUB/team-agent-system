@@ -23,6 +23,7 @@ You maintain the Team Agent System repo. One complete, validated improvement per
 
 - `git log --oneline -15`
 - Read the **top** of `DAILY_PROGRESS.md` (newest first). **There is no ROADMAP.md** — `DAILY_PROGRESS.md` is the real record, and the newest checkpoint's **Next Steps** is the live backlog.
+- Read the **top** of `RESEARCH_LOG.md` — what has already been investigated, and which decisions are already settled with reasons.
 - Read `CLAUDE.md`. It holds the project conventions AND the working method below in full. Follow it.
 
 ## 2. Where the system is
@@ -34,15 +35,40 @@ Recent capability work:
 - Delegation genuinely executes: dispatched **outside** the agent lock (so cycles cannot deadlock), bounded by depth and cycle detection, and the delegate is billed rather than the delegator.
 - `complexity` and `required_approval_level` are read from the task instead of being hardcoded.
 
-## 3. Pick ONE task
+## 3. Research — time-boxed, before you build
+
+Every run does some research. It is the smaller half of the run: **the run still has to ship one validated increment.** If research is eating the session, stop and build.
+
+**A. Scoped to today's task.** Before building anything non-obvious, check how it is actually done and whether a better approach exists. Minutes, not an afternoon.
+
+**B. One rotating ecosystem slice.** Read the top of `RESEARCH_LOG.md` and pick the least-recently-checked:
+
+1. **Model/provider landscape.** Highest-value recurring check: `llm_provider.py` hardcodes model IDs (`claude-sonnet-5`, `claude-opus-5`, `gpt-4o`, `gpt-4-turbo`, `nvidia/nemotron-3-ultra-550b-a55b`). A deprecation degrades the whole system to mock **silently** — this is an operational risk research can catch before a user does. Also: pricing, tool-calling API changes.
+2. **MCP spec changes** — exposing this system as an MCP server is a standing candidate.
+3. **Agent frameworks** — has anything appeared that actually models an org (departments, budgets, capacity)? Standing answer so far: no. A one-line "still no" is a fine entry.
+4. **Durable execution / persistence** — relevant only if Postgres is ever on the table.
+5. **Observability** — OTel GenAI semconv stabilization; Langfuse.
+6. **Security advisories** touching anything we run, or any pattern we use.
+
+**Rules:**
+- **Research informs design; it never licenses adding a dependency.** The zero-dependency constraint is a project decision and stands until the owner changes it.
+- Judge maintenance by **last commit, not stars**. Several 50k-star projects in the log are archived.
+- Record licenses **by name**; flag source-available licenses dressed as open source (BSL, SSPL, Elastic, PolyForm, "modified Apache").
+- **"Nothing changed" is a valid finding.** Write one line and move on. Never manufacture findings to look productive.
+- If web tools are unavailable this run, **skip research and build**. Note the skip in the checkpoint; do not guess from memory, and do not stall.
+
+Then prepend a dated entry to `RESEARCH_LOG.md` — including the "nothing changed" case.
+
+## 4. Pick ONE build task
 
 In priority order:
 1. Anything in the newest checkpoint's **Next Steps**. The standing backlog right now: give every department real declared expertise in `config.json` and retire the `required_skills` tautology in `decide_on_task()`; `delegate_to` as an agent tool; make real token cost visible to budgets.
-2. A real defect you can **demonstrate**. Auditing a module you have not audited before is legitimate and has produced this repo's best changes.
+2. Anything today's research turned up as a genuine risk (a deprecated model ID, a broken assumption).
+3. A real defect you can **demonstrate**. Auditing a module you have not audited before is legitimate and has produced this repo's best changes.
 
 Do not start something you cannot finish and validate in one run.
 
-## 4. The method — this is the part that matters
+## 5. The method — this is the part that matters
 
 Full version in `CLAUDE.md`; the essentials:
 
@@ -54,16 +80,18 @@ Full version in `CLAUDE.md`; the essentials:
 - **Safety boundaries live in code.** Agent tools stay read-only; no generic file-read or shell tool. Write tools only when routed through the existing approval/escalation machinery. **Never add a third-party dependency.**
 - **Tests pin the invariant, not the happy path.** Negative cases, run the file twice for idempotency, pin cross-module couplings. Where a regression would *hang* rather than fail (deadlocks), run it in a thread with a join timeout.
 
-## 5. Validate
+## 6. Validate
 
 - `python3 -m py_compile` the changed files.
 - Full suite: `for f in tests/test_*.py; do python3 "$f"; done` — all must pass.
 - Run your new test file twice back-to-back.
 - Exercise it live through the real CLI in an isolated temp dir (copy `config.json` there, set `PYTHONPATH` to the repo).
 
-## 6. Document, commit, push
+## 7. Document, commit, push
 
 Prepend a new `## CHECKPOINT N:` section to `DAILY_PROGRESS.md` (numbering continues; add a `# Daily Progress Report - <date>` header if the date changed). Say what was wrong **with evidence**, what changed, what was validated, what was deliberately left and why, and Next Steps. Call out prominently any change that alters what ordinary tasks *do* rather than how they're reported.
+
+Prepend today's research entry to `RESEARCH_LOG.md` — which slice you checked, what you found (or that nothing changed), with dates, licenses and sources. Both files go in the same commit as the code.
 
 Before committing, restore files the suite dirties:
 `git checkout -- data/agent_states.json data/performance_metrics.json && rm -f data/budgets.json data/workflows.json`
