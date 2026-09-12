@@ -471,6 +471,7 @@ def main():
         print("  python main_v2.py workflow status <instance_id>")
         print("  python main_v2.py strategy [--apply]")
         print("  python main_v2.py agent-run <question> [--max-iterations N]")
+        print("  python main_v2.py serve [--port N]")
         print("\nExample:")
         print("  python main_v2.py submit 'Fix login bug'")
         print("  python main_v2.py process          # Parallel by default")
@@ -479,6 +480,7 @@ def main():
         print("  python main_v2.py workflow start feature_request title='Dark mode'")
         print("  python main_v2.py strategy --apply  # Reallocate budget from idle to strained departments")
         print("  python main_v2.py agent-run 'Can engineering afford a 20-hour task?'")
+        print("  python main_v2.py serve --port 8765  # visual dashboard at http://127.0.0.1:8765/")
         return
 
     command = sys.argv[1]
@@ -597,6 +599,20 @@ def main():
                 print(f"✗ --max-iterations must be at least 1, got {max_iterations}")
                 return
         run_agent(sys.argv[2], max_iterations=max_iterations)
+
+    elif command == "serve":
+        port = 8765
+        if "--port" in sys.argv:
+            raw_port, ok = _flag_value("--port")
+            if not ok:
+                return
+            try:
+                port = int(raw_port)
+            except ValueError:
+                print(f"✗ --port must be a whole number, got {raw_port!r}")
+                return
+        import web_server
+        web_server.run(port=port)
 
     else:
         print(f"Unknown command: {command}")

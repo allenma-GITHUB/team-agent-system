@@ -58,6 +58,7 @@ python main_v2.py status
 | `workflow retry <instance_id>` | Retry a step that's `BLOCKED` on insufficient budget |
 | `workflow status <instance_id>` | Full status of one workflow instance |
 | `strategy [--apply]` | Show (and optionally apply) proposed budget reallocations across departments |
+| `serve [--port N]` | Launch a visual dashboard (`web_server.py`) at `http://127.0.0.1:N/` (default 8765) - submit tasks, process the queue, and watch budget/capacity/quality update from a browser, reading and writing the exact same `data/*.json` the CLI does |
 
 ### Example session
 

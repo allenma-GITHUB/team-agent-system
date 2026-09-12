@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Team Agent System</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --border: #e1e4e9;
+    --text: #1c2128;
+    --muted: #6b7280;
+    --accent: #3b5bdb;
+    --good: #2f9e44;
+    --warn: #e8590c;
+    --bad: #e03131;
+    --track: #edeef1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --panel: #1c1f26;
+      --border: #2c313a;
+      --text: #e7e9ee;
+      --muted: #9aa2af;
+      --accent: #7b96ff;
+      --good: #51cf66;
+      --warn: #ffa94d;
+      --bad: #ff6b6b;
+      --track: #262a33;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 20px;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+  #provider-badge { font-size: 12px; color: var(--muted); background: var(--panel); border: 1px solid var(--border); padding: 4px 10px; border-radius: 999px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .stat-tile { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .stat-tile .value { font-size: 22px; font-weight: 600; }
+  .stat-tile .label { color: var(--muted); font-size: 12px; }
+  .dept-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+  .dept-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .dept-card h3 { margin: 0 0 8px; font-size: 14px; text-transform: capitalize; display: flex; justify-content: space-between; }
+  .dept-card h3 .count { color: var(--muted); font-weight: 400; font-size: 12px; }
+  .bar-label { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin: 8px 0 3px; }
+  .bar-track { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; background: var(--accent); transition: width .3s ease; }
+  .bar-fill.warn { background: var(--warn); }
+  .bar-fill.bad { background: var(--bad); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; }
+  tr:last-child td { border-bottom: none; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .badge.queued { background: #ced4da33; color: var(--muted); }
+  .badge.completed { background: #2f9e4433; color: var(--good); }
+  .badge.escalated { background: #e8590c33; color: var(--warn); }
+  .badge.failed { background: #e0313133; color: var(--bad); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 160px; }
+  .field label { font-size: 11px; color: var(--muted); }
+  input, select, textarea, button {
+    font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text);
+  }
+  textarea { resize: vertical; min-height: 38px; flex: 1 1 100%; }
+  button { background: var(--accent); color: #fff; border: none; cursor: pointer; font-weight: 600; }
+  button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  button:disabled { opacity: .55; cursor: default; }
+  #log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap;
+    background: var(--track); border-radius: 6px; padding: 10px; max-height: 160px; overflow-y: auto; }
+  .empty { color: var(--muted); font-style: italic; padding: 6px 0; }
+  .recs li { margin-bottom: 4px; }
+  .muted { color: var(--muted); }
+  .toolbar { display: flex; gap: 8px; align-items: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>🏢 Team Agent System</h1>
+    <div class="toolbar">
+      <span id="provider-badge">loading…</span>
+      <button class="secondary" id="refresh-btn" type="button">↻ Refresh</button>
+    </div>
+  </header>
+
+  <div class="stat-row" id="stat-row"></div>
+
+  <div class="panel">
+    <h2>Departments</h2>
+    <div class="dept-grid" id="dept-grid"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Submit a Task</h2>
+    <div class="row">
+      <div class="field" style="flex: 1 1 100%;">
+        <label for="f-desc">Description</label>
+        <textarea id="f-desc" placeholder="e.g. Fix the login button not responding"></textarea>
+      </div>
+    </div>
+    <div class="row" style="margin-top: 8px;">
+      <div class="field">
+        <label for="f-dept">Department (optional — auto-routed if blank)</label>
+        <select id="f-dept"><option value="">auto</option></select>
+      </div>
+      <div class="field">
+        <label for="f-hours">Estimated hours (optional)</label>
+        <input id="f-hours" type="number" min="0" step="0.5" placeholder="auto">
+      </div>
+      <div class="field" style="flex: 0 0 auto;">
+        <button id="submit-btn" type="button">Submit Task</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Tasks</h2>
+    <div class="toolbar" style="margin-bottom: 10px;">
+      <button id="process-btn" type="button">▶ Process Queue</button>
+      <span class="muted" id="queue-hint"></span>
+    </div>
+    <div id="task-table-wrap"></div>
+    <div id="log" hidden></div>
+  </div>
+
+  <div class="panel">
+    <h2>Recommendations</h2>
+    <ul class="recs" id="recs-list"></ul>
+  </div>
+</div>
+
+<script>
+const $ = (sel) => document.querySelector(sel);
+
+function pctClass(pct) {
+  if (pct >= 0.9) return "bad";
+  if (pct >= 0.7) return "warn";
+  return "";
+}
+
+function bar(label, pct, right) {
+  const clamped = Math.max(0, Math.min(1, pct || 0));
+  return `<div class="bar-label"><span>${label}</span><span>${right}</span></div>
+    <div class="bar-track"><div class="bar-fill ${pctClass(clamped)}" style="width:${(clamped*100).toFixed(0)}%"></div></div>`;
+}
+
+function money(n) { return "$" + Number(n || 0).toLocaleString(undefined, {maximumFractionDigits: 0}); }
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `${res.status} ${res.statusText}`);
+  return body;
+}
+
+async function loadStatus() {
+  const status = await api("/api/status");
+  $("#provider-badge").textContent = "LLM: " + status.llm_provider;
+
+  const t = status.tasks;
+  $("#stat-row").innerHTML = [
+    ["Total", t.total], ["Queued", t.queued], ["Completed", t.completed],
+    ["Escalated", t.escalated], ["Failed", t.failed],
+  ].map(([label, value]) => `<div class="stat-tile"><div class="value">${value}</div><div class="label">${label}</div></div>`).join("");
+
+  $("#dept-grid").innerHTML = status.departments.map(d => {
+    const budget = d.budget
+      ? bar("Budget", d.budget.utilization_pct, `${money(d.budget.spent)} / ${money(d.budget.allocated)}`)
+      : `<div class="muted" style="font-size:12px;margin-top:8px;">budget not yet allocated</div>`;
+    const capacity = d.capacity
+      ? bar("Capacity", d.capacity.utilization_pct, `${d.capacity.workload}/${d.capacity.total} tasks`)
+      : "";
+    return `<div class="dept-card"><h3>${d.name}<span class="count">${d.task_count} task${d.task_count === 1 ? "" : "s"}</span></h3>${budget}${capacity}</div>`;
+  }).join("");
+
+  const deptSelect = $("#f-dept");
+  const currentValue = deptSelect.value;
+  deptSelect.innerHTML = `<option value="">auto</option>` +
+    status.departments.map(d => `<option value="${d.name}">${d.name}</option>`).join("");
+  deptSelect.value = currentValue;
+
+  return status;
+}
+
+async function loadTasks() {
+  const tasks = await api("/api/tasks");
+  const queuedCount = tasks.filter(t => t.status === "queued").length;
+  $("#queue-hint").textContent = queuedCount ? `${queuedCount} queued` : "nothing queued";
+  $("#process-btn").disabled = queuedCount === 0;
+
+  if (!tasks.length) {
+    $("#task-table-wrap").innerHTML = `<div class="empty">No tasks yet — submit one above.</div>`;
+    return;
+  }
+  const rows = tasks.slice().reverse().map(t => `
+    <tr>
+      <td>${t.id}</td>
+      <td><span class="badge ${t.status}">${t.status}</span></td>
+      <td>${t.department}</td>
+      <td>${t.description.length > 70 ? t.description.slice(0, 67) + "…" : t.description}</td>
+      <td class="muted">${t.estimated_hours != null ? t.estimated_hours + "h" : "—"}</td>
+    </tr>`).join("");
+  $("#task-table-wrap").innerHTML =
+    `<table><thead><tr><th>ID</th><th>Status</th><th>Dept</th><th>Description</th><th>Est.</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+async function loadReport() {
+  const report = await api("/api/report");
+  const recs = [...report.recommendations, ...report.capacity_recommendations];
+  $("#recs-list").innerHTML = recs.length
+    ? recs.map(r => `<li><strong>${r.agent || r.department}</strong>: ${r.issue} — <span class="muted">${r.action}</span></li>`).join("")
+    : `<li class="empty">No recommendations right now.</li>`;
+}
+
+async function refreshAll() {
+  try {
+    await Promise.all([loadStatus(), loadTasks(), loadReport()]);
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function showLog(text) {
+  const log = $("#log");
+  if (!text) { log.hidden = true; return; }
+  log.hidden = false;
+  log.textContent = text;
+}
+
+$("#refresh-btn").addEventListener("click", refreshAll);
+
+$("#submit-btn").addEventListener("click", async () => {
+  const description = $("#f-desc").value.trim();
+  if (!description) { $("#f-desc").focus(); return; }
+  const department = $("#f-dept").value || undefined;
+  const hoursRaw = $("#f-hours").value;
+  const estimated_hours = hoursRaw === "" ? undefined : Number(hoursRaw);
+
+  $("#submit-btn").disabled = true;
+  try {
+    const result = await api("/api/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ description, department, estimated_hours }),
+    });
+    showLog(result.log);
+    $("#f-desc").value = "";
+    $("#f-hours").value = "";
+    await refreshAll();
+  } catch (err) {
+    showLog("Error: " + err.message);
+  } finally {
+    $("#submit-btn").disabled = false;
+  }
+});
+
+$("#process-btn").addEventListener("click", async () => {
+  $("#process-btn").disabled = true;
+  try {
+    const result = await api("/api/process", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    showLog(result.log);
+    await refreshAll();
+  } catch (err) {
+    showLog("Error: " + err.message);
+  }
+});
+
+refreshAll();
+setInterval(refreshAll, 8000);
+</script>
+</body>
+</html>
