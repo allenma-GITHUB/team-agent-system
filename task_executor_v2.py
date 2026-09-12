@@ -13,7 +13,7 @@ from agent_state import agent_registry as _default_agent_state_registry, AgentSt
 from agent_decisions import AgentDecisionEngine, DecisionContext
 from budgets import budget_manager as _default_budget_manager, capacity_manager as _default_capacity_manager
 from performance import analytics as _default_analytics
-from tools import build_readonly_registry
+from tools import build_readonly_registry, build_delegation_tool
 from agent_loop import run_agent_loop
 
 
@@ -124,8 +124,17 @@ class DepartmentHeadAgent(BaseAgent):
         # Read-only tools this agent may call while working. Built from this
         # agent's own managers, so an agent constructed with isolated budget
         # and capacity managers looks up those and not the global singletons.
-        self._tool_registry = tool_registry or build_readonly_registry(
-            budgets=self.budget_manager, capacity=self.capacity_manager)
+        # delegate_to is added only to the default registry, not one a
+        # caller supplies explicitly - existing callers (tests, the
+        # standalone `agent-run` CLI command in main_v2.py, which promises
+        # "nothing here can change system state no matter what the model
+        # asks for") get exactly the tools they asked for and nothing more.
+        if tool_registry is not None:
+            self._tool_registry = tool_registry
+        else:
+            self._tool_registry = build_readonly_registry(
+                budgets=self.budget_manager, capacity=self.capacity_manager)
+            self._tool_registry.register(build_delegation_tool(self.department))
 
         # Compensation: derived from the agent's own seniority (agent_type,
         # skill_level) unless the caller explicitly sets a rate, instead of
@@ -428,6 +437,54 @@ class DepartmentHeadAgent(BaseAgent):
                         prompt, self.llm, self._tool_registry,
                         max_iterations=AGENT_MAX_ITERATIONS, task_type=self.department,
                     )
+
+                    # The agent can now decide to delegate explicitly, mid-
+                    # reasoning, by calling the delegate_to tool - rather than
+                    # delegation only ever being inferred upstream by
+                    # decide_on_task()'s can_execute()/should_execute() checks
+                    # before any tool loop runs. The LAST successful call wins
+                    # (a model that reconsiders mid-run gets to say so), and it
+                    # overrides whatever final text came after it: an agent
+                    # that asked to hand off the task does not also get to
+                    # have "completed" it.
+                    #
+                    # Only honored when allow_delegation is True - when False,
+                    # this call is a retry forced by _dispatch_delegation
+                    # (execute_here) after an earlier delegation attempt was
+                    # declined, and it must actually do the work this time
+                    # rather than ask to delegate again.
+                    delegation_call = allow_delegation and next(
+                        (call for call in reversed(run.tool_calls)
+                         if call.name == "delegate_to" and call.ok),
+                        None,
+                    )
+                    if delegation_call:
+                        target_department = delegation_call.arguments.get("department")
+                        reason = delegation_call.arguments.get("reason", "no reason given")
+                        self._emit("tool_delegation_requested", {
+                            "target_department": target_department,
+                            "reason": reason,
+                            "iterations": run.iterations,
+                            "tool_calls": len(run.tool_calls),
+                        })
+                        # Same cleanup the normal path does at the end of a run
+                        # (see the comment there): workload was already taken
+                        # on above and must be released regardless of how this
+                        # method returns. The budget charge above is NOT
+                        # released - the agent really did spend this department's
+                        # time reasoning (and possibly calling other tools)
+                        # before deciding to hand off, the same "attempt really
+                        # happened" accounting the max-iterations path already
+                        # uses. No performance/analytics are recorded here,
+                        # matching the decision-engine delegate path: this
+                        # agent didn't do the task, so it isn't scored on it.
+                        self.agent_state.remove_task()
+                        self.agent_state_registry.save()
+                        return _DelegationRequest(
+                            agent_id=f"{target_department}_head",
+                            reasoning=f"Agent requested hand-off via delegate_to tool: {reason}",
+                        )
+
                     analysis = run.final_content or analysis
                     tokens_used = run.tokens_estimate
                     provider_used = run.provider
@@ -640,7 +697,25 @@ class TaskExecutor:
         to the head of that agent's department - the one object per
         department that TaskExecutor caches, and so the one whose lock
         genuinely serializes that department's shared state.
+
+        A department head's agent_id is always "{department}_head"
+        (DepartmentHeadAgent.__init__ sets it that way), and
+        get_agent_for_department() constructs one on demand - it does not
+        need an AgentState to already exist on disk or in memory. Checked
+        for every configured department FIRST, before falling back to an
+        AgentState lookup: without this, delegating to a department that
+        has not yet run any task in this process fails to resolve even
+        though the department is real and fully capable of running.
+        Confirmed before this fix: a fresh registry with no prior
+        engineering task, `_resolve_delegate("engineering_head")` returned
+        None, and the delegation silently fell back to "no channel, execute
+        here instead" - indistinguishable from delegating to a department
+        that genuinely does not exist.
         """
+        for department in DepartmentManager.get_departments():
+            if agent_id == f"{department}_head":
+                return self.get_agent_for_department(department)
+
         registry = self.agent_state_registry or _default_agent_state_registry
         state = registry.get(agent_id)
         if not state:

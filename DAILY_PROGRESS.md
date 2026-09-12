@@ -1,4 +1,45 @@
-# Daily Progress Report - September 11, 2026
+# Daily Progress Report - September 12, 2026
+
+## 🤝 CHECKPOINT 39: `delegate_to` IS NOW A REAL TOOL - AND A REAL RESOLUTION GAP GOT FOUND ALONG THE WAY
+
+**Closes the next step named in checkpoints 35, 36, 37 and 38 in a row**: "delegation would become a decision a model makes explicitly rather than one inferred from a hardcoded complexity." Until today the ONLY way a task ever got delegated was the decision engine's own `can_execute()`/`should_execute()` checks, run once before any tool loop starts - an agent that decided (correctly) to execute a task had no way to change its mind mid-reasoning after, say, looking at another department's budget or capacity and realizing it was the wrong owner.
+
+### 🐛 A second, pre-existing defect proven before it could quietly break the feature
+
+Before wiring anything up, I probed whether the existing delegate-resolution path (`TaskExecutor._resolve_delegate`, shared by every delegation route including the new one) could even reach a department that had not yet handled a task in this process:
+
+```python
+result = executor._resolve_delegate("engineering_head")
+print(result)   # -> None, on a registry with zero prior engineering tasks
+```
+
+`engineering` is a real, fully configured department - `get_agent_for_department()` constructs its head **on demand** and does not need an `AgentState` to already exist on disk or in memory. But `_resolve_delegate` only ever looked an `agent_id` up **in the `AgentState` registry**, which is only populated once some `DepartmentHeadAgent` has actually been constructed. A first-ever delegation to any department - the single most common case for a brand-new tool nobody has exercised yet - would have silently degraded to `"no channel, execute here instead"`, indistinguishable from delegating to a department that doesn't exist at all. This would have made `delegate_to` look broken in nearly every real scenario without raising anything.
+
+### ✅ Fix
+
+- **`tools.py`: `build_delegation_tool(own_department)`** - a new `delegate_to(department, reason)` tool. It does **not** call another agent; it only validates (real department, not your own) and returns a confirmation payload. It has no reference to `_dispatch_delegation` at all - deliberately, because the tool loop runs **inside `_run_locked()`, while this agent's own lock is held** (see `DepartmentHeadAgent.run()`'s docstring), so a handler that called `target.run()` directly here would reintroduce checkpoint 35's exact lock-ordering deadlock. Registered only into the *default* tool registry a `DepartmentHeadAgent` builds for itself - not into `build_readonly_registry()` used by the standalone `agent-run` CLI command, which explicitly promises "nothing here can change system state no matter what the model asks for," and not into a registry a caller (chiefly tests) supplies explicitly.
+- **`task_executor_v2.py`: `_run_locked()`** now scans the finished loop's tool calls for the last successful `delegate_to`. If `allow_delegation` is true, it releases this agent's workload (budget stays charged - the department really did spend time reasoning before handing off, same accounting as an exhausted-iterations run) and returns the same `_DelegationRequest` the decision engine already produces, which `run()` dispatches only after the lock is released and through the same cycle/depth/self-delegation guards as every other route. When `allow_delegation` is false - a forced local retry after an earlier delegation was declined - a `delegate_to` call is ignored rather than honored, so the agent actually does the work instead of bouncing.
+- **`task_executor_v2.py`: `_resolve_delegate()`** now recognizes the `"{department}_head"` naming convention directly (every `DepartmentHeadAgent` sets `self.agent_id` exactly this way) and constructs the target on demand via `get_agent_for_department()`, before falling back to the old `AgentState` lookup for non-head agent ids (e.g. `eng_lead`). This is the fix for the resolution gap above, and it benefits the pre-existing decision-engine delegation path too, not just the new tool.
+- Two guards enforced right in the tool, ahead of the existing downstream ones, so a model gets an immediately correctable error instead of a much-later silent decline: an unknown department name, and delegating to your own department.
+
+### 🧪 Validation
+
+`tests/test_delegate_to_tool.py` (new; 39 files total - checkpoint 38 counted 37, and one more (`test_web_server.py`) arrived since then with the dashboard work, unlogged; all passing, twice back-to-back): the tool rejects an unknown department and self-delegation with a readable error the model can act on; a valid call returns a confirmation that explicitly says the hand-off is not guaranteed; an agent-initiated `delegate_to` call actually delegates to a department that has **never run a task before in this process** (the regression test for the resolution gap - would have failed before the `_resolve_delegate` fix); the delegator's budget stays charged while its workload is released and it is not credited with a task it didn't do; a delegation cycle driven entirely through the tool (`engineering -> design -> engineering`) escalates instead of hanging, run in a worker thread with a join timeout so a regression here fails an assertion instead of hanging the suite forever; a forced local retry (no delegation channel) ignores a repeated `delegate_to` call and does the work. Full 39-file suite run twice back-to-back; live smoke-tested through `main_v2.py submit`/`process`.
+
+### 🚧 Deliberately NOT addressed, and why
+
+- **`find_best_delegate()`'s `skill_required` filter still only checks `required_skills[0]`** (checkpoint 38's note). Left alone on purpose - it governs the decision engine's *implicit* delegate ranking, a separate path from the explicit tool this checkpoint adds, and checkpoint 38 already scoped that fix to "once delegation is driven by a real tool call," which is now true but is its own reviewable change.
+- **No performance/analytics recorded for a tool-driven delegation.** Matches the existing decision-engine delegate path (which also records nothing on the delegating agent) rather than inventing a new accounting rule inside this change. Worth a real design pass if the owner wants partial credit for "correctly recognized it should hand off" - that is a policy question, not a technical one.
+- **Real token cost is still invisible to budgets.** Unchanged from checkpoints 37/38.
+
+### 📝 Next Steps
+
+- **Give `delegate_to` a real model to exercise it.** The mock provider routes on keyword matching and never calls `delegate_to` unprompted, so today's validation is entirely via scripted fake providers (same limitation checkpoint 36 noted for tool use generally). Worth revisiting once a real API key is available in this environment.
+- **`find_best_delegate()`'s single-skill filter**, as above - now a clean, self-contained follow-up.
+- Real token cost is still invisible to budgets - unchanged from checkpoint 37.
+
+---
+
 
 ## 🎯 CHECKPOINT 38: `required_skills` STOPPED ASKING AGENTS ABOUT THEMSELVES
 

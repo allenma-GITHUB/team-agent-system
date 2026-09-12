@@ -166,6 +166,81 @@ class ToolRegistry:
         return ToolResult(ok=True, content=result)
 
 
+def build_delegation_tool(own_department: str) -> Tool:
+    """A tool letting an agent hand its current task to another department's
+    head, as an explicit mid-reasoning decision rather than one only ever
+    inferred upstream by the decision engine's can_execute()/should_execute()
+    checks (agent_decisions.py) before any tool loop even starts.
+
+    This tool cannot itself move a task anywhere - it has no reference to
+    the delegation machinery in task_executor_v2.py at all. Calling it only
+    returns a confirmation payload; DepartmentHeadAgent._run_locked() is
+    what notices a successful call afterward and converts it into the same
+    _DelegationRequest the decision engine already produces, which then
+    runs through the SAME cycle/depth/self-delegation guards
+    (task_executor_v2._dispatch_delegation) as every other delegation. That
+    split is deliberate: a tool running inside the agent loop executes
+    while this department head's own lock is held (see DepartmentHeadAgent's
+    docstring on why delegation dispatch happens only after the lock is
+    released), so a handler that called another agent directly here would
+    reintroduce the exact lock-ordering deadlock checkpoint 35 fixed for
+    the decision engine's path.
+
+    Two guards are enforced right here anyway, before the request ever
+    reaches _dispatch_delegation, so a model gets an immediately correctable
+    error rather than a silent "declined, executed here instead" much later:
+    an unknown department name, and delegating to your own department.
+    """
+    valid_departments = set(DepartmentManager.get_departments())
+
+    def delegate_to(department: str, reason: str) -> Dict[str, Any]:
+        if department not in valid_departments:
+            raise ValueError(
+                f"Unknown department '{department}'. Valid departments: "
+                f"{', '.join(sorted(valid_departments))}."
+            )
+        if department == own_department:
+            raise ValueError(
+                f"Cannot delegate to your own department ('{own_department}') - "
+                "just do the work yourself."
+            )
+        return {
+            "requested_delegate_department": department,
+            "reason": reason,
+            "note": ("Delegation requested, not guaranteed: the hand-off can "
+                     "still be declined if it would form a delegation cycle, "
+                     "exceed the delegation depth limit, or fail to resolve to "
+                     "a runnable agent - in which case this department executes "
+                     "the task itself instead, and the result will say so."),
+        }
+
+    return Tool(
+        name="delegate_to",
+        description=(
+            "Hand this task to another department's head instead of doing it "
+            "yourself. Use this only when another department is the right "
+            "OWNER of the work - not merely less busy or more convenient. "
+            "Calling this ends your work on this task: any analysis you give "
+            "afterward is discarded in favor of the hand-off."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "department": {
+                    "type": "string",
+                    "description": "Department to delegate to, e.g. 'engineering' or 'design'.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why that department, not you, should own this work.",
+                },
+            },
+            "required": ["department", "reason"],
+        },
+        handler=delegate_to,
+    )
+
+
 def build_readonly_registry(budgets=None, capacity=None,
                              tasks_file: str = "data/tasks.json") -> ToolRegistry:
     """The default read-only toolset: this system's own business state.
