@@ -86,12 +86,26 @@ class AgentDecisionEngine:
         while nothing acted on a delegate decision - once delegation
         actually executes, handing work back to the same cached agent
         re-enters its own non-reentrant lock and deadlocks the thread.
+
+        Filters on the full required_skills set, not just required_skills[0]
+        (checkpoint 38/39's noted follow-up). A task can name skills from
+        more than one department - infer_required_skills("Troubleshoot this
+        and review the deployment") returns ["problem_solving",
+        "deployment"] - and the real delegate may only match a skill that
+        isn't first in that list. Checked live before this fix: a sales_head
+        delegating that exact task got no candidate at all, because only
+        "problem_solving" was ever checked and no registered agent has it,
+        even though engineering_head is a genuine match on "deployment".
+        available_agents() itself stays single-skill (it has its own tests
+        and one other caller); the broader match happens here by fetching
+        the unfiltered pool and testing for any overlap instead of equality
+        with one tag.
         """
+        required_skills = set(context.required_skills)
         candidates = [
-            candidate for candidate in self.registry.available_agents(
-                skill_required=context.required_skills[0] if context.required_skills else None
-            )
+            candidate for candidate in self.registry.available_agents()
             if candidate.profile.agent_id != self.agent.profile.agent_id
+            and (not required_skills or required_skills & set(candidate.profile.expertise_areas))
         ]
 
         if not candidates:

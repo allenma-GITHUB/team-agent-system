@@ -1,3 +1,42 @@
+# Daily Progress Report - September 13, 2026
+
+## 🔗 CHECKPOINT 40: `find_best_delegate()` STOPPED LOOKING AT ONLY THE FIRST REQUIRED SKILL
+
+**Closes the follow-up named in checkpoints 38 and 39 in a row**: "`find_best_delegate()`'s `skill_required` filter only looks at `required_skills[0]`... a task inferring multiple mismatched skills is only ever matched for delegate-search purposes on one of them." `infer_required_skills()` can legitimately return more than one tag once a task's text spans more than one department's vocabulary - it already did in checkpoint 38's own examples - but `find_best_delegate()` built its candidate pool with `registry.available_agents(skill_required=context.required_skills[0] if context.required_skills else None)`, so every tag after the first was silently invisible to delegate search.
+
+### 🐛 Proven live before touching anything
+
+```
+required_skills: ['problem_solving', 'deployment']
+find_best_delegate() -> None
+```
+
+Two agents were registered: `sales_head` (the delegator, no matching expertise) and `engineering_head`, genuinely carrying `"deployment"` in its `expertise_areas` - a real, qualified delegate for `DepartmentManager.infer_required_skills("Troubleshoot this issue and review the deployment pipeline")`. `find_best_delegate()` still returned `None`, because it only ever checked `required_skills[0]` (`"problem_solving"`), which no registered agent has. The candidate existed; the search never looked at the skill that would have found it.
+
+### ✅ Fix
+
+- **`agent_decisions.py`: `find_best_delegate()`** now fetches the unfiltered available pool (`registry.available_agents()`, no `skill_required`) and filters for **any** overlap between `context.required_skills` and a candidate's `expertise_areas`, instead of equality with `required_skills[0]`. An empty `required_skills` list still means no skill filtering at all - unchanged from before.
+- **`agent_state.py`'s `available_agents(skill_required=...)` is untouched.** It has its own direct caller in `tests/test_agent_decisions.py` and its own single-skill contract; widening it in place would have changed a second, unrelated API. The broader match lives entirely inside `find_best_delegate()`, the one place that actually needed it.
+- Self-exclusion (checkpoint 35/`test_delegation.py`) is unaffected - it is applied the same way, just against the differently-sourced candidate list.
+
+### 🧪 Validation
+
+`tests/test_multi_skill_delegation.py` (new; 40 files total, all passing): a candidate matching only `required_skills[1]` is still found (the regression test for the bug above); a candidate matching *none* of several required skills is still correctly excluded (proves the fix widened the net to "any overlap", not "accept anyone"); an empty `required_skills` list still considers every available agent, unchanged; an agent is still never its own delegate once the candidate pool no longer comes pre-filtered by `available_agents()`. Each test uses its own suffix-scoped registry file, following `test_decision_inputs.py`/`test_required_skills.py`'s isolation convention, and resets workload/preferences/metrics explicitly since `register()` returns an existing state across runs. Full 40-file suite run twice back-to-back.
+
+### 🚧 Deliberately NOT addressed, and why
+
+- **Ranking does not reward covering *more* of the required skills.** `rank_candidate()` is unchanged - a candidate matching one required skill and a candidate matching all of them score identically on the skill axis (`skill_level / 5.0`). Worth a real design pass on how "coverage breadth" should weigh against skill level, affinity, workload and trust; not folded into this fix to keep it reviewable as "the missing candidates are now found" rather than also "and ranked by a new formula."
+- **Real token cost is still invisible to budgets.** Unchanged from checkpoints 37-39.
+- **Give `delegate_to` a real model to exercise it**, as checkpoint 39 left it - still blocked on having a real API key in this environment; today's fix is validated the same way checkpoint 39's was, through direct engine calls with scripted fixtures rather than a live model choosing to delegate.
+
+### 📝 Next Steps
+
+- **Reward broader skill coverage in `rank_candidate()`**, as scoped above - a self-contained follow-up now that the candidates it would rank are actually reachable.
+- **Give every department real declared expertise in `config.json`** beyond the five built-in heads, so multi-skill delegate search has more than one or two departments to actually choose between in practice.
+- **Real token cost is still invisible to budgets** - unchanged.
+
+---
+
 # Daily Progress Report - September 12, 2026
 
 ## 🤝 CHECKPOINT 39: `delegate_to` IS NOW A REAL TOOL - AND A REAL RESOLUTION GAP GOT FOUND ALONG THE WAY
