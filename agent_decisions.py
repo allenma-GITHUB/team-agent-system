@@ -100,6 +100,14 @@ class AgentDecisionEngine:
         and one other caller); the broader match happens here by fetching
         the unfiltered pool and testing for any overlap instead of equality
         with one tag.
+
+        Candidates that clear the filter above are then ranked, and ranking
+        rewards covering MORE of required_skills, not just any overlap
+        (checkpoint 40's follow-up). Filtering alone left a candidate
+        matching one required skill and a candidate matching all of them
+        scoring identically, because rank_candidate()'s skill axis only
+        looked at skill_level - a coverage factor now scores the fraction
+        of required_skills each candidate actually has.
         """
         required_skills = set(context.required_skills)
         candidates = [
@@ -113,18 +121,37 @@ class AgentDecisionEngine:
 
         # Rank candidates by:
         # 1. Skill level match
-        # 2. Affinity for task type
-        # 3. Current workload (prefer less busy)
-        # 4. Trust score with delegator
+        # 2. Breadth of required-skill coverage
+        # 3. Affinity for task type
+        # 4. Current workload (prefer less busy)
+        # 5. Trust score with delegator
 
         def rank_candidate(candidate: AgentState) -> float:
             skill_match = candidate.profile.skill_level / 5.0
+
+            # Checkpoint 40 left this scored identically for a candidate
+            # matching one required skill and one matching all of them -
+            # skill_match only looks at skill_level, never at how much of
+            # required_skills a candidate actually covers. required_skills
+            # is already known non-empty in this branch (the `required_skills
+            # and` guard above short-circuits candidates to "everyone" when
+            # it's empty), so coverage here measures real breadth, not an
+            # edge case: 1.0 when a candidate matches every required skill,
+            # proportionally less otherwise.
+            coverage = (
+                len(required_skills & set(candidate.profile.expertise_areas)) / len(required_skills)
+                if required_skills else 1.0
+            )
+
             affinity = (candidate.learned_preferences.get(context.task_type, 0) + 1) / 2  # 0-1
             workload_factor = (candidate.profile.max_concurrent_tasks - candidate.current_workload) / candidate.profile.max_concurrent_tasks
             trust_factor = self.agent.relationships.get(candidate.profile.agent_id, None)
             trust = trust_factor.trust_score if trust_factor else 0.5
 
-            return skill_match * 0.4 + affinity * 0.3 + workload_factor * 0.2 + trust * 0.1
+            return (
+                skill_match * 0.35 + coverage * 0.2 + affinity * 0.25
+                + workload_factor * 0.15 + trust * 0.05
+            )
 
         best = max(candidates, key=rank_candidate)
         return best if rank_candidate(best) > 0.5 else None

@@ -1,3 +1,43 @@
+# Daily Progress Report - September 14, 2026
+
+## 📊 CHECKPOINT 41: DELEGATE RANKING NOW REWARDS COVERING MORE OF THE REQUIRED SKILLS
+
+**Closes the next step checkpoint 40 named and scoped for exactly this**: "Ranking does not reward covering *more* of the required skills. `rank_candidate()` is unchanged - a candidate matching one required skill and a candidate matching all of them score identically on the skill axis (`skill_level / 5.0`)." Checkpoint 40 fixed *filtering* (any overlap with the full `required_skills` set, not just `required_skills[0]`), but the ranking step that picks among the surviving candidates never looked at how much of that set each one actually covered.
+
+### 🐛 Proven live before touching anything
+
+Two skill_level-4 candidates, `required_skills=["deployment", "architecture"]`:
+
+```
+partial_match expertise = ["deployment"]                  -> rank_candidate() = 0.72
+full_match    expertise = ["deployment", "architecture"]   -> rank_candidate() = 0.72
+find_best_delegate() -> "partial_match"
+```
+
+Identical scores, because `skill_match = skill_level / 5.0` is the only skill-related term and both candidates share it - `coverage` of the required set never entered the formula. `max()` broke the tie by registration/iteration order, not by which candidate was actually the better delegate: `partial_match` was registered first, so it won despite `full_match` covering strictly more of what the task needed.
+
+### ✅ Fix
+
+- **`agent_decisions.py`: `rank_candidate()`** (inside `find_best_delegate()`) now scores a `coverage` term - the fraction of `context.required_skills` present in a candidate's `expertise_areas` - alongside the existing skill/affinity/workload/trust terms. `required_skills` is already known non-empty on this path (the filter above only narrows the candidate pool when it's non-empty; an empty set still means "consider everyone" and `coverage` degrades to `1.0` for every candidate, leaving ranking exactly as it was for that case).
+- **Reweighted, not appended**: weights still sum to `1.0` - `skill_match * 0.35 + coverage * 0.2 + affinity * 0.25 + workload_factor * 0.15 + trust * 0.05`, down from `skill_match * 0.4 + affinity * 0.3 + workload_factor * 0.2 + trust * 0.1`. Coverage is a real factor (`0.2`, larger than trust's now-`0.05`) without being able to override everything else on its own - confirmed live: a skill-5 candidate matching only one of two required skills still outranks a skill-1 candidate matching both (`0.75` vs `0.57`), so a much stronger partial match still beats a bare-minimum full match rather than coverage becoming the only thing that matters.
+- Re-ran the checkpoint-40 probe after the fix: `find_best_delegate()` now returns `"full_match"` for the exact scenario above.
+
+### 🧪 Validation
+
+`tests/test_delegate_coverage_ranking.py` (new; 41 files total, all passing): the core regression (equal skill_level, full coverage beats partial coverage, with the fuller match deliberately registered *second* so a win can't be attributed to iteration order); skill level still counts - a top-skill partial match beats a bottom-skill full match, so coverage is one factor, not an override; empty `required_skills` still gives everyone coverage `1.0` and ranking is unaffected, matching pre-fix behavior for that case. Full 41-file suite (`for f in tests/test_*.py; do python3 "$f"; done`) run twice back-to-back with zero failures; `python3 -m py_compile` clean across every module. Tracked seed files (`data/agent_states.json`, `data/performance_metrics.json`) restored and `data/budgets.json`/`data/workflows.json` removed after the run, per convention.
+
+### 🚧 Deliberately NOT addressed, and why
+
+- **Give every department real declared expertise in `config.json`**, as checkpoint 40 also named - still just the five built-in heads. Coverage-aware ranking has more to work with once more departments carry genuine `expertise_areas` instead of the `[department]` placeholder.
+- **Real token cost is still invisible to budgets.** Unchanged from checkpoints 37-40.
+
+### 📝 Next Steps
+
+- **Give every department real declared expertise in `config.json`** beyond the five built-in heads - unchanged from checkpoint 40, now more valuable since delegate ranking can actually use the extra detail.
+- **Real token cost is still invisible to budgets** - unchanged.
+
+---
+
 # Daily Progress Report - September 13, 2026
 
 ## 🔗 CHECKPOINT 40: `find_best_delegate()` STOPPED LOOKING AT ONLY THE FIRST REQUIRED SKILL
