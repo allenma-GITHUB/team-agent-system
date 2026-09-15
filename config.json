@@ -72,6 +72,20 @@
       ],
       "staff": 5,
       "monthly_budget": 35000
+    },
+    "product": {
+      "keywords": [
+        "roadmap",
+        "backlog",
+        "prioritize",
+        "prioritization",
+        "requirements",
+        "stakeholder",
+        "user story",
+        "product"
+      ],
+      "staff": 5,
+      "monthly_budget": 28000
     }
   },
   "agents": {
@@ -139,6 +153,17 @@
       "constraints": ["needs_approval_over_50k"],
       "max_concurrent_tasks": 4,
       "staff_range": [4, 10]
+    },
+    "product_head": {
+      "type": "ManagerAgent",
+      "name": "Product Manager",
+      "department": "product",
+      "expertise_areas": ["product_strategy", "roadmap_planning", "requirements_gathering"],
+      "skill_level": 4,
+      "capabilities": ["prioritization", "stakeholder_management", "delegation"],
+      "constraints": [],
+      "max_concurrent_tasks": 4,
+      "staff_range": [3, 8]
     },
     "tech_lead": {
       "type": "SpecialistAgent",

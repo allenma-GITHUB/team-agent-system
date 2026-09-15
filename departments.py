@@ -50,16 +50,19 @@ LOW_APPROVAL_LEVEL = 1
 # Task-derived skill tags for infer_required_skills(), checked against the
 # deciding agent's own expertise_areas in can_execute()'s skill-gap test.
 #
-# Restricted deliberately to the exact vocabulary config.json's five
-# department heads already declare as their expertise_areas (e.g.
-# engineering_head: architecture/code_review/deployment) - see checkpoint 37
-# in DAILY_PROGRESS.md. A real skill gap can therefore only be found against
+# Restricted deliberately to the exact vocabulary config.json's department
+# heads already declare as their expertise_areas (e.g. engineering_head:
+# architecture/code_review/deployment) - see checkpoint 37 in
+# DAILY_PROGRESS.md. A real skill gap can therefore only be found against
 # expertise that already exists in config, never invented on the fly. A
 # department created via create_department() (no matching "_head" entry, so
 # expertise_areas falls back to the placeholder [department]) is kept out of
 # this check entirely by the caller (task_executor_v2.decide_on_task) - a
 # mismatch against a placeholder would prove the placeholder is incomplete,
-# not that the agent lacks a real capability.
+# not that the agent lacks a real capability. Adding a department's real
+# vocabulary here (as "product_head" was, checkpoint 42) is what actually
+# turns on the skill-gap check and coverage-aware delegate ranking for it -
+# a config.json "agents" entry alone is necessary but not sufficient.
 SKILL_KEYWORDS = {
     # engineering_head: architecture, code_review, deployment
     "architecture": "architecture", "rearchitect": "architecture",
@@ -81,6 +84,11 @@ SKILL_KEYWORDS = {
     "sales strategy": "sales_strategy", "pricing strategy": "sales_strategy",
     "negotiation": "negotiation", "negotiate": "negotiation",
     "customer relations": "customer_relations", "client relationship": "customer_relations",
+    # product_head: product_strategy, roadmap_planning, requirements_gathering
+    "product strategy": "product_strategy",
+    "roadmap": "roadmap_planning", "prioritize": "roadmap_planning", "prioritization": "roadmap_planning",
+    "requirements": "requirements_gathering", "user story": "requirements_gathering",
+    "user stories": "requirements_gathering",
 }
 
 # Matched with \b word boundaries, not plain substring "in" like the
@@ -118,7 +126,19 @@ class DepartmentManager:
 
     @staticmethod
     def route_task(description: str) -> str:
-        """Route task to appropriate department based on description."""
+        """Route task to appropriate department based on description.
+
+        Keywords match on \\b word boundaries, not plain substring "in" -
+        the same fix already applied to infer_required_skills() below for
+        the same reason (see SKILL_KEYWORDS's comment / checkpoint 38).
+        Found live while adding the "product" department: naive substring
+        matching sent "Prioritize the roadmap and gather requirements from
+        stakeholders" to "design", because "requirements" contains "ui"
+        ("req-UI-rements") - none of that task is UI work, and "design"'s
+        real keyword list has nothing else in common with it. Any short
+        keyword in any department's list (config.json is data, not code,
+        so a future department could add one) is equally exposed.
+        """
         config = DepartmentManager.load_config()
         departments = config.get("departments", {})
         desc_lower = description.lower()
@@ -127,7 +147,10 @@ class DepartmentManager:
         scores = {}
         for dept_name, dept_config in departments.items():
             keywords = dept_config.get("keywords", [])
-            score = sum(1 for kw in keywords if kw.lower() in desc_lower)
+            score = sum(
+                1 for kw in keywords
+                if re.search(r"\b" + re.escape(kw.lower()) + r"\b", desc_lower)
+            )
             scores[dept_name] = score
 
         # Return highest scored department, or default

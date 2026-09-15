@@ -1,3 +1,48 @@
+# Daily Progress Report - September 15, 2026
+
+## 🧩 CHECKPOINT 42: A REAL SIXTH DEPARTMENT - "PRODUCT" - WITH GENUINE DECLARED EXPERTISE
+
+**Closes the next step checkpoint 40 and 41 named in a row**: "Give every department real declared expertise in config.json beyond the five built-in heads." Until today, `config.json`'s `"departments"` dict had exactly five entries (engineering/design/support/research/sales), and `DepartmentHeadAgent.agent_id` is always `f"{department}_head"` (`task_executor_v2.py`) - so the skill-gap check (checkpoint 38), multi-skill delegate filtering (checkpoint 40) and coverage-aware ranking (checkpoint 41) had exactly five real vocabularies to ever work with. Every other department name fell back to the placeholder `expertise_areas=[department]` forever, by design (checkpoint 38's own scoping) - which meant that design couldn't be exercised without a sixth, *real* department to prove it against.
+
+### 🐛 Two defects proven live before writing the fix
+
+**1. The five-department ceiling itself.** `DepartmentManager.get_agent_config("product_head")` returned `None`, `get_monthly_budget("product")` silently returned the generic `10000` fallback, and `infer_required_skills()` had no vocabulary for product work at all - there was no way to give a sixth department real expertise without both a `config.json` entry and matching `SKILL_KEYWORDS`.
+
+**2. `route_task()`'s own naive substring matching**, found while proving the first fix actually routes real product-shaped text correctly:
+
+```
+DepartmentManager.route_task(
+    "Prioritize the roadmap and gather requirements from stakeholders"
+) -> "design"
+```
+
+Wrong, and for a subtle reason: `"requirements"` contains `"ui"` (`req-UI-rements`), and `route_task()` scored departments with plain `kw.lower() in desc_lower` - the exact substring-matching bug checkpoint 38 already fixed once, in a *different* function (`infer_required_skills()`'s `SKILL_KEYWORDS`, via `\b`-bounded regex). That earlier fix was correctly scoped to `SKILL_KEYWORDS` only; `route_task()`'s separate keyword scan was never touched and carried the same defect. Any short keyword in any department's list is equally exposed - this wasn't product-specific, it just took a sixth department's keywords to surface it.
+
+### ✅ Fix
+
+- **`config.json`**: added `"product"` to `"departments"` (keywords: roadmap/backlog/prioritize/prioritization/requirements/stakeholder/user story/product; `staff: 5`, matching every other department; `monthly_budget: 28000`, a placeholder value in the same range as the existing five - not a considered business number, see below) and `"product_head"` to `"agents"` (`ManagerAgent`, `expertise_areas: [product_strategy, roadmap_planning, requirements_gathering]`, `skill_level: 4` matching engineering/design/research/sales, `capabilities: [prioritization, stakeholder_management, delegation]`, no constraints), following the exact shape of the five existing heads.
+- **`departments.py`: `SKILL_KEYWORDS`** gained a `product_head` block (`roadmap`/`prioritize`/`prioritization` -> `roadmap_planning`, `requirements`/`user story`/`user stories` -> `requirements_gathering`, `product strategy` -> `product_strategy`), matched through the same `\b`-bounded `_SKILL_KEYWORD_PATTERN` the other five blocks already use - no new matching logic, just new vocabulary.
+- **`departments.py`: `route_task()`** now matches each department's keywords with `\b`-bounded regex instead of `kw.lower() in desc_lower`, mirroring checkpoint 38's fix to `SKILL_KEYWORDS`. Applies to all six departments, not just the new one - closes the same defect class everywhere it lives, not just where it happened to be found.
+- Comments in `departments.py` and `task_executor_v2.py` that hardcoded "the five built-in department heads" were generalized so they don't go stale the next time a department is added.
+
+### 🧪 Validation
+
+`tests/test_product_department.py` (new; 42 files total, all passing, twice back-to-back): `route_task()` routes real product-vocabulary text to `"product"`; the word-boundary regression isolated from the repro above (`design`'s `"ui"` keyword is present as a raw substring of `"requirements"` but must not win); all five existing departments still route correctly (guards the shared `route_task()` fix against a regression); `product_head`'s config entry is real (`get_agent_config` non-`None`, `get_monthly_budget("product")` reads `28000`, not the `10000` fallback); `infer_required_skills()` recognizes the new vocabulary; a real config-built `product_head` executes matching work end-to-end through `decide_on_task()`; a synthetic skill-3 profile (config's real `product_head` is skill-level 4, which - like every configured head except `support_head` - never demonstrates the gap check firing on its own; see checkpoint 38's `test_required_skills.py` note) proves the new tags produce a real, checkable gap via `can_execute()` directly; `find_best_delegate()` can surface `product_head` purely from its real `expertise_areas`, proving checkpoint 41's coverage-aware ranking has a genuine sixth candidate to reward, not just five. Full 42-file suite run twice back-to-back with zero failures; `python3 -m py_compile` clean across every module; live-smoke-tested through `main_v2.py submit "Prioritize the roadmap and gather requirements from stakeholders"` -> `Task 0003 submitted to PRODUCT`. Seed files restored and generated ones removed after the run, including `data/tasks.json`, dirtied by the live CLI smoke test outside the regular suite.
+
+### 🚧 Deliberately NOT addressed, and why
+
+- **`monthly_budget: 28000`, `skill_level: 4`, and "no constraints" for `product_head` are placeholders, not business decisions.** They follow the existing five departments' shape closely enough to exercise the pipeline, but *what* a product department should budget, how senior its head should be, and whether it needs a constraint like `cannot_execute_alone` or `needs_approval_over_Nk` are exactly the kind of business judgement this project's conventions say to leave to the owner rather than settle inside a routing fix. Flagging here rather than picking silently.
+- **The pre-existing orphaned `config.json` "agents" entries (`ceo`, `tech_lead`, `product_coordinator`) remain unreachable.** Confirmed while investigating this checkpoint: `DepartmentHeadAgent.agent_id` is always `f"{department}_head"`, so these three - `LeaderAgent`, `SpecialistAgent`, and `CoordinatorAgent` types respectively - are never constructed by any code path at all; they are pure data. That's a materially bigger, separate gap (those agent *types* have no execution code at all, unlike `ManagerAgent`) and deserves its own session rather than riding along with a department-routing fix.
+- **Real token cost is still invisible to budgets.** Unchanged from checkpoints 37-41.
+
+### 📝 Next Steps
+
+- **Give the owner a decision point on `product_head`'s placeholder values** (budget, skill level, constraints) named above, rather than treating today's numbers as settled.
+- **`ceo`/`tech_lead`/`product_coordinator` have no execution path** - `LeaderAgent`/`SpecialistAgent`/`CoordinatorAgent` are declared in `config.json` and never instantiated by anything. Worth a real design session: either give them a construction path analogous to `get_agent_for_department()`, or remove the dead config entries so they stop implying capability that doesn't exist.
+- **Real token cost is still invisible to budgets** - unchanged.
+
+---
+
 # Daily Progress Report - September 14, 2026
 
 ## 📊 CHECKPOINT 41: DELEGATE RANKING NOW REWARDS COVERING MORE OF THE REQUIRED SKILLS

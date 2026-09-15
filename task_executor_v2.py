@@ -92,8 +92,8 @@ class DepartmentHeadAgent(BaseAgent):
                 # agent_id (e.g. "engineering_head": skill_level 4,
                 # SpecialistAgent, real capabilities/constraints) over a
                 # generic stub - config.json already describes richer
-                # profiles for the five built-in department heads, but
-                # nothing was reading them until now.
+                # profiles for its built-in department heads, but nothing
+                # was reading them until now.
                 agent_config = DepartmentManager.get_agent_config(self.agent_id)
                 if agent_config:
                     profile = AgentProfile(
@@ -169,7 +169,7 @@ class DepartmentHeadAgent(BaseAgent):
         # own expertise list was standing in as the task's requirement.
         #
         # Only inferred for agents config.json actually declares expertise
-        # for (the five built-in department heads). A department without a
+        # for (the built-in department heads). A department without a
         # config.json "agents" entry falls back to expertise_areas =
         # [department] - a placeholder, not a real skill list - so a
         # mismatch against it would prove the placeholder is incomplete,
