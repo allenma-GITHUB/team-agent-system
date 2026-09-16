@@ -80,7 +80,7 @@ def test_retry_succeeds_once_budget_is_topped_up():
     assert budget.reserved_total() == 5000
 
     # And the step can now be approved normally
-    engine.approve_step(instance.instance_id, "spend", approved=True)
+    engine.approve_step(instance.instance_id, "spend", approved=True, approver_id="test_approver")
     assert budget.spent == 5000
 
 

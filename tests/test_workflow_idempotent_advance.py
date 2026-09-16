@@ -85,7 +85,7 @@ def test_step_still_approves_normally_after_repeated_advance_calls():
     engine.get_next_step(instance.instance_id)  # the repeated call that used to corrupt things
     engine.get_next_step(instance.instance_id)
 
-    ok = engine.approve_step(instance.instance_id, "spend", approved=True)
+    ok, reason = engine.approve_step(instance.instance_id, "spend", approved=True, approver_id="test_approver")
     budget = budgets.get_budget(department)
     print(f"  Approved: {ok}, spent: ${budget.spent:,.2f}, reserved: ${budget.reserved_total():,.2f}")
     assert ok

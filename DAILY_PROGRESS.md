@@ -1,3 +1,67 @@
+# Daily Progress Report - September 16, 2026
+
+## 🔐 CHECKPOINT 43: `approve_step()` NOW ACTUALLY CHECKS WHO IS APPROVING
+
+**Session also closed a housekeeping gap found on startup**: checkpoint 42's commit (`74de321`, "Add a real sixth department") existed in git history but had never been merged into `main` or pushed - `HEAD` was detached one commit ahead of both. Verified the commit itself was sound (42-file suite green twice back-to-back, `py_compile` clean, matches its own commit message) before fast-forwarding `main` to it. `git push` then reported "Everything up-to-date" - the commit was already on `origin/main`; only the local branch pointer and working checkout were stale. No data was ever at risk, but it meant this session's `main` didn't reflect reality until checked.
+
+**Today's actual defect, in `workflows.py`'s "approval chain" machinery** (Phase 2): every `WorkflowStep` can declare an `approval_role` ("the design lead must sign off on this", "the CEO must approve this spend") and `WorkflowEngine.approve_step()` is the only place that ever acts on an approval. Until today, that method took no approver argument at all:
+
+```python
+def approve_step(self, instance_id: str, step_id: str, approved: bool) -> bool:
+```
+
+### 🐛 Two defects proven live before touching anything
+
+**1. No identity check whatsoever.** A step in the real `feature_request` template gated behind `approval_role="design_lead"` was approved by a call that offered no identity at all:
+
+```
+Next step: design, approval_role= design_lead
+approve_step() with NO approver argument even offered: True
+step_status: StepStatus.APPROVED
+```
+
+`approval_role` was pure display text - shown by `main_v2.py`'s CLI (`[needs approval: design_lead]`) and nothing else. Nothing anywhere compared it to who was calling `approve_step()`, because there was no "who."
+
+**2. Any step_id could be "approved," whether or not it ever required approval.** `estimation` (a plain engineering step, `requires_approval` defaults to `False`, not yet even reached by `get_next_step()`) went straight to `APPROVED` on a bare call:
+
+```
+approve_step() on a non-approval step succeeded: True
+status: StepStatus.APPROVED
+```
+
+Since `get_next_step()` treats `APPROVED` the same as `COMPLETED` when deciding what's done, this silently skips real department work - the same class of bug this project's conventions name as its signature defect (budget escalations and workflow steps recorded "completed" when nothing was actually done, checkpoints 27/28/34/36).
+
+### ✅ Fix
+
+- **`workflows.py`: `WorkflowEngine`** gains an injectable `agent_state_registry` (defaults to the shared global `agent_state.agent_registry`, same DI pattern as `budget_manager`).
+- **`approve_step(instance_id, step_id, approved, approver_id=None)`** now:
+  - refuses outright if the step doesn't exist or never had `requires_approval=True` (closes defect 2);
+  - requires a non-empty `approver_id` (closes half of defect 1);
+  - if the step names an `approval_role`, checks the approver against it via a new `_approver_qualifies()` - matching either of the two forms `WorkflowStep.approval_role`'s own docstring already named (`# e.g. "manager", "ceo"`): the approver **is** that specific agent (`approver_id == role`, e.g. `"ceo"`), or the approver holds that kind of role generically (`role` is a case-insensitive prefix of the approver's `agent_type`, e.g. `"manager"` matches `"ManagerAgent"`) - either way the approver must resolve to a real, registered `AgentState`, so a string that merely spells the role's name but names nobody real doesn't count.
+  - Return type changed from `bool` to `Tuple[bool, str]` (matching `retry_blocked_step()`'s existing convention in this same file) so a rejection always carries a reason instead of a bare `False`.
+- **`main_v2.py`**: `workflow approve` now takes a required `<approver_id>` (`workflow approve <instance_id> <step_id> <approver_id> [--reject]`) and prints the engine's real reason on both success and failure instead of a generic message.
+- Confirmed working live end-to-end through the CLI against the real `feature_request` template: no approver -> usage error; `eng_lead` (a real registered agent, wrong role) -> `✗ 'eng_lead' does not hold the required approval role 'design_lead'`; `design_lead` (the real registered agent that role names) -> `✓ Step design approved by design_lead`.
+
+### 🧪 Validation
+
+`tests/test_workflow_approval_role.py` (new, 9 cases): no approver rejected without changing step status; wrong-role registered approver rejected; an approver_id that merely spells the role but was never registered rejected (proves the check is identity, not string-matching); exact agent_id match approves; generic agent_type-prefix match approves; a qualified approver can reject as well as approve; a step that never required approval refuses approval outright and its status is left untouched; unknown instance/unknown step both fail cleanly with a reason instead of crashing; a step with `requires_approval=True` but no declared `approval_role` accepts any *named* approver (documented as the intentional minimal fallback, not silently swept under the rug - see Deliberately NOT addressed). Updated the 5 existing test files that called the old two-argument `approve_step()` (`test_workflow_budget.py`, `test_workflow_idempotent_advance.py`, `test_workflow_persistence.py`, `test_workflow_retry.py`, `test_workflows.py`) to pass a real `approver_id`; `test_workflows.py`'s bug-fix-workflow test needed `tech_lead` registered first (declared in `config.json` but - per checkpoint 42's own finding - never auto-constructed by anything), so it now registers it from its real config entry before approving as it, the same shape `DepartmentHeadAgent.__init__` already uses. Full 43-file suite (`for f in tests/test_*.py; do python3 "$f"; done`) run twice back-to-back with zero failures; `python3 -m py_compile` clean across every module including the new test; tracked seed files restored and generated ones removed after every run, per convention.
+
+### 🚧 Deliberately NOT addressed, and why
+
+- **A step with `requires_approval=True` but no `approval_role` accepts any named approver, without checking they're even a real registered agent.** None of this project's own workflow templates currently leave `approval_role` unset on an approval-gated step, so this path is unexercised in practice - tightening it (e.g. requiring *some* registered agent, just not a specific role) is a two-line follow-up once a real template actually needs it, not invented preemptively.
+- **`workflows.py`'s own templates still name roles inconsistently.** `create_feature_request_workflow()`'s `budget_approval` step is `owner_department="finance"`, which is not a real department in `config.json` (only engineering/design/support/research/sales/product exist) - `execute_step()` would still "work" against it (falls back to a generic stub `DepartmentHeadAgent`), but it's decorative in the same way `approval_role` was before today. A genuine `finance` department (or renaming the step to an owner that exists) is a design decision for the owner, not something to settle inside an approval-identity fix.
+- **`ceo`/`tech_lead`/`product_coordinator` still have no construction path through `TaskExecutor`** - unchanged from checkpoint 42. Today's fix only needed them to be *registered identities* (which `ceo`/`design_lead` already were, in `data/agent_states.json`'s seed data; `tech_lead` is now registered by the test that approves as it), not executable department heads - approving is not executing. The deeper "give these agent types a real construction path, or remove them" question from checkpoint 42 is still open.
+- **Real token cost is still invisible to budgets.** Unchanged from checkpoints 37-42.
+
+### 📝 Next Steps
+
+- **Give the owner a decision point on `product_head`'s placeholder values** (budget, skill level, constraints) - unchanged from checkpoint 42, still unresolved.
+- **`ceo`/`tech_lead`/`product_coordinator` have no execution path** - unchanged from checkpoint 42, still worth its own design session.
+- **`create_feature_request_workflow()`'s `budget_approval` step names a `finance` department that doesn't exist in `config.json`** - newly noticed while proving today's fix; either add a real `finance` department or point the step at one that exists.
+- **Real token cost is still invisible to budgets** - unchanged.
+
+---
+
 # Daily Progress Report - September 15, 2026
 
 ## 🧩 CHECKPOINT 42: A REAL SIXTH DEPARTMENT - "PRODUCT" - WITH GENUINE DECLARED EXPERTISE

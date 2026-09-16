@@ -12,6 +12,7 @@ from datetime import datetime
 
 from budgets import budget_manager as _default_budget_manager
 from departments import DepartmentManager
+from agent_state import agent_registry as _default_agent_state_registry
 
 
 class WorkflowStatus(Enum):
@@ -142,7 +143,8 @@ class WorkflowEngine:
     caching department definitions to disk.
     """
 
-    def __init__(self, data_file: str = "data/workflows.json", budget_manager=None):
+    def __init__(self, data_file: str = "data/workflows.json", budget_manager=None,
+                 agent_state_registry=None):
         self.data_file = Path(data_file)
         self.templates: Dict[str, WorkflowTemplate] = {}
         self.instances: Dict[str, WorkflowInstance] = {}
@@ -150,6 +152,10 @@ class WorkflowEngine:
         # a caller (tests, in particular) can inject an isolated instance
         # instead, the same DI pattern used by DepartmentHeadAgent/TaskExecutor.
         self.budget_manager = budget_manager or _default_budget_manager
+        # Used by approve_step() to verify an approver actually holds the
+        # step's approval_role, instead of trusting whatever identity string
+        # a caller happens to pass. Same DI pattern as budget_manager above.
+        self.agent_state_registry = agent_state_registry or _default_agent_state_registry
         self.load()
 
     def load(self):
@@ -291,21 +297,61 @@ class WorkflowEngine:
         any other subsystem (e.g. task_executor_v2) reserving the same budget."""
         return f"wf:{instance_id}:{step_id}"
 
-    def approve_step(self, instance_id: str, step_id: str, approved: bool) -> bool:
-        """Approve/reject a step requiring approval. If the step carries an
-        estimated_cost, its budget hold is committed to real spend on approval
-        or released back to the department on rejection."""
+    def _approver_qualifies(self, approver_id: str, role: str) -> bool:
+        """Does approver_id actually hold the role a step's approval_role
+        names? Matches the two forms WorkflowStep.approval_role's own
+        docstring names: a specific agent (role as an exact agent_id, e.g.
+        "ceo") or a generic role (role as a case-insensitive prefix of the
+        approver's agent_type, e.g. "manager" matches "ManagerAgent").
+
+        Requires approver_id to resolve to a real, registered AgentState
+        either way - a string that merely matches the role's spelling but
+        names nobody real proves nothing about who approved.
+        """
+        state = self.agent_state_registry.get(approver_id)
+        if not state:
+            return False
+        if approver_id == role:
+            return True
+        return state.profile.agent_type.lower().startswith(role.lower())
+
+    def approve_step(self, instance_id: str, step_id: str, approved: bool,
+                      approver_id: Optional[str] = None) -> Tuple[bool, str]:
+        """Approve/reject a step requiring approval, as a specific approver.
+        If the step carries an estimated_cost, its budget hold is committed
+        to real spend on approval or released back to the department on
+        rejection.
+
+        Both guards below close the same gap: previously this method took
+        no approver at all and would "approve" any step_id on request,
+        including one that never required approval - silently marking
+        unexecuted work as done, the project's own signature bug pattern
+        (steps/budgets recorded complete when nothing was actually done).
+        Confirmed live before this fix: a step with requires_approval=False
+        could be flipped to APPROVED (and so counted as done by
+        get_next_step()) via a bare approve_step() call, and a step gated
+        behind approval_role="design_lead" was approved by a call that
+        offered no identity whatsoever.
+        """
         instance = self.instances.get(instance_id)
         if not instance:
-            return False
+            return False, "Instance not found"
 
         template = self.templates.get(instance.workflow_id)
         step = template.get_step_by_id(step_id) if template else None
+        if not step or not step.requires_approval:
+            return False, f"Step '{step_id}' does not require approval"
+
+        if not approver_id:
+            return False, f"Step '{step.name}' requires approval; no approver given"
+        if step.approval_role and not self._approver_qualifies(approver_id, step.approval_role):
+            return False, f"'{approver_id}' does not hold the required approval role '{step.approval_role}'"
+
         reference = self._budget_reference(instance_id, step_id)
 
         if approved:
             instance.step_status[step_id] = StepStatus.APPROVED
-            if step and step.estimated_cost > 0:
+            if step.estimated_cost > 0:
                 self.budget_manager.confirm_reservation(
                     step.budget_dept(), reference, category="workflow_step",
                     description=step.name, task_id=instance_id
@@ -314,11 +360,12 @@ class WorkflowEngine:
             instance.step_status[step_id] = StepStatus.REJECTED
             instance.status = WorkflowStatus.PAUSED
             instance.error = f"Step {step_id} rejected"
-            if step and step.estimated_cost > 0:
+            if step.estimated_cost > 0:
                 self.budget_manager.cancel_reservation(step.budget_dept(), reference)
 
         self.save()
-        return True
+        verb = "approved" if approved else "rejected"
+        return True, f"Step {step_id} {verb} by {approver_id}"
 
     def retry_blocked_step(self, instance_id: str) -> Tuple[bool, str]:
         """Re-attempt a BLOCKED step's budget reservation - e.g. after the

@@ -344,12 +344,13 @@ def workflow_complete(instance_id: str, step_id: str):
         print(f"Could not complete step '{step_id}' (check the instance/step id)")
 
 
-def workflow_approve(instance_id: str, step_id: str, approved: bool):
-    """Approve or reject a step requiring approval."""
+def workflow_approve(instance_id: str, step_id: str, approver_id: str, approved: bool):
+    """Approve or reject a step requiring approval, as a named approver.
+    The engine checks approver_id against the step's approval_role - see
+    WorkflowEngine.approve_step()."""
     init_workflows()
-    ok = workflow_engine.approve_step(instance_id, step_id, approved)
-    verb = "approved" if approved else "rejected"
-    print(f"✓ Step '{step_id}' {verb}" if ok else f"Could not act on step '{step_id}'")
+    ok, reason = workflow_engine.approve_step(instance_id, step_id, approved, approver_id=approver_id)
+    print(f"✓ {reason}" if ok else f"✗ {reason}")
 
 
 def workflow_retry(instance_id: str):
@@ -560,11 +561,11 @@ def main():
                 return
             workflow_complete(sys.argv[3], sys.argv[4])
         elif sub == "approve":
-            if len(sys.argv) < 5:
-                print("Usage: python main_v2.py workflow approve <instance_id> <step_id> [--reject]")
+            if len(sys.argv) < 6:
+                print("Usage: python main_v2.py workflow approve <instance_id> <step_id> <approver_id> [--reject]")
                 return
             approved = "--reject" not in sys.argv
-            workflow_approve(sys.argv[3], sys.argv[4], approved)
+            workflow_approve(sys.argv[3], sys.argv[4], sys.argv[5], approved)
         elif sub == "retry":
             if len(sys.argv) < 4:
                 print("Usage: python main_v2.py workflow retry <instance_id>")

@@ -67,7 +67,7 @@ def test_approval_confirms_reservation_into_spend():
     print(f"  Reserved: ${budget.reserved_total():,.2f}, Spent: ${budget.spent:,.2f}")
     assert budget.reserved_total() == 4000 and budget.spent == 0
 
-    engine.approve_step(instance.instance_id, step2.step_id, approved=True)
+    engine.approve_step(instance.instance_id, step2.step_id, approved=True, approver_id="test_approver")
     print(f"  After approval -> Reserved: ${budget.reserved_total():,.2f}, Spent: ${budget.spent:,.2f}")
     assert budget.reserved_total() == 0 and budget.spent == 4000
 
@@ -92,7 +92,7 @@ def test_rejection_releases_reservation():
     print(f"  Reserved before rejection: ${budget.reserved_total():,.2f}")
     assert budget.reserved_total() == 2500
 
-    engine.approve_step(instance.instance_id, step2.step_id, approved=False)
+    engine.approve_step(instance.instance_id, step2.step_id, approved=False, approver_id="test_approver")
     print(f"  Reserved after rejection: ${budget.reserved_total():,.2f} (released back)")
     assert budget.reserved_total() == 0 and budget.spent == 0
     assert instance.status == WorkflowStatus.PAUSED
@@ -162,7 +162,7 @@ def test_split_owner_and_budget_department():
     assert finance_budget.reserved_total() == 0
     assert eng_budget.reserved_total() == 15000
 
-    engine.approve_step(instance.instance_id, step.step_id, approved=True)
+    engine.approve_step(instance.instance_id, step.step_id, approved=True, approver_id="test_approver")
     assert eng_budget.spent == 15000
 
 

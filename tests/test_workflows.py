@@ -12,6 +12,30 @@ from workflows import (
     workflow_engine, create_feature_request_workflow,
     create_bug_fix_workflow, WorkflowStatus, StepStatus
 )
+from agent_state import agent_registry, AgentProfile
+from departments import DepartmentManager
+
+
+def _ensure_registered(agent_id: str):
+    """Register agent_id from its real config.json entry if it isn't
+    already a known AgentState - approve_step() now verifies an approver
+    against the step's approval_role via the registry, so tests that
+    approve as "tech_lead" (never auto-constructed by anything, unlike the
+    "{department}_head" agents - see checkpoint 42) need it registered
+    first, same as "design_lead"/"ceo" already are in the seed data."""
+    if agent_registry.get(agent_id):
+        return
+    config = DepartmentManager.get_agent_config(agent_id) or {}
+    agent_registry.register(AgentProfile(
+        agent_id=agent_id,
+        name=config.get("name", agent_id),
+        agent_type=config.get("type", "SpecialistAgent"),
+        department=config.get("department", ""),
+        expertise_areas=config.get("expertise_areas", []),
+        skill_level=config.get("skill_level", 3),
+        capabilities=config.get("capabilities", []),
+        constraints=config.get("constraints", [])
+    ))
 
 
 def test_feature_workflow():
@@ -55,7 +79,7 @@ def test_feature_workflow():
     print(f"  [WAIT] Requires approval from: {step2.approval_role}")
     workflow_engine.complete_step(instance.instance_id, step2.step_id, {"design": "mockups created"})
     # Approve the step
-    workflow_engine.approve_step(instance.instance_id, step2.step_id, approved=True)
+    workflow_engine.approve_step(instance.instance_id, step2.step_id, approved=True, approver_id="design_lead")
     print(f"  [OK] Approved by design lead")
 
     # Get status
@@ -73,6 +97,7 @@ def test_bug_fix_workflow():
     print("="*60 + "\n")
 
     # Register bug fix workflow
+    _ensure_registered("tech_lead")
     template = create_bug_fix_workflow()
     workflow_engine.register_template(template)
     print(f"[OK] Registered workflow: {template.name}")
@@ -92,7 +117,7 @@ def test_bug_fix_workflow():
         print(f"\n[Step {i+1}] {step.name}")
         workflow_engine.complete_step(instance.instance_id, step.step_id, {"done": True})
         if step.requires_approval:
-            workflow_engine.approve_step(instance.instance_id, step.step_id, approved=True)
+            workflow_engine.approve_step(instance.instance_id, step.step_id, approved=True, approver_id="tech_lead")
             print(f"  [OK] Approved")
         else:
             print(f"  [OK] Completed")
@@ -129,7 +154,7 @@ def test_workflow_rejection():
 
     # Reject the step
     print(f"[Step] {step2.name}")
-    workflow_engine.approve_step(instance.instance_id, step2.step_id, approved=False)
+    workflow_engine.approve_step(instance.instance_id, step2.step_id, approved=False, approver_id="design_lead")
     instance = workflow_engine.get_instance(instance.instance_id)
     print(f"[REJECTED] Workflow paused")
     print(f"  Status: {instance.status.value}")

@@ -74,7 +74,7 @@ def test_instance_survives_a_fresh_engine_pointed_at_the_same_file():
     print(f"  Next step from the fresh engine: {step2.name if step2 else None}")
     assert step2 is not None and step2.step_id == "review"
 
-    engine2.approve_step(instance_id, "review", approved=True)
+    engine2.approve_step(instance_id, "review", approved=True, approver_id="test_approver")
     assert engine2.check_complete(instance_id)
     print(f"  Completed via the second engine object entirely")
 
