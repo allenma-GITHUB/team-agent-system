@@ -86,6 +86,20 @@
       ],
       "staff": 5,
       "monthly_budget": 28000
+    },
+    "finance": {
+      "keywords": [
+        "budget",
+        "expense",
+        "invoice",
+        "financial",
+        "finance",
+        "funding",
+        "spend",
+        "cost"
+      ],
+      "staff": 3,
+      "monthly_budget": 20000
     }
   },
   "agents": {
@@ -184,6 +198,17 @@
       "capabilities": ["workflow_orchestration", "communication", "conflict_resolution"],
       "constraints": [],
       "max_concurrent_tasks": 6
+    },
+    "finance_head": {
+      "type": "ManagerAgent",
+      "name": "Finance Manager",
+      "department": "finance",
+      "expertise_areas": ["budget_planning", "financial_analysis", "cost_estimation"],
+      "skill_level": 4,
+      "capabilities": ["budget_review", "reporting", "delegation"],
+      "constraints": [],
+      "max_concurrent_tasks": 4,
+      "staff_range": [2, 6]
     }
   },
   "default_department": "engineering",

@@ -1,3 +1,51 @@
+# Daily Progress Report - September 17, 2026
+
+## 🏦 CHECKPOINT 44: A REAL "FINANCE" DEPARTMENT - CLOSES CHECKPOINT 43'S OWN NEXT STEP
+
+**Session opened with a housekeeping check, same as checkpoint 43's own opening**: this container's checkout started with `HEAD` detached one commit (`b709f87`, checkpoint 43's own commit) ahead of the local `main` branch pointer. Verified the commit itself was sound (`py_compile` clean across every module, full 44-file suite green) before moving `main` to it. `git fetch origin main` then showed `origin/main` already at that same commit - the push had, in fact, happened at the end of the prior session; only this container's cached `origin/main` ref and local branch pointer were stale. No `git push` was needed. Same lesson as yesterday: check before assuming stale local refs mean unpushed work, or the reverse.
+
+**Today's actual work closes a Next Step checkpoint 43 named explicitly**: `create_feature_request_workflow()`'s `budget_approval` step (`workflows.py`) has always had `owner_department="finance"`, but `config.json`'s `"departments"` dict had no `"finance"` entry at all - the same class of gap checkpoint 42 found and fixed for `"product"`.
+
+### 🐛 Defect proven live before writing the fix
+
+Using the workflow step's own real description and department name, not a synthetic stand-in:
+
+```
+DepartmentManager.route_task("Approve budget allocation") -> "engineering"
+DepartmentManager.get_agent_config("finance_head") -> None
+DepartmentManager.get_monthly_budget("finance") -> 10000   (generic fallback, not a deliberate number)
+DepartmentManager.route_task("Review the quarterly expense report and approve vendor invoice") -> "research"
+```
+
+Wrong on every count: the step's own description doesn't route to the department it's declared to belong to at all; `task_executor_v2.DepartmentHeadAgent.__init__` would build "finance"'s head from the generic fallback profile (`expertise_areas=["finance"]`, `skill_level=3`) instead of any real declared expertise, the same placeholder path checkpoint 42's own comment in `departments.py` names as disqualifying a department from ever exercising the skill-gap check or coverage-aware delegate ranking; and the department's seeded budget was an arbitrary fallback constant, not a chosen number - while `budget_department="engineering"` means the step's own `$15,000` spend was already being charged correctly, the *department itself* (used for routing, expertise, and capacity) was still fake.
+
+### ✅ Fix
+
+- **`config.json`**: new `"finance"` department entry (keywords `budget`/`expense`/`invoice`/`financial`/`finance`/`funding`/`spend`/`cost`, `staff: 3`, `monthly_budget: 20000`) and a matching `"finance_head"` agent profile (`ManagerAgent`, `expertise_areas: ["budget_planning", "financial_analysis", "cost_estimation"]`, `skill_level: 4`) - same shape as checkpoint 42's `product`/`product_head` pair.
+- **`departments.py`**: three new `SKILL_KEYWORDS` entries mapping finance vocabulary (`budget`/`funding` -> `budget_planning`, `financial`/`finance` -> `financial_analysis`, `cost`/`expense`/`spend` -> `cost_estimation`) onto `finance_head`'s real expertise strings - the same restriction checkpoint 38's comment already states (only vocabulary that matches a real, declared `expertise_areas` gets a tag).
+- Checked for the exact substring-collision trap checkpoint 42 found while adding `product` (`"requirements"` containing `"ui"`): none of finance's new keywords appear as raw substrings inside any other department's routing text for the step's own description, and none of the five original departments' routing changed.
+
+### 🧪 Validation
+
+`tests/test_finance_department.py` (new, 8 cases, modeled directly on `test_product_department.py`'s structure): the real `budget_approval` step's own description now routes to `"finance"` (test 1, reads the step straight out of `create_feature_request_workflow()` rather than retyping its text); no substring collisions against the other six departments' keyword lists (test 2); all six pre-existing departments still route correctly (test 3); `finance_head` has a real `config.json` profile with the configured `$20,000` budget, not the `$10,000` fallback (test 4); `infer_required_skills()` recognizes the new vocabulary (test 5); a real `finance_head` built from config executes matching work end-to-end through `decide_on_task()` (test 6); a synthetic skill-gap check fires correctly for finance vocabulary, both the matching and mismatched cases (test 7); `find_best_delegate()` can surface `finance_head` purely from its real `expertise_areas` (test 8). Full 45-file suite (`for f in tests/test_*.py; do python3 "$f"; done`) run twice back-to-back with zero failures; `python3 -m py_compile` clean across every module.
+
+Confirmed end-to-end through the real CLI, not just tests: started a `feature_request` workflow instance and drove it through `intake` -> `design` (approved by `design_lead`) -> `estimation` -> `budget_approval`, which printed **"Finance team completed task in 0.00s"** - the step now genuinely executes through a real Finance department head instead of the generic placeholder stub. Tracked seed files restored and generated ones removed after every run and after the manual CLI walkthrough, per convention.
+
+### 🚧 Deliberately NOT addressed, and why
+
+- **Whether `finance_head`'s `skill_level`, `monthly_budget`, or `staff` count are the *right* numbers is a policy call left to the owner**, same as `product_head`'s placeholder values in checkpoint 42's own Next Steps (still open, unrelated to today's fix) - `20000`/`staff: 3`/`skill_level: 4` are reasonable defaults sized relative to the other five departments, not a researched budget figure.
+- **`finance_head`'s `constraints` are left empty** (`[]`), matching `research_head`/`product_head`/`support_head` rather than adding a synthetic approval-amount constraint (like `sales_head`'s `needs_approval_over_50k`) that nothing asked for - inventing a threshold here would be exactly the kind of policy decision this project's conventions say to leave to the owner, not settle inside a routing fix.
+- **`ceo`/`tech_lead`/`product_coordinator` still have no construction path through `TaskExecutor`** - unchanged from checkpoints 42-43, still its own design session.
+- **Real token cost is still invisible to budgets** - unchanged.
+
+### 📝 Next Steps
+
+- **Give the owner a decision point on `finance_head`'s placeholder values** (budget, staff, skill level) and `product_head`'s (still unresolved from checkpoint 42) - both are the same kind of open policy question.
+- **`ceo`/`tech_lead`/`product_coordinator` have no execution path** - unchanged, still worth its own design session.
+- **Real token cost is still invisible to budgets** - unchanged.
+
+---
+
 # Daily Progress Report - September 16, 2026
 
 ## 🔐 CHECKPOINT 43: `approve_step()` NOW ACTUALLY CHECKS WHO IS APPROVING

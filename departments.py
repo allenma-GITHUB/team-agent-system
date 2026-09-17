@@ -89,6 +89,10 @@ SKILL_KEYWORDS = {
     "roadmap": "roadmap_planning", "prioritize": "roadmap_planning", "prioritization": "roadmap_planning",
     "requirements": "requirements_gathering", "user story": "requirements_gathering",
     "user stories": "requirements_gathering",
+    # finance_head: budget_planning, financial_analysis, cost_estimation
+    "budget": "budget_planning", "funding": "budget_planning",
+    "financial": "financial_analysis", "finance": "financial_analysis",
+    "cost": "cost_estimation", "expense": "cost_estimation", "spend": "cost_estimation",
 }
 
 # Matched with \b word boundaries, not plain substring "in" like the
