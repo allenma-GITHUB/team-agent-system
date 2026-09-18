@@ -43,6 +43,15 @@ def _executor(bus) -> TaskExecutor:
     )
 
 
+def _token_cost(department: str) -> float:
+    """TaskExecutor.execute()/execute_parallel() reshape DepartmentHeadAgent
+    .run()'s result and don't pass its token_cost field through, so the real
+    token charge (task_executor_v2.py's token_budget_check) is read from the
+    budget manager's own expense log instead."""
+    return sum(e.amount for e in budget_manager.expense_log
+               if e.department == department and e.category == "llm_tokens")
+
+
 def print_section(title: str):
     print(f"\n{'='*60}")
     print(f"  {title}")
@@ -61,8 +70,12 @@ def test_execute_passes_estimated_hours_through():
     executor.execute(department, "A five-hour task", estimated_hours=5.0)
 
     budget = budget_manager.get_budget(department)
-    expected = 5.0 * FALLBACK_RATE
-    print(f"  Spent: ${budget.spent:,.2f} (5h * ${FALLBACK_RATE}/hr fallback rate = ${expected:,.2f} expected)")
+    # Labor (hours * rate) plus the real token cost of the LLM call - see
+    # task_executor_v2.py's token_budget_check.
+    token_cost = _token_cost(department)
+    expected = 5.0 * FALLBACK_RATE + token_cost
+    print(f"  Spent: ${budget.spent:,.2f} (5h * ${FALLBACK_RATE}/hr fallback rate + "
+          f"${token_cost:.5f} token cost = ${expected:,.5f} expected)")
     assert budget.spent == expected
 
 
@@ -81,9 +94,16 @@ def test_execute_parallel_passes_per_task_hours_through():
     ])
 
     budget = budget_manager.get_budget(department)
-    expected = (2.0 + 3.0) * FALLBACK_RATE
-    print(f"  Spent: ${budget.spent:,.2f} ((2h + 3h) * ${FALLBACK_RATE}/hr fallback rate = ${expected:,.2f} expected)")
-    assert budget.spent == expected
+    token_cost = _token_cost(department)
+    expected = (2.0 + 3.0) * FALLBACK_RATE + token_cost
+    print(f"  Spent: ${budget.spent:,.2f} ((2h + 3h) * ${FALLBACK_RATE}/hr fallback rate + "
+          f"${token_cost:.5f} token cost = ${expected:,.5f} expected)")
+    # Tolerance, not exact equality: these two tasks share a department and
+    # run concurrently, so their budget.spent additions land in whatever
+    # order the threads acquire the lock in - float addition isn't
+    # associative, so the total can differ at the ULP level from a re-sum
+    # in a fixed order even though it's still the right total.
+    assert abs(budget.spent - expected) < 1e-6
 
 
 def test_execute_parallel_still_accepts_two_tuples():
@@ -98,8 +118,10 @@ def test_execute_parallel_still_accepts_two_tuples():
     executor.execute_parallel([(department, "No hours specified")])
 
     budget = budget_manager.get_budget(department)
-    expected = 1.0 * FALLBACK_RATE
-    print(f"  Spent: ${budget.spent:,.2f} (1h * ${FALLBACK_RATE}/hr fallback rate = ${expected:,.2f} expected)")
+    token_cost = _token_cost(department)
+    expected = 1.0 * FALLBACK_RATE + token_cost
+    print(f"  Spent: ${budget.spent:,.2f} (1h * ${FALLBACK_RATE}/hr fallback rate + "
+          f"${token_cost:.5f} token cost = ${expected:,.5f} expected)")
     assert budget.spent == expected
 
 

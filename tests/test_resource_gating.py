@@ -64,8 +64,12 @@ def test_default_task_executes_without_approval_but_still_spends():
     assert budget_check_events[0].data["approval_required"] is False
 
     budget = budget_manager.get_budget(department)
-    print(f"  Spent: ${budget.spent:,.2f} (1h * $100/hr = $100 expected, even with no approval)")
-    assert budget.spent == 100
+    # Labor (1h * $100/hr) plus the real token cost of the LLM call - see
+    # task_executor_v2.py's token_budget_check.
+    expected = 100 + result["token_cost"]
+    print(f"  Spent: ${budget.spent:,.2f} (1h * $100/hr + ${result['token_cost']:.5f} "
+          f"token cost = ${expected:,.5f} expected, even with no approval)")
+    assert budget.spent == expected
 
 
 def test_capacity_check_is_emitted():
@@ -99,8 +103,12 @@ def test_high_cost_task_draws_from_budget_when_affordable():
     assert result["approved"] is True
 
     budget = budget_manager.get_budget(department)
-    print(f"  Spent: ${budget.spent:,.2f} (20h * $100/hr = $2,000 expected)")
-    assert budget.spent == 2000
+    # Labor (20h * $100/hr) plus the real token cost of the LLM call - see
+    # task_executor_v2.py's token_budget_check.
+    expected = 2000 + result["token_cost"]
+    print(f"  Spent: ${budget.spent:,.2f} (20h * $100/hr + ${result['token_cost']:.5f} "
+          f"token cost = ${expected:,.5f} expected)")
+    assert budget.spent == expected
 
 
 def test_high_cost_task_escalates_when_budget_is_insufficient():

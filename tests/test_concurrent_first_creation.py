@@ -20,6 +20,13 @@ Confirmed with a concrete repro: 15 brand-new departments, 5 tasks each,
 tasks_completed short by exactly the number of racing first-creations,
 or the shared expense_log missing an entry) before this fix; 15/15 clean
 runs after it.
+
+expense_log is expected at 2 entries per completed task, not 1: every
+completed task now logs both its labor charge and a second, separate
+charge for the real token cost of the LLM call that produced it (see
+task_executor_v2.py's token_budget_check) - the resource-layer fix that
+gave real token spend a place to land instead of being computed and then
+discarded.
 """
 
 import os
@@ -56,7 +63,8 @@ def _isolated_executor(suffix: str, max_workers: int):
 def test_many_brand_new_departments_created_concurrently_stay_correct():
     """15 departments never seen before, 5 tasks each, 16 workers - every
     department should end with exactly 5 recorded completions and the
-    shared expense_log should have exactly 75 entries, run after run."""
+    shared expense_log should have exactly 150 entries (labor + token cost
+    per completed task), run after run."""
     print_section("1. Many Brand-New Departments Created Concurrently")
 
     n_depts = 15
@@ -81,7 +89,11 @@ def test_many_brand_new_departments_created_concurrently_stay_correct():
 
         assert errors == []
         assert total_completed == n_depts * tasks_per_dept
-        assert len(budgets.expense_log) == n_depts * tasks_per_dept
+        # 2 expense records per completed task: the labor charge (made
+        # before the LLM call) and the real token-cost charge (made after
+        # it, once tokens_used is known) - see task_executor_v2.py's
+        # token_budget_check.
+        assert len(budgets.expense_log) == 2 * n_depts * tasks_per_dept
 
         # And every department individually got exactly its share - not just the total
         for d in range(n_depts):

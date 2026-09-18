@@ -85,8 +85,10 @@ def test_injected_department_head_touches_no_shared_files():
         print(f"  {path}: unchanged = {before[path] == after[path]}")
         assert before[path] == after[path], f"{path} was touched by an isolated run"
 
-    # But the isolated instances DID record the work:
-    assert budgets.get_budget("qa_di_dept").spent == 300  # 3h * $100/hr
+    # But the isolated instances DID record the work: labor (3h * $100/hr)
+    # plus the real token cost of the LLM call - see task_executor_v2.py's
+    # token_budget_check.
+    assert budgets.get_budget("qa_di_dept").spent == 300 + result["token_cost"]
     assert registry.get("qa_di_dept_head") is not None
     assert analytics.get_agent_metrics("qa_di_dept_head") is not None
     print("  Isolated instances correctly recorded the spend, agent state, and metrics")
@@ -117,7 +119,13 @@ def test_injected_task_executor_propagates_to_every_agent_it_creates():
     for path in SHARED_FILES:
         assert before[path] == after[path], f"{path} was touched by an isolated executor run"
 
-    assert budgets.get_budget("qa_di_engineering").spent == 2.0 * FALLBACK_RATE
+    # TaskExecutor.execute() reshapes DepartmentHeadAgent.run()'s result and
+    # doesn't pass token_cost through, so the real token charge - see
+    # task_executor_v2.py's token_budget_check - is read from the injected
+    # budget manager's own expense log instead (a single task ran, so this
+    # is unambiguous).
+    token_cost = sum(e.amount for e in budgets.expense_log if e.category == "llm_tokens")
+    assert budgets.get_budget("qa_di_engineering").spent == 2.0 * FALLBACK_RATE + token_cost
     print("  Agent created on-demand by TaskExecutor used the injected budget manager, not the global one")
 
 

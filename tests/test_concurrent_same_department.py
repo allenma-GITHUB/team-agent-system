@@ -65,14 +65,26 @@ def test_no_lost_updates_across_many_concurrent_same_department_tasks():
     agent_state = registry.get(f"{department}_head")
     budget = budgets.get_budget(department)
     rate = agent_state.profile.hourly_rate()
+    # Labor (n * rate) plus the real token cost of every LLM call - see
+    # task_executor_v2.py's token_budget_check. TaskExecutor.execute_parallel()
+    # reshapes each result and doesn't pass token_cost through, so it's read
+    # from the budget manager's own expense log instead.
+    token_cost = sum(e.amount for e in budgets.expense_log
+                     if e.department == department and e.category == "llm_tokens")
+    expected_spent = n * rate + token_cost
 
     print(f"  tasks_completed: {metrics.tasks_completed} (expected {n})")
     print(f"  workload: {agent_state.current_workload} (expected 0)")
-    print(f"  spent: ${budget.spent:,.2f} (expected ${n * rate:,.2f})")
+    print(f"  spent: ${budget.spent:,.2f} (expected ${expected_spent:,.2f})")
 
     assert metrics.tasks_completed == n
     assert agent_state.current_workload == 0
-    assert budget.spent == n * rate
+    # Tolerance, not exact equality: 30 concurrent tasks each make two
+    # separate float additions to budget.spent (labor, then token cost) in
+    # whatever order threads happen to acquire the lock in, and float
+    # addition isn't associative - the total is still right regardless of
+    # order, but bitwise-identical to a fixed-order re-sum isn't guaranteed.
+    assert abs(budget.spent - expected_spent) < 1e-6
 
 
 def test_repeated_runs_stay_correct():

@@ -346,7 +346,9 @@ class DepartmentHeadAgent(BaseAgent):
             "slack": capacity.slack()
         })
 
-        decision = self.decide_on_task(task, estimated_hours=estimated_hours)["raw_decision"]
+        decision_info = self.decide_on_task(task, estimated_hours=estimated_hours)
+        decision = decision_info["raw_decision"]
+        task_id = decision_info["context"].task_id
 
         if decision.decision == "escalate":
             self._emit("task_escalated", {"reasoning": decision.reasoning})
@@ -540,6 +542,39 @@ class DepartmentHeadAgent(BaseAgent):
         duration = time.time() - start  # wall-clock time of this call - near-instant for a mock LLM
         mock_cost = tokens_used * 0.00001
 
+        # The budget charge above (labor: estimated_hours * cost_per_hour) is
+        # priced BEFORE the LLM call runs and never hears about mock_cost,
+        # which only becomes known after the call returns - so real token
+        # spend was computed, fed into agent_state.record_performance() and
+        # analytics.record_task() below, and then discarded rather than ever
+        # reaching the department's actual budget. Confirmed live: a
+        # 124-token completed task left budget.spent exactly equal to the
+        # labor charge, $0.00124 short of what was actually spent.
+        #
+        # Charged here, separately from the labor charge and after the fact
+        # (this is real, already-incurred cost, not an estimate to gate on -
+        # the work already happened and cannot be undone if this fails).
+        # Skipped for a zero-token run (no LLM, or a provider that reported
+        # no tokens) rather than logging a $0.00 expense on every task.
+        token_cost_charged = True
+        token_budget_note = None
+        if mock_cost > 0:
+            token_cost_charged, token_budget_reason = self.budget_manager.request_expense(
+                department=self.department, amount=mock_cost, category="llm_tokens",
+                description=f"{tokens_used} tokens via {provider_used}",
+                task_id=task_id, agent_id=self.agent_id,
+            )
+            if not token_cost_charged:
+                # Can't refuse or undo work already done - the same
+                # attempt-really-happened accounting the labor charge uses
+                # elsewhere in this method. Recorded honestly instead of
+                # silently dropped a second time.
+                token_budget_note = token_budget_reason
+        self._emit("token_budget_check", {
+            "tokens": tokens_used, "cost": mock_cost, "charged": token_cost_charged,
+            "note": token_budget_note,
+        })
+
         # Metrics track effort in business hours (the same estimated_hours the
         # budget check above priced this task at), not wall-clock duration.
         # A mock LLM call finishes in milliseconds regardless of whether the
@@ -604,6 +639,9 @@ class DepartmentHeadAgent(BaseAgent):
                 "approved": False,
                 "llm_provider": provider_used,
                 "tokens_used": tokens_used,
+                "token_cost": mock_cost,
+                "token_cost_charged": token_cost_charged,
+                "token_budget_note": token_budget_note,
                 "quality_score": quality_score,
                 "used_tools": used_tools,
                 "tool_calls": tool_calls_made,
@@ -618,6 +656,9 @@ class DepartmentHeadAgent(BaseAgent):
             "approved": True,
             "llm_provider": provider_used,
             "tokens_used": tokens_used,
+            "token_cost": mock_cost,
+            "token_cost_charged": token_cost_charged,
+            "token_budget_note": token_budget_note,
             "quality_score": quality_score,
             "used_tools": used_tools,
             "tool_calls": tool_calls_made,

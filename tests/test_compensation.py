@@ -88,10 +88,14 @@ def test_department_head_bills_at_its_profile_rate_by_default():
     print(f"  Derived cost_per_hour: ${agent.cost_per_hour}/hr (expected: ${profile.hourly_rate()})")
     assert agent.cost_per_hour == profile.hourly_rate()
 
-    agent.run("A task billed at this agent's own rate", estimated_hours=2.0)
+    result = agent.run("A task billed at this agent's own rate", estimated_hours=2.0)
     budget = budgets.get_budget("qa_comp_dept")
-    print(f"  Spent: ${budget.spent:,.2f} (2h * ${profile.hourly_rate()}/hr expected)")
-    assert budget.spent == 2.0 * profile.hourly_rate()
+    # Labor (hours * rate) plus the real token cost of the LLM call the task
+    # actually made - see task_executor_v2.py's token_budget_check.
+    expected = 2.0 * profile.hourly_rate() + result["token_cost"]
+    print(f"  Spent: ${budget.spent:,.2f} (2h * ${profile.hourly_rate()}/hr + "
+          f"${result['token_cost']:.5f} token cost = ${expected:,.5f} expected)")
+    assert budget.spent == expected
 
 
 def test_explicit_cost_per_hour_still_overrides_the_derived_rate():

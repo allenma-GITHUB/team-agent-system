@@ -1,3 +1,55 @@
+# Daily Progress Report - September 18, 2026
+
+## 💰 CHECKPOINT 45: REAL TOKEN COST NOW REACHES THE ACTUAL BUDGET
+
+**Session opened with the same housekeeping check checkpoints 43 and 44 each did**: this container's checkout started with `HEAD` detached three commits ahead of the local `main` branch pointer, because `git checkout -B main origin/main` was run once **before** fetching - it reset the branch to a stale cached `origin/main` (checkpoint 41's commit), silently reverting the working tree to before checkpoints 42-44 (the `product`/`finance` departments, `approve_step()`'s identity check) ever existed. Caught before committing anything by a missing `git fetch`, not by luck: always `git fetch origin main` before trusting a local `origin/main` ref, then `git checkout -B main origin/main` against the freshly-fetched ref - the cached one can be arbitrarily stale in a fresh container.
+
+**Closes the follow-up named as an open "Next Step" in every checkpoint from 37 through 44**: "Real token cost is still invisible to budgets."
+
+### 🐛 Proven live before touching anything
+
+`_run_locked()` (`task_executor_v2.py`) charges the department budget for a task's *labor* cost - `estimated_hours * cost_per_hour` - via `budget_manager.request_expense()`/`approve_decision()`, and does so **before** the LLM call even runs. Only after the call returns does the method learn `tokens_used`, from which it computes `mock_cost = tokens_used * 0.00001` - and that number is fed into `agent_state.record_performance()` and `analytics.record_task()` (agent metrics, org-wide analytics), never into `self.budget_manager`. Confirmed with a real run against an isolated budget manager:
+
+```
+tokens_used: 124
+real token cost (mock_cost): 0.00124
+labor cost charged:          100.0
+budget spent before -> after: 0.0 -> 100.0   (delta 100.0)
+expected delta if tokens were billed: 100.00124
+BUG CONFIRMED (token cost never reached budget): True
+```
+
+A department's budget tracked exactly the hours it staffed and nothing about what its agents' LLM calls actually cost - a real, if currently small, resource silently invisible to `budgets.py`'s entire point.
+
+### ✅ Fix
+
+- **`task_executor_v2.py`: `_run_locked()`** now charges a second, separate expense (`category="llm_tokens"`) against the same department budget once `mock_cost` is known, via `self.budget_manager.request_expense()`. Deliberately **not** folded into the existing labor charge and **not** used to gate anything: this is real, already-incurred cost (the LLM call already happened), not an estimate to approve or deny work against. Skipped when `mock_cost == 0` (no LLM, or a provider reporting no tokens) so a routine task doesn't log a `$0.00` expense record every time.
+- Applies to **both** outcomes - a normal completion and an iteration-exhausted escalation - mirroring the labor charge's own "the attempt really happened, so the spend stands" accounting from checkpoints 27/28. An agent that ran out of iterations still spent real tokens getting there.
+- **Failure is recorded, not silently dropped a second time.** If the token charge itself is refused (budget already exhausted by the labor charge), the task's `status`/`approved` are unaffected - the work already happened and can't be undone - but the result now carries `token_cost`, `token_cost_charged`, and `token_budget_note` (the refusal reason, or `None` on success), and a new `token_budget_check` event is emitted alongside the existing `budget_check` event. A report can no longer imply every dollar of a task's real cost landed in the ledger when it didn't.
+- **`decide_on_task()`'s `DecisionContext.task_id`** is now threaded through to `_run_locked()` (previously computed and then discarded inside `decide_on_task()`'s own return dict) so the new expense record can reference the task it belongs to, matching every other `request_expense()` call site in this file.
+
+### ⚠️ Behavior change, not just a reporting change
+
+Every completed or escalated task that made a real (non-zero-token) LLM call now spends a few thousandths of a cent more against its department's budget than before, and `budgets.expense_log` gets a second entry per such task. Confirmed live via the CLI (`submit` + `process` + `report`): the execution trace now shows a `token_budget_check` event per task alongside `budget_check`, and `Budget Spent` in `report` includes the token line items. At the mock provider's `$0.00001/token` rate this is currently a rounding-error-sized change to the dollar totals - but it is the difference between a resource layer that tracks real spend and one that tracks a fiction that happened to look complete.
+
+### 🧪 Validation
+
+`tests/test_token_budget_charge.py` (new): a completed task charges exactly `tokens_used * 0.00001` as a distinct `llm_tokens` expense-log entry on top of the labor charge; an iteration-exhausted (escalated) run still charges its real token cost, unrefunded, same as the labor charge; a zero-token run (no LLM provider) logs no expense noise; a department with just enough budget for labor and none left for tokens gets a real, completed task with `token_cost_charged=False` and a non-`None` `token_budget_note`, and the failed charge is **not** silently applied. Six existing tests asserted `budget.spent` against labor-cost-only exact values and needed updating for the new (correct) total - `test_compensation.py`, `test_resource_gating.py`, `test_executor_hours_threading.py`, `test_department_head_isolation.py`, `test_concurrent_same_department.py` (now with a `1e-6` tolerance instead of exact equality - concurrent same-department tasks make their labor and token charges in whatever order threads acquire the shared lock in, and float addition isn't associative, so the correct total isn't always bit-identical to a fixed-order re-sum), and `test_concurrent_first_creation.py` (its `expense_log` length invariant is now 2 entries per completed task, not 1). `TaskExecutor.execute()`/`execute_parallel()` reshape `DepartmentHeadAgent.run()`'s result and don't pass `token_cost` through to callers, so three of the updated tests read the real charge back from the budget manager's own `expense_log` instead of the executor's return value - noted in each test's comments as a pre-existing gap in what `execute()` exposes, not something this checkpoint changed. Full 45-file suite (`test_token_budget_charge.py` included) run twice back-to-back with zero failures; `python3 -m py_compile` clean across every module; tracked seed files restored and `data/budgets.json`/`data/workflows.json` removed after every run, per convention.
+
+### 🚧 Deliberately NOT addressed, and why
+
+- **The `$0.00001/token` rate is still a hardcoded placeholder**, unchanged from when `mock_cost` was introduced - this checkpoint gives that number a real destination, it doesn't make the number itself more accurate. A real per-provider/per-model rate table is a policy question (whose pricing, updated how often) left for the owner.
+- **`TaskExecutor.execute()`'s result shape still drops `tokens_used`/`token_cost`/`quality_score`/etc.**, a pre-existing gap (not introduced today) that forced three of this checkpoint's own test updates to read `budgets.expense_log` directly instead of the executor's return value. Worth a real pass on `execute()`'s public dict once there's a concrete consumer (dashboard, CLI `report`) that needs those fields per-task rather than only in aggregate.
+- **`product_head`/`finance_head` placeholder values and the unreachable `ceo`/`tech_lead`/`product_coordinator` config entries** - unchanged from checkpoints 42-44, still open policy questions for the owner.
+
+### 📝 Next Steps
+
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder now that it has somewhere real to go.
+- **`TaskExecutor.execute()`'s result shape** - give it the per-task fields (`tokens_used`, `token_cost`, `quality_score`, `used_tools`) that `DepartmentHeadAgent.run()` already returns and it currently discards, once a real consumer needs them.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open.
+
+---
+
 # Daily Progress Report - September 17, 2026
 
 ## 🏦 CHECKPOINT 44: A REAL "FINANCE" DEPARTMENT - CLOSES CHECKPOINT 43'S OWN NEXT STEP

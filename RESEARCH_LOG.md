@@ -18,6 +18,34 @@ reasoning rather than relitigated every week.
 
 ---
 
+## 2026-09-18 — Slice 2: MCP spec changes (NOTHING CHANGED)
+
+Least-recently-checked slice in the rotation - the baseline sweep (2026-09-11)
+answered "MCP is settled" against the **2026-07-28** spec; this is the first
+dedicated re-check of that specific claim, one week later.
+
+**Finding: no newer spec version has shipped.** 2026-07-28 remains current -
+still the largest revision since MCP's launch (stateless protocol core,
+Multi Round-Trip Requests, header-based routing on `Mcp-Method`/`Mcp-Name`,
+cacheable list results, authorization hardening toward OAuth/OIDC, Tasks
+moved out of core into a formal `io.modelcontextprotocol/tasks` extension,
+Roots/Sampling/Logging deprecated under a 12-month backward-compat window,
+Dynamic Client Registration deprecated in favor of CIMD). The project's own
+roadmap has moved to Working/Interest Groups organized around priority areas
+rather than dated releases, so there is no announced date for a next
+revision to watch for.
+
+**No action needed.** Exposing this system as an MCP server (over stdio,
+JSON-RPC on stdin/stdout, no dependency) remains the same cheap, high-value,
+not-yet-built integration the baseline sweep already identified - still not
+built, still not blocked on anything.
+
+Sources: [The 2026-07-28 Specification](https://blog.modelcontextprotocol.io/posts/2026-07-28/),
+[The 2026-07-28 MCP Specification Release Candidate](https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/),
+[The 2026 MCP Roadmap](https://blog.modelcontextprotocol.io/posts/2026-mcp-roadmap/).
+
+---
+
 ## 2026-09-11 — Slice 1: model/provider landscape (OPEN RISK FOUND)
 
 First run of the rotating check. **Finding: `llm_provider.py`'s OpenAI model
