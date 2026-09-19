@@ -786,7 +786,19 @@ class TaskExecutor:
         summary = (f"{department.title()} team completed task in {duration:.2f}s"
                    if status != "escalated"
                    else f"{department.title()} team escalated task after {duration:.2f}s: {result.get('analysis', '')}")
+        # DepartmentHeadAgent.run() already returns tokens_used, token_cost,
+        # quality_score, used_tools, tool_calls(_failed), llm_provider, and
+        # (on a delegated task) delegation_chain/delegated_from/etc. - all of
+        # it discarded here until now, because this method hand-picked a
+        # fixed set of keys instead of passing the rest through. That's the
+        # same shape of bug as the token cost that never reached the budget
+        # (checkpoint 45): a real, already-computed number existed and simply
+        # never reached the caller - here it's tasks.json and show_task
+        # rather than budgets.py. Spread the raw result first, then layer
+        # this method's own derived/normalized keys on top, so no field of
+        # a future DepartmentHeadAgent.run() gets silently dropped again.
         return {
+            **result,
             "department": department,
             "analysis": result.get("analysis", ""),
             "status": status,

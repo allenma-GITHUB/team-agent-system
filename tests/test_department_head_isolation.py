@@ -119,11 +119,10 @@ def test_injected_task_executor_propagates_to_every_agent_it_creates():
     for path in SHARED_FILES:
         assert before[path] == after[path], f"{path} was touched by an isolated executor run"
 
-    # TaskExecutor.execute() reshapes DepartmentHeadAgent.run()'s result and
-    # doesn't pass token_cost through, so the real token charge - see
-    # task_executor_v2.py's token_budget_check - is read from the injected
-    # budget manager's own expense log instead (a single task ran, so this
-    # is unambiguous).
+    # execute()'s own result now carries token_cost too (see
+    # task_executor_v2.py's token_budget_check), but reading it back from the
+    # injected budget manager's expense log is just as direct here - a single
+    # task ran, so it's unambiguous either way.
     token_cost = sum(e.amount for e in budgets.expense_log if e.category == "llm_tokens")
     assert budgets.get_budget("qa_di_engineering").spent == 2.0 * FALLBACK_RATE + token_cost
     print("  Agent created on-demand by TaskExecutor used the injected budget manager, not the global one")

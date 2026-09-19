@@ -212,6 +212,31 @@ def show_task(task_id: str):
         print(f"\nResult:")
         print(f"  Summary: {result.get('summary', 'N/A')}")
         print(f"  Analysis: {result.get('analysis', 'N/A')[:100]}...")
+        # These fields (tokens_used, token_cost, quality_score, used_tools,
+        # delegation_chain, ...) come straight from DepartmentHeadAgent.run() -
+        # TaskExecutor.execute() used to discard all of them before reaching
+        # this dict, so a task's real cost/handling was invisible outside the
+        # budget manager's own expense log. Guarded with .get()s: an
+        # escalated-before-execution result (decision engine or budget denial)
+        # never had these fields to begin with, only a completed or
+        # iteration-exhausted run does.
+        if result.get('llm_provider'):
+            print(f"  LLM Provider: {result['llm_provider']}")
+        if result.get('tokens_used'):
+            charge_note = ("" if result.get('token_cost_charged', True)
+                           else f" [NOT CHARGED: {result.get('token_budget_note')}]")
+            print(f"  Tokens Used: {result['tokens_used']} "
+                  f"(${result.get('token_cost', 0):.5f}){charge_note}")
+        if result.get('quality_score'):
+            print(f"  Quality Score: {result['quality_score']}")
+        if result.get('used_tools'):
+            print(f"  Tool Calls: {result.get('tool_calls', 0)} "
+                  f"({result.get('tool_calls_failed', 0)} failed)")
+        if result.get('delegation_chain'):
+            print(f"  Delegation Chain: {' -> '.join(result['delegation_chain'])}")
+        if result.get('delegation_declined'):
+            print(f"  Delegation Declined: {result['delegation_declined']} "
+                  f"(intended: {result.get('intended_delegate', 'unknown')})")
         if result.get('execution_steps'):
             print(f"  Staff Contributions:")
             for step in result.get('execution_steps', []):

@@ -66,9 +66,9 @@ def test_no_lost_updates_across_many_concurrent_same_department_tasks():
     budget = budgets.get_budget(department)
     rate = agent_state.profile.hourly_rate()
     # Labor (n * rate) plus the real token cost of every LLM call - see
-    # task_executor_v2.py's token_budget_check. TaskExecutor.execute_parallel()
-    # reshapes each result and doesn't pass token_cost through, so it's read
-    # from the budget manager's own expense log instead.
+    # task_executor_v2.py's token_budget_check. Each execute_parallel() result
+    # now carries its own token_cost too, but summing N per-task dicts is no
+    # simpler than summing the budget manager's own expense log once.
     token_cost = sum(e.amount for e in budgets.expense_log
                      if e.department == department and e.category == "llm_tokens")
     expected_spent = n * rate + token_cost

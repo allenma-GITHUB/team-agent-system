@@ -44,10 +44,10 @@ def _executor(bus) -> TaskExecutor:
 
 
 def _token_cost(department: str) -> float:
-    """TaskExecutor.execute()/execute_parallel() reshape DepartmentHeadAgent
-    .run()'s result and don't pass its token_cost field through, so the real
-    token charge (task_executor_v2.py's token_budget_check) is read from the
-    budget manager's own expense log instead."""
+    """execute()'s result carries its own token_cost field now (see
+    task_executor_v2.py's token_budget_check), but reading the real charge
+    back from the budget manager's own expense log is still the simplest way
+    to total it across however many tasks a given test ran."""
     return sum(e.amount for e in budget_manager.expense_log
                if e.department == department and e.category == "llm_tokens")
 

@@ -1,3 +1,53 @@
+# Daily Progress Report - September 19, 2026
+
+## 📤 CHECKPOINT 46: `TaskExecutor.execute()` STOPS DISCARDING THE PER-TASK FIELDS IT ALREADY HAS
+
+**Session opened with the housekeeping check that's now standard**: this container's checkout started with `HEAD` detached four commits ahead of the local `main` branch pointer. `git fetch origin main` first (not `git checkout -B main origin/main` first - checkpoint 45's own lesson) showed `origin/main` already at that same commit, so `git checkout main && git merge --ff-only origin/main` fast-forwarded cleanly. No data at risk, no push needed.
+
+**Closes the first of checkpoint 45's own two "Next Steps"**: "`TaskExecutor.execute()`'s result shape still drops `tokens_used`/`token_cost`/`quality_score`/etc." Checkpoint 45's own commit had already forced three existing tests to work around this exact gap by reading the token charge back from the budget manager's `expense_log` instead of the executor's return value, with a comment in each explaining why - that comment is what pointed at this checkpoint's task. The rate-table and placeholder-value items in that same Next Steps list are left alone; both are explicit policy questions for the owner, not code gaps.
+
+### 🐛 Proven live before touching anything
+
+`DepartmentHeadAgent.run()` (via `_run_locked()`) already computes and returns `tokens_used`, `token_cost`, `token_cost_charged`, `token_budget_note`, `quality_score`, `used_tools`, `tool_calls`, `tool_calls_failed`, `llm_provider`, and `metrics` - and, on a delegated task, `delegation_chain`/`delegated_from`/`delegation_reasoning` or `delegation_declined`/`intended_delegate`. `TaskExecutor.execute()` never returned any of it; it built a fresh dict from eight hand-picked keys (`department`, `analysis`, `status`, `approved`, `staff_count`, `execution_steps`, `summary`, `details`) and threw the rest away. Confirmed with a real run against an isolated executor before writing the fix:
+
+```
+result.keys() == {'department', 'analysis', 'status', 'approved',
+                   'staff_count', 'execution_steps', 'summary', 'details'}
+'tokens_used' in result -> False
+'quality_score' in result -> False
+'llm_provider' in result -> False
+```
+
+Every task's real cost, quality signal, and tool usage was computed correctly one call down the stack and then discarded before it ever reached `tasks.json`, `main_v2.show_task()`, or any future caller - the same shape of defect as checkpoint 45's own token-cost bug (a real number computed and then dropped instead of routed), just one layer further from where it's spent.
+
+### ✅ Fix
+
+- **`task_executor_v2.py`: `TaskExecutor.execute()`** now spreads the agent's raw result (`**result`) into the dict it returns, then layers its own derived/normalized keys (`department`, `analysis`, `status`, `approved`, `staff_count`, `execution_steps`, `summary`, `details`) on top. This was deliberately chosen over adding the newly-named fields one at a time to the hand-picked list: naming fields individually is exactly the pattern that silently dropped them the first time, and would silently drop the next new field `DepartmentHeadAgent.run()` grows too. Spreading first means every current and future field survives unless this method explicitly overrides it.
+- An escalated-before-execution result (decision-engine escalation or budget denial, both of which return before the LLM call ever runs) still has none of the execution-only fields - they were never computed, so there's nothing to pass through. `.get()` everywhere downstream, not indexing, is what makes that safe.
+- **`main_v2.py`: `show_task()`** now actually prints what's newly visible - LLM provider, tokens used and their dollar cost (flagging it plainly when the token charge itself was refused), quality score, tool call counts, and delegation chain/decline info when present - all guarded with `.get()` for the escalated-before-execution case above. A field nothing reads is worth exactly as much as a field that never arrived; this is the "real consumer" checkpoint 45's own Next Steps said this fix was waiting on.
+
+### 🧪 Validation
+
+`tests/test_executor_result_fields.py` (new, 4 cases): a completed task's `execute()` result carries real (non-placeholder) values for every field named above, cross-checked against the budget manager's own `expense_log` for `token_cost` specifically; an escalated-before-execution result has no `tokens_used`/`quality_score` keys at all rather than zeroed-out ones, proving `.get()` call sites don't need a fallback that pretends a number exists; `execute_parallel()` gives each task its own fields without cross-contamination between an affordable and an unaffordable task in the same batch; the CLI's `show_task()` now prints `LLM Provider:` and `Tokens Used:` lines that did not exist before this session touched it. Three existing tests (`test_department_head_isolation.py`, `test_concurrent_same_department.py`, `test_executor_hours_threading.py`) had comments stating the old gap as settled fact ("doesn't pass token_cost through") - corrected in place to describe the current, still-valid reason for reading `expense_log` directly (convenience when summing across several tasks or confirming isolation), not a missing field. Full 46-file suite run twice back-to-back with zero failures; `python3 -m py_compile` clean across every tracked `.py` file. Confirmed live via the real CLI in an isolated temp directory (`submit` -> `process` -> `show`): `show_task` printed `LLM Provider: mock`, `Tokens Used: 122 ($0.00122)`, `Quality Score: 4.0`, `Tool Calls: 1 (0 failed)` for a task that previously showed only a summary and a truncated analysis string. Tracked seed files restored and generated ones removed after every run and after the manual walkthrough, per convention.
+
+### ⚠️ Behavior change, not just a reporting change
+
+`tasks.json`'s per-task `result` object now carries several new keys for every task that reaches `DepartmentHeadAgent.run()`'s execution path (completed or iteration-exhausted-escalated). Nothing that previously read `result` breaks - every existing call site uses `.get()` on named keys, none iterates or asserts the key set - but any code serializing or diffing `tasks.json` wholesale will see a larger per-task record than before. `show_task()`'s printed output is also longer for any task that made a real LLM call, which is the point of this checkpoint, not a side effect of it.
+
+### 🚧 Deliberately NOT addressed, and why
+
+- **The `$0.00001/token` rate and the `product_head`/`finance_head`/`ceo`/`tech_lead`/`product_coordinator` placeholder questions** - unchanged, still open policy calls for the owner, per checkpoint 45's own Next Steps.
+- **`show_report()` (org-wide analytics) was not touched.** It already reads real per-task numbers through `performance.py`'s `analytics.record_task()`, which `_run_locked()` has always called correctly - this checkpoint's gap was specifically `execute()`'s own return value, a different, narrower path (`tasks.json`/`show_task`) than the one `show_report()` uses. Nothing about org-wide reporting was ever wrong here.
+- **`web_server.py`'s dashboard was not updated to surface these fields.** It reads `tasks.json` the same way `main_v2.py` does, so the data is already there for it, but wiring a second consumer wasn't part of closing this specific Next Step and would have doubled this session's surface area for no additional proof of the fix.
+
+### 📝 Next Steps
+
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open.
+- **`web_server.py`'s dashboard could surface the same newly-visible per-task fields** `show_task()` now does, once there's a reason to prioritize the dashboard over the CLI specifically.
+
+---
+
 # Daily Progress Report - September 18, 2026
 
 ## 💰 CHECKPOINT 45: REAL TOKEN COST NOW REACHES THE ACTUAL BUDGET
