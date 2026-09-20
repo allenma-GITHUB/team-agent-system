@@ -1,3 +1,55 @@
+# Daily Progress Report - September 20, 2026
+
+## 🖥️ CHECKPOINT 47: THE DASHBOARD FINALLY SHOWS WHAT CHECKPOINT 46 STOPPED DISCARDING
+
+**Session opened with the same housekeeping check as the last several checkpoints**: this container's checkout started with `HEAD` detached five commits ahead of the local `main` branch pointer. `git fetch origin main` first showed `origin/main` already at that same commit (`064dcf4`), so `git checkout main && git merge --ff-only origin/main` fast-forwarded cleanly. No data at risk, no push needed for that step. Full 46-file suite run before touching anything: zero failures.
+
+**Closes the third of checkpoint 46's own three Next Steps**: "`web_server.py`'s dashboard could surface the same newly-visible per-task fields `show_task()` now does." The other two (a real per-provider token-cost rate, and the `product_head`/`finance_head`/`ceo`/`tech_lead`/`product_coordinator` placeholders) are explicit policy questions for the owner and were left untouched again.
+
+### 🐛 Proven live before touching anything
+
+Checkpoint 46 made `TaskExecutor.execute()` return `tokens_used`, `token_cost`, `quality_score`, `llm_provider`, `used_tools`/`tool_calls`, and `execution_steps`, and made `main_v2.show_task()` print them. `web_server.py`'s `/api/tasks/<id>` route already returns a task's full record unfiltered - so the data was already reaching the HTTP layer - but `static/dashboard.html` never called that endpoint at all. Confirmed with a real submit-and-process cycle against the live server before writing any frontend code:
+
+```
+result keys: ['agent_id', 'analysis', 'approved', 'department', 'details',
+              'execution_steps', 'llm_provider', 'metrics', 'quality_score',
+              'staff_contributions', 'staff_count', 'status', 'summary',
+              'token_budget_note', 'token_cost', 'token_cost_charged',
+              'tokens_used', 'tool_calls', 'tool_calls_failed', 'used_tools']
+```
+
+Every one of those fields was one HTTP request away and zero of them appeared anywhere in the page - the task table rendered only `id`/`status`/`department`/`description`/`estimated_hours`, the five fields `_task_summary()` deliberately leaves in the list view. The same shape of gap as checkpoint 46 itself (real data computed and then never routed to where it's read), one layer further from the fix - the API instead of the Python return value.
+
+### ✅ Fix
+
+- **`static/dashboard.html`**: task rows in the Tasks panel are now clickable and open a detail panel (`#task-detail`) that fetches `GET /api/tasks/<id>` and renders `renderTaskDetail()`, mirroring `main_v2.show_task()`'s own field list and its `.get()` guards field-for-field: LLM provider, tokens used with dollar cost (and a visible `[NOT CHARGED: ...]` flag when `token_cost_charged` is `false`, matching `show_task()`'s own honesty about a refused charge), quality score, tool call counts, delegation chain/decline, and staff contributions. A result with none of these (escalated-before-execution) shows only summary/analysis, same as the CLI - absence means "never computed," not a zeroed placeholder.
+- The currently-open detail panel refreshes on every `refreshAll()` (the 8s poll, and after Submit/Process), so watching a task's row and then hitting "Process Queue" updates the open panel in place instead of going stale.
+- **Fixed a stored-XSS hole while in this code**: the pre-existing task list row already interpolated `t.description` (user-submitted, free text) directly into `innerHTML` with no escaping. Adding the detail view meant interpolating several more fields sourced from task/result data (`analysis`, `execution_steps[].contribution`, delegation info) the same way would have - so added a small `escapeHtml()` helper and ran every dynamic value in both the list row and the new detail view through it, not just the newly-added ones. Confirmed live: submitting a task with `Fix <b>the</b> login button not responding` renders literal `Fix <b>the</b> login button not responding` text in both the table and the detail panel, not a bolded "the".
+
+### 🧪 Validation
+
+Verified live end-to-end with the real server and the pre-installed Chromium (via a locally-installed `playwright`, used only as an ad hoc QA tool in this session - **not** added as a project dependency, nothing in the repo imports it): started `web_server.run()` in an isolated temp cwd, submitted a task with an HTML-bearing description, processed the queue, clicked its row, and confirmed the detail panel rendered LLM Provider/Tokens Used/Quality Score/Tool Calls/Staff Contributions with real (non-placeholder) values, and that the injected `<b>` tag rendered as literal text, not markup. Repeated for an escalated task (the sales-negotiation/support-department case from checkpoint 38's own test) and confirmed the detail panel shows only Status/Department/Description/Created/Summary/Analysis - none of the execution-only fields render for it, matching the guard logic exactly. Screenshots taken and inspected, not just DOM text asserted.
+
+`tests/test_web_server.py` (3 new cases, `test_web_server.py` renumbered to 11 total): a completed task's `/api/tasks/<id>` carries genuine non-zero `tokens_used`/`token_cost`/`quality_score`, `llm_provider == "mock"`, and non-empty `execution_steps`, while `/api/tasks` (the list endpoint) still excludes `result` entirely; an escalated task's `/api/tasks/<id>` result has none of `llm_provider`/`tokens_used`/`quality_score`/`used_tools` as keys at all (not zeroed); and a static pin on `dashboard.html`'s served HTML that every dynamic interpolation this checkpoint touches or added goes through `escapeHtml()`, plus an explicit assertion that the old unescaped `${t.description}` pattern is gone - so a future edit can't silently reintroduce the XSS hole without failing this test. Full 47-file suite (this file included) run twice back-to-back with zero failures; `python3 -m py_compile` clean across every tracked `.py` file (`dashboard.html` isn't Python and was instead checked with `node --check` on its extracted `<script>` body). Tracked seed files restored and generated ones removed after every run, per convention.
+
+### ⚠️ Not a behavior change
+
+Nothing about task execution, budgets, or the CLI changed this session - this is a read-only frontend addition on top of an endpoint (`/api/tasks/<id>`) that already existed and was already covered by `test_unknown_routes_and_missing_tasks_are_404_not_500`. The XSS fix does change what the *existing* task list row renders for a description containing HTML - previously-submitted descriptions with `<`/`>`/`&` in them will now display as literal text instead of being interpreted as markup, which is the correct behavior, not a regression.
+
+### 🚧 Deliberately NOT addressed, and why
+
+- **The `$0.00001/token` rate and the `product_head`/`finance_head`/`ceo`/`tech_lead`/`product_coordinator` placeholders** - unchanged, still open policy questions for the owner, per checkpoints 45/46.
+- **No headless-browser test was added to the suite.** `playwright` was installed ad hoc in this session's environment for manual QA only (screenshots, click-through) and is not a project dependency - adding real browser automation to the test suite would be a first third-party dependency, which this project's "standard library only, everywhere" constraint reserves for an explicit decision from the owner, not something to slip in via a test file. The HTML/JS wiring is instead pinned with static string assertions against the served page, matching how `test_root_serves_the_dashboard_html` already tests this file.
+- **The detail view doesn't auto-scroll into view or close automatically when its task disappears from the list** (e.g. a future "delete task" feature) - no such feature exists yet, so there's nothing to handle.
+
+### 📝 Next Steps
+
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open.
+- **The dashboard's Tasks table itself could show a compact signal (e.g. a small cost/quality badge) per row**, now that the detail view proves the data's there - left for whoever next has a concrete reason to prioritize the list view over the click-through detail this checkpoint added.
+
+---
+
 # Daily Progress Report - September 19, 2026
 
 ## 📤 CHECKPOINT 46: `TaskExecutor.execute()` STOPS DISCARDING THE PER-TASK FIELDS IT ALREADY HAS

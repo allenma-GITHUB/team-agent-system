@@ -84,6 +84,14 @@
   .recs li { margin-bottom: 4px; }
   .muted { color: var(--muted); }
   .toolbar { display: flex; gap: 8px; align-items: center; }
+  #task-table-wrap tbody tr { cursor: pointer; }
+  #task-table-wrap tbody tr:hover { background: var(--track); }
+  #task-detail dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
+  #task-detail dt { color: var(--muted); font-size: 12px; }
+  #task-detail dd { margin: 0; }
+  #task-detail .not-charged { color: var(--bad); }
+  #task-detail ul { margin: 4px 0 0; padding-left: 18px; }
+  #task-detail h3 { margin: 14px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -136,6 +144,14 @@
     <div id="log" hidden></div>
   </div>
 
+  <div class="panel" id="task-detail" hidden>
+    <div class="toolbar" style="justify-content: space-between;">
+      <h2 style="margin:0;" id="task-detail-title">Task</h2>
+      <button class="secondary" id="task-detail-close" type="button">✕ Close</button>
+    </div>
+    <div id="task-detail-body"></div>
+  </div>
+
   <div class="panel">
     <h2>Recommendations</h2>
     <ul class="recs" id="recs-list"></ul>
@@ -158,6 +174,13 @@ function bar(label, pct, right) {
 }
 
 function money(n) { return "$" + Number(n || 0).toLocaleString(undefined, {maximumFractionDigits: 0}); }
+function moneyPrecise(n) { return "$" + Number(n || 0).toFixed(5); }
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
 
 async function api(path, opts) {
   const res = await fetch(path, opts);
@@ -205,17 +228,113 @@ async function loadTasks() {
     $("#task-table-wrap").innerHTML = `<div class="empty">No tasks yet — submit one above.</div>`;
     return;
   }
-  const rows = tasks.slice().reverse().map(t => `
-    <tr>
-      <td>${t.id}</td>
+  const rows = tasks.slice().reverse().map(t => {
+    const desc = t.description.length > 70 ? t.description.slice(0, 67) + "…" : t.description;
+    return `
+    <tr data-task-id="${escapeHtml(t.id)}">
+      <td>${escapeHtml(t.id)}</td>
       <td><span class="badge ${t.status}">${t.status}</span></td>
-      <td>${t.department}</td>
-      <td>${t.description.length > 70 ? t.description.slice(0, 67) + "…" : t.description}</td>
+      <td>${escapeHtml(t.department)}</td>
+      <td>${escapeHtml(desc)}</td>
       <td class="muted">${t.estimated_hours != null ? t.estimated_hours + "h" : "—"}</td>
-    </tr>`).join("");
+    </tr>`;
+  }).join("");
   $("#task-table-wrap").innerHTML =
     `<table><thead><tr><th>ID</th><th>Status</th><th>Dept</th><th>Description</th><th>Est.</th></tr></thead><tbody>${rows}</tbody></table>`;
+  $("#task-table-wrap").querySelectorAll("tr[data-task-id]").forEach(tr => {
+    tr.addEventListener("click", () => openTaskDetail(tr.dataset.taskId));
+  });
 }
+
+// Tracks which task's detail panel is open so a "Process Queue" or the
+// periodic refresh can update it in place - a completed/escalated task's
+// real cost, quality score and tool usage only exist after processing, and
+// a viewer looking right at the panel when that happens should see it land
+// without having to re-click the row.
+let openTaskId = null;
+
+function renderTaskDetail(task) {
+  $("#task-detail-title").textContent = `Task ${task.id}`;
+  const parts = [];
+  parts.push(`<dl>
+    <dt>Status</dt><dd><span class="badge ${task.status}">${task.status}</span></dd>
+    <dt>Department</dt><dd>${escapeHtml(task.department)}</dd>
+    <dt>Description</dt><dd>${escapeHtml(task.description)}</dd>
+    <dt>Created</dt><dd class="muted">${escapeHtml(task.created_at || "—")}</dd>
+  </dl>`);
+
+  // Mirrors main_v2.show_task() field-for-field, including its .get()
+  // guards: an escalated-before-execution result (decision-engine
+  // escalation or a budget denial) never computed these, so absence here
+  // means "never ran," not "ran and was zero."
+  const result = task.result;
+  if (result) {
+    parts.push(`<h3>Result</h3><dl>
+      <dt>Summary</dt><dd>${escapeHtml(result.summary || "N/A")}</dd>
+      <dt>Analysis</dt><dd>${escapeHtml(result.analysis || "N/A")}</dd>
+    </dl>`);
+
+    const extra = [];
+    if (result.llm_provider) {
+      extra.push(`<dt>LLM Provider</dt><dd>${escapeHtml(result.llm_provider)}</dd>`);
+    }
+    if (result.tokens_used) {
+      const notCharged = result.token_cost_charged === false;
+      const chargeNote = notCharged
+        ? ` <span class="not-charged">[NOT CHARGED: ${escapeHtml(result.token_budget_note || "")}]</span>`
+        : "";
+      extra.push(`<dt>Tokens Used</dt><dd>${result.tokens_used} (${moneyPrecise(result.token_cost)})${chargeNote}</dd>`);
+    }
+    if (result.quality_score) {
+      extra.push(`<dt>Quality Score</dt><dd>${escapeHtml(result.quality_score)}</dd>`);
+    }
+    if (result.used_tools) {
+      extra.push(`<dt>Tool Calls</dt><dd>${result.tool_calls || 0} (${result.tool_calls_failed || 0} failed)</dd>`);
+    }
+    if (result.delegation_chain) {
+      extra.push(`<dt>Delegation Chain</dt><dd>${result.delegation_chain.map(escapeHtml).join(" → ")}</dd>`);
+    }
+    if (result.delegation_declined) {
+      extra.push(`<dt>Delegation Declined</dt><dd>${escapeHtml(result.delegation_declined)} (intended: ${escapeHtml(result.intended_delegate || "unknown")})</dd>`);
+    }
+    if (extra.length) parts.push(`<dl>${extra.join("")}</dl>`);
+
+    if (result.execution_steps && result.execution_steps.length) {
+      parts.push(`<h3>Staff Contributions</h3><ul>${
+        result.execution_steps.map(s => `<li><strong>${escapeHtml(s.role || "Unknown")}</strong>: ${escapeHtml(s.contribution || "")}</li>`).join("")
+      }</ul>`);
+    }
+  } else {
+    parts.push(`<div class="muted" style="margin-top:10px;">Not yet processed — no result.</div>`);
+  }
+
+  $("#task-detail-body").innerHTML = parts.join("");
+}
+
+async function openTaskDetail(taskId) {
+  openTaskId = taskId;
+  $("#task-detail").hidden = false;
+  try {
+    renderTaskDetail(await api(`/api/tasks/${encodeURIComponent(taskId)}`));
+  } catch (err) {
+    $("#task-detail-body").innerHTML = `<div class="muted">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function refreshOpenTaskDetail() {
+  if (!openTaskId || $("#task-detail").hidden) return;
+  try {
+    renderTaskDetail(await api(`/api/tasks/${encodeURIComponent(openTaskId)}`));
+  } catch (err) {
+    // Task since removed or unreachable - leave the last good render in
+    // place rather than blanking a panel the viewer is actively reading.
+  }
+}
+
+$("#task-detail-close").addEventListener("click", () => {
+  $("#task-detail").hidden = true;
+  openTaskId = null;
+});
 
 async function loadReport() {
   const report = await api("/api/report");
@@ -227,7 +346,7 @@ async function loadReport() {
 
 async function refreshAll() {
   try {
-    await Promise.all([loadStatus(), loadTasks(), loadReport()]);
+    await Promise.all([loadStatus(), loadTasks(), loadReport(), refreshOpenTaskDetail()]);
   } catch (err) {
     console.error(err);
   }

@@ -246,6 +246,112 @@ def test_report_payload_has_the_shape_the_dashboard_reads():
         assert report["system"]["total_tasks"] == before_total + 1
 
 
+def test_task_detail_endpoint_exposes_the_fields_the_dashboard_needs():
+    """checkpoint 46's own Next Steps named this gap explicitly: the per-task
+    fields TaskExecutor.execute() stopped discarding (tokens_used, token_cost,
+    quality_score, used_tools/tool_calls, llm_provider, execution_steps) were
+    real in TASKS_FILE and in main_v2.show_task()'s printed output, but the
+    dashboard's own task list never fetched /api/tasks/<id> at all - so the
+    same real numbers that reached the CLI stayed invisible in the browser.
+    This pins the data contract the dashboard's new detail view (added this
+    checkpoint) reads from: a completed task's full record via GET
+    /api/tasks/<id> carries every field renderTaskDetail() in dashboard.html
+    branches on, with genuine non-placeholder values."""
+    print_section("9. /api/tasks/<id> Carries The Fields The Detail View Reads")
+
+    with RunningServer() as server:
+        status, created = server.post("/api/submit", {
+            "description": "Investigate a checkout error", "department": "engineering",
+        })
+        task_id = created["task"]["id"]
+        server.post("/api/process", {})
+
+        status, task = server.get(f"/api/tasks/{task_id}")
+        print(f"  result keys: {sorted(task['result'].keys())}")
+        assert status == 200
+        assert task["status"] == "completed"
+        result = task["result"]
+        assert result["llm_provider"] == "mock"
+        assert result["tokens_used"] > 0
+        assert result["token_cost"] > 0
+        assert result["quality_score"] > 0
+        assert result["used_tools"] is True
+        assert result["tool_calls"] >= 1
+        assert result["execution_steps"], "a completed task should list staff contributions"
+
+        # The task list view intentionally strips `result` (see
+        # _task_summary) - the detail fields must come from the per-task
+        # endpoint, not leak into the list one.
+        status, tasks = server.get("/api/tasks")
+        assert "result" not in tasks[0]
+
+
+def test_escalated_task_detail_has_no_execution_only_fields():
+    """The other half of the same contract: main_v2.show_task() only prints
+    llm_provider/tokens_used/quality_score/etc. when result.get(...) finds
+    them, because an escalated-before-execution task never ran far enough to
+    compute any of them. The dashboard's detail view relies on the same
+    absence (not a zeroed-out placeholder) to know a task never executed -
+    confirmed live here, not assumed."""
+    print_section("10. An Escalated Task's Detail Has No Placeholder Execution Fields")
+
+    with RunningServer() as server:
+        server.post("/api/submit", {
+            "description": "Negotiate a new sales contract pricing strategy",
+            "department": "support",
+        })
+        server.post("/api/process", {})
+
+        status, tasks = server.get("/api/tasks")
+        task_id = tasks[0]["id"]
+        status, task = server.get(f"/api/tasks/{task_id}")
+        print(f"  status={task['status']} result keys: {sorted(task['result'].keys())}")
+        assert status == 200
+        assert task["status"] == "escalated"
+        result = task["result"]
+        for absent in ("llm_provider", "tokens_used", "quality_score", "used_tools"):
+            assert absent not in result, f"{absent} should never have been computed for this task"
+
+
+def test_dashboard_html_wires_up_the_task_detail_view_safely():
+    """Pins the frontend wiring added alongside the above: a task row click
+    opens a detail panel populated from GET /api/tasks/<id>, and every
+    dynamic field (task description, department, analysis, staff
+    contributions, ...) goes through escapeHtml() before landing in
+    innerHTML - a task's description is user-submitted text that reaches
+    this page verbatim, so rendering it unescaped would be a stored-XSS
+    hole, not just a cosmetic bug. Regression coverage for both existing
+    (t.description) and newly-added interpolations, so a future edit can't
+    quietly drop the escaping again."""
+    print_section("11. Dashboard HTML Wires The Detail View And Escapes User Text")
+
+    with RunningServer() as server:
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=10) as resp:
+            body = resp.read().decode("utf-8")
+
+        assert 'id="task-detail"' in body
+        assert 'id="task-detail-body"' in body
+        assert "function openTaskDetail" in body
+        assert "function escapeHtml" in body
+        assert "/api/tasks/" in body
+
+        # The task list row must escape the description it renders, not
+        # interpolate it raw - `desc` is the (possibly truncated) escaped
+        # value; the raw `t.description` must never be interpolated directly.
+        assert "escapeHtml(desc)" in body
+        assert "${t.description}" not in body
+
+        # Every field pulled from a completed task's result and shown in the
+        # detail view must be escaped too, not just the top-level task info.
+        for expr in (
+            "escapeHtml(task.description)", "escapeHtml(task.department)",
+            "escapeHtml(result.summary", "escapeHtml(result.analysis",
+            "escapeHtml(result.llm_provider)", "escapeHtml(s.role",
+            "escapeHtml(s.contribution",
+        ):
+            assert expr in body, f"expected {expr!r} in dashboard.html - an unescaped interpolation regressed"
+
+
 def main():
     print("\n" + "=" * 60)
     print("  WEB DASHBOARD (web_server.py) REGRESSION TESTS")
@@ -260,6 +366,9 @@ def main():
         test_malformed_json_body_is_a_clean_400_not_a_crash()
         test_unknown_routes_and_missing_tasks_are_404_not_500()
         test_report_payload_has_the_shape_the_dashboard_reads()
+        test_task_detail_endpoint_exposes_the_fields_the_dashboard_needs()
+        test_escalated_task_detail_has_no_execution_only_fields()
+        test_dashboard_html_wires_up_the_task_detail_view_safely()
 
     print("\n" + "=" * 60)
     print("  [OK] All web dashboard tests passed!")
