@@ -230,6 +230,12 @@ async function loadTasks() {
   }
   const rows = tasks.slice().reverse().map(t => {
     const desc = t.description.length > 70 ? t.description.slice(0, 67) + "…" : t.description;
+    // quality_score/token_cost are only present once a task has actually
+    // executed (see web_server._task_summary) - absence means "not yet
+    // computed", same convention as the detail view, not a zero to render.
+    const resultBadge = t.quality_score != null
+      ? `★${t.quality_score}${t.token_cost != null ? ` · ${moneyPrecise(t.token_cost)}` : ""}`
+      : "—";
     return `
     <tr data-task-id="${escapeHtml(t.id)}">
       <td>${escapeHtml(t.id)}</td>
@@ -237,10 +243,11 @@ async function loadTasks() {
       <td>${escapeHtml(t.department)}</td>
       <td>${escapeHtml(desc)}</td>
       <td class="muted">${t.estimated_hours != null ? t.estimated_hours + "h" : "—"}</td>
+      <td class="muted">${resultBadge}</td>
     </tr>`;
   }).join("");
   $("#task-table-wrap").innerHTML =
-    `<table><thead><tr><th>ID</th><th>Status</th><th>Dept</th><th>Description</th><th>Est.</th></tr></thead><tbody>${rows}</tbody></table>`;
+    `<table><thead><tr><th>ID</th><th>Status</th><th>Dept</th><th>Description</th><th>Est.</th><th>Result</th></tr></thead><tbody>${rows}</tbody></table>`;
   $("#task-table-wrap").querySelectorAll("tr[data-task-id]").forEach(tr => {
     tr.addEventListener("click", () => openTaskDetail(tr.dataset.taskId));
   });

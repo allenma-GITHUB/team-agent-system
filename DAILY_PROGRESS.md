@@ -1,3 +1,52 @@
+# Daily Progress Report - September 21, 2026
+
+## 🏷️ CHECKPOINT 48: THE TASKS TABLE SHOWS A QUALITY/COST BADGE WITHOUT A CLICK-THROUGH
+
+**Session opened with the same housekeeping check as the last several checkpoints**: this container's checkout started with `HEAD` detached five commits ahead of the local `main` branch pointer, at the same commit `origin/main` was already at once fetched. `git fetch origin main` first (not `git checkout -B main origin/main` first - checkpoint 45's own lesson) confirmed that, so `git checkout main && git reset --hard origin/main` landed cleanly on the fetched commit. No data at risk, no push needed for that step.
+
+**Picks up the third of checkpoint 47's own three Next Steps**: "The dashboard's Tasks table itself could show a compact signal (e.g. a small cost/quality badge) per row, now that the detail view proves the data's there." The other two (a real per-provider token-cost rate, and the `product_head`/`finance_head`/`ceo`/`tech_lead`/`product_coordinator` placeholders) are explicit policy questions for the owner and were left untouched again, same as every checkpoint since 42.
+
+### 🐛 Proven live before touching anything
+
+`web_server._task_summary()` (the function behind `GET /api/tasks`, the endpoint the Tasks table actually renders from) strips the entire `result` object from every task, including `quality_score` and `token_cost` - both of which checkpoint 46 already made `DepartmentHeadAgent.run()` compute and `TaskExecutor.execute()` stop discarding. Confirmed with a real submit-and-process cycle against an isolated executor before writing any fix:
+
+```
+list summary keys: ['completed_at', 'created_at', 'department', 'description', 'estimated_hours', 'id', 'status']
+quality_score in summary: False
+token_cost in summary: False
+
+full result had quality_score: 4.0
+full result had token_cost: 0.0012000000000000001
+```
+
+Same shape of gap as checkpoints 45-47 - real numbers computed correctly and then either discarded or routed to only one of several consumers. This one is one layer further still: the *detail* endpoint (`/api/tasks/<id>`) has carried these fields since checkpoint 47, but the *list* endpoint the table actually scans never did, so seeing whether any task was cheap/expensive or low/high quality required opening every row one at a time.
+
+### ✅ Fix
+
+- **`web_server.py`: `_task_summary()`** now pulls `quality_score` and `token_cost` out of `result` and up to the top level of the list-view dict, guarded the same truthy way `dashboard.html`'s own detail view already checks them (`if result.get("quality_score")`), while still excluding the full `result` object - a queued or escalated-before-execution task gets neither key, not a zeroed placeholder, matching checkpoint 46/47's own absence-means-never-computed convention.
+- **`static/dashboard.html`**: the Tasks table gained a `Result` column. `renderTaskDetail`'s sibling in `loadTasks()` renders `★<quality_score> · <token_cost as $0.00000>` when `t.quality_score` is present, or `—` when it isn't (queued, or escalated before execution). Both values are server-computed numbers (never free text), so - unlike `t.description` and everything in the detail view - they don't need `escapeHtml()`; nothing here is a new place user-submitted text reaches `innerHTML`.
+
+### 🧪 Validation
+
+Extended `tests/test_web_server.py` rather than adding a new file, since this is a direct continuation of the same data-contract tests checkpoint 47 wrote (now 11 test functions total, same count - the additions are new assertions inside three existing tests, not new tests): the completed-task detail test now also asserts `GET /api/tasks` carries the same `quality_score`/`token_cost` values as the full result; the escalated-task test now also asserts neither key appears in the list view; the HTML-wiring test now pins `resultBadge`, `t.quality_score`, `t.token_cost`, and the `<th>Result</th>` header string, so a future edit can't silently drop the column. Full 47-file suite run twice back-to-back with zero failures; `python3 -m py_compile` clean across every tracked `.py` file; `node --check` clean on the extracted `<script>` body. Verified live end-to-end with the real server and the pre-installed Chromium (via a locally-installed `playwright`, used only as an ad hoc QA tool this session and removed afterward - **not** added as a project dependency): submitted and processed one task, submitted a second and left it queued, and confirmed in a real rendered page that row 0001 (completed) shows `★4 · $0.00120` in the new Result column and row 0002 (queued) shows `—` - screenshot taken and inspected, not just DOM text asserted. Tracked seed files restored and generated ones removed after every run, per convention.
+
+### ⚠️ Not a behavior change
+
+Nothing about task execution, budgets, or the CLI changed this session. `GET /api/tasks/<id>` (the detail endpoint) is untouched - this only adds two already-computed scalars to the list endpoint's existing dict. `main_v2.py`'s own CLI output is unaffected; this is dashboard-only, like checkpoint 47.
+
+### 🚧 Deliberately NOT addressed, and why
+
+- **The `$0.00001/token` rate and the `product_head`/`finance_head`/`ceo`/`tech_lead`/`product_coordinator` placeholders** - unchanged, still open policy questions for the owner, per checkpoints 42-47.
+- **No color-coding or sorting on the new Result column.** The Tasks table isn't sortable at all today (it's always newest-first); giving one column special sort/color treatment without a broader sortable-table pass would be an inconsistent one-off. Left for whoever next has a concrete reason to make the table sortable in general.
+
+### 📝 Next Steps
+
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open.
+- **A sortable Tasks table** (by status, department, or the new Result column) - no such feature exists yet; today's change just gives sorting-by-quality/cost something real to sort on, once someone prioritizes it.
+
+---
+
 # Daily Progress Report - September 20, 2026
 
 ## 🖥️ CHECKPOINT 47: THE DASHBOARD FINALLY SHOWS WHAT CHECKPOINT 46 STOPPED DISCARDING

@@ -281,9 +281,13 @@ def test_task_detail_endpoint_exposes_the_fields_the_dashboard_needs():
 
         # The task list view intentionally strips `result` (see
         # _task_summary) - the detail fields must come from the per-task
-        # endpoint, not leak into the list one.
+        # endpoint, not leak into the list one. It does surface two scalars
+        # (quality_score, token_cost) at the top level, so the Tasks table
+        # can show a per-row signal without a click-through for every task.
         status, tasks = server.get("/api/tasks")
         assert "result" not in tasks[0]
+        assert tasks[0]["quality_score"] == result["quality_score"]
+        assert tasks[0]["token_cost"] == result["token_cost"]
 
 
 def test_escalated_task_detail_has_no_execution_only_fields():
@@ -311,6 +315,14 @@ def test_escalated_task_detail_has_no_execution_only_fields():
         result = task["result"]
         for absent in ("llm_provider", "tokens_used", "quality_score", "used_tools"):
             assert absent not in result, f"{absent} should never have been computed for this task"
+
+        # Same absence, in the list view's pulled-up scalars: an escalated
+        # task never gets a quality_score/token_cost badge in the Tasks
+        # table, since neither was ever computed - not a "—" masquerading
+        # as a real zero.
+        status, tasks = server.get("/api/tasks")
+        assert "quality_score" not in tasks[0]
+        assert "token_cost" not in tasks[0]
 
 
 def test_dashboard_html_wires_up_the_task_detail_view_safely():
@@ -350,6 +362,15 @@ def test_dashboard_html_wires_up_the_task_detail_view_safely():
             "escapeHtml(s.contribution",
         ):
             assert expr in body, f"expected {expr!r} in dashboard.html - an unescaped interpolation regressed"
+
+        # The Tasks list row now carries a compact per-row quality/cost
+        # signal (t.quality_score/t.token_cost, pulled up by
+        # web_server._task_summary) instead of requiring a click-through
+        # for every row just to see whether a task was cheap or expensive.
+        assert "resultBadge" in body
+        assert "t.quality_score" in body
+        assert "t.token_cost" in body
+        assert "<th>Result</th>" in body
 
 
 def main():

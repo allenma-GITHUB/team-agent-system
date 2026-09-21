@@ -48,8 +48,21 @@ def _tasks() -> list:
 
 
 def _task_summary(task: dict) -> dict:
-    """A task without its (potentially large) result blob, for list views."""
-    return {k: v for k, v in task.items() if k != "result"}
+    """A task without its (potentially large) result blob, for list views -
+    but with the two scalars small enough to scan a whole table of
+    (quality_score, token_cost) pulled up to the top level, so the Tasks
+    list can show a per-row signal without a click-through to
+    /api/tasks/<id> for every row. Same absence-means-never-computed
+    convention as the detail view: a task that never executed (queued, or
+    escalated before execution) gets neither key, not a zeroed one -
+    checkpoint 46/47 already established why that distinction matters."""
+    summary = {k: v for k, v in task.items() if k != "result"}
+    result = task.get("result") or {}
+    if result.get("quality_score"):
+        summary["quality_score"] = result["quality_score"]
+    if result.get("token_cost"):
+        summary["token_cost"] = result["token_cost"]
+    return summary
 
 
 def _run_capturing_stdout(fn, *args, **kwargs):
