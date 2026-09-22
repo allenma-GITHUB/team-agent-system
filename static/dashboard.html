@@ -86,6 +86,8 @@
   .toolbar { display: flex; gap: 8px; align-items: center; }
   #task-table-wrap tbody tr { cursor: pointer; }
   #task-table-wrap tbody tr:hover { background: var(--track); }
+  #task-table-wrap th.sortable { cursor: pointer; user-select: none; }
+  #task-table-wrap th.sortable:hover { color: var(--text); }
   #task-detail dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
   #task-detail dt { color: var(--muted); font-size: 12px; }
   #task-detail dd { margin: 0; }
@@ -218,6 +220,49 @@ async function loadStatus() {
   return status;
 }
 
+// Column headers a viewer can click to sort the Tasks table by; the fourth
+// (quality_score) is what the Result column's badge actually renders, so
+// "sort by Result" means "sort by quality_score", same as the badge itself.
+const TASK_SORT_KEYS = {
+  status: (t) => t.status,
+  department: (t) => t.department,
+  quality_score: (t) => t.quality_score,
+};
+
+// null/undefined sort key -> the original default (newest submitted first),
+// same ordering the table always used before sorting existed. A column
+// header click sets this; there's no separate "reset to default" control -
+// clicking the same header again just flips direction.
+let taskSortState = { key: null, dir: 1 };
+
+function sortTasks(tasks) {
+  if (!taskSortState.key) return tasks.slice().reverse();
+  const getValue = TASK_SORT_KEYS[taskSortState.key];
+  const dir = taskSortState.dir;
+  return tasks
+    .map((t, i) => [t, i])
+    .sort(([a, ai], [b, bi]) => {
+      const av = getValue(a);
+      const bv = getValue(b);
+      // Tasks that never computed a value (e.g. quality_score on a queued
+      // or escalated task) sort after every task that has one, regardless
+      // of sort direction - a "—" isn't a low value, it's a missing one.
+      if (av == null && bv == null) return ai - bi;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return ai - bi;
+    })
+    .map(([t]) => t);
+}
+
+function sortableHeader(label, key) {
+  const active = taskSortState.key === key;
+  const arrow = active ? (taskSortState.dir === 1 ? " ▲" : " ▼") : "";
+  return `<th class="sortable" data-sort-key="${key}">${label}${arrow}</th>`;
+}
+
 async function loadTasks() {
   const tasks = await api("/api/tasks");
   const queuedCount = tasks.filter(t => t.status === "queued").length;
@@ -228,7 +273,7 @@ async function loadTasks() {
     $("#task-table-wrap").innerHTML = `<div class="empty">No tasks yet — submit one above.</div>`;
     return;
   }
-  const rows = tasks.slice().reverse().map(t => {
+  const rows = sortTasks(tasks).map(t => {
     const desc = t.description.length > 70 ? t.description.slice(0, 67) + "…" : t.description;
     // quality_score/token_cost are only present once a task has actually
     // executed (see web_server._task_summary) - absence means "not yet
@@ -247,9 +292,18 @@ async function loadTasks() {
     </tr>`;
   }).join("");
   $("#task-table-wrap").innerHTML =
-    `<table><thead><tr><th>ID</th><th>Status</th><th>Dept</th><th>Description</th><th>Est.</th><th>Result</th></tr></thead><tbody>${rows}</tbody></table>`;
+    `<table><thead><tr><th>ID</th>${sortableHeader("Status", "status")}${sortableHeader("Dept", "department")}<th>Description</th><th>Est.</th>${sortableHeader("Result", "quality_score")}</tr></thead><tbody>${rows}</tbody></table>`;
   $("#task-table-wrap").querySelectorAll("tr[data-task-id]").forEach(tr => {
     tr.addEventListener("click", () => openTaskDetail(tr.dataset.taskId));
+  });
+  $("#task-table-wrap").querySelectorAll("th.sortable").forEach(th => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.sortKey;
+      taskSortState = taskSortState.key === key
+        ? { key, dir: taskSortState.dir * -1 }
+        : { key, dir: 1 };
+      loadTasks();
+    });
   });
 }
 

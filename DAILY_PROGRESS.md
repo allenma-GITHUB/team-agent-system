@@ -1,3 +1,45 @@
+# Daily Progress Report - September 22, 2026
+
+## ⇅ CHECKPOINT 49: THE TASKS TABLE IS SORTABLE BY STATUS, DEPARTMENT, AND RESULT
+
+**Session opened with the same housekeeping check as the last several checkpoints**: `git fetch origin main` first showed `origin/main` already at the local `main` pointer's commit, so no reset was needed. Full 48-file suite run before touching anything: zero failures.
+
+**Closes the third of checkpoint 48's own three Next Steps**, the one item on that list that wasn't a policy question for the owner: "A sortable Tasks table (by status, department, or the new Result column) - no such feature exists yet." The other two (a real per-provider token-cost rate, and the `product_head`/`finance_head`/`ceo`/`tech_lead`/`product_coordinator` placeholders) are unchanged, still open, per checkpoints 42-48.
+
+### 🐛 Confirmed before touching anything
+
+The Tasks table (`static/dashboard.html`'s `loadTasks()`) has never supported sorting - `tasks.slice().reverse()` was the only ordering it ever produced, always newest-submitted-first, with no way to group by status, compare departments, or find the highest/lowest quality-score task without scanning the whole list by eye. Checkpoint 48 gave the table a Result column with real data (`quality_score`/`token_cost`); this was that data with nothing to sort it by.
+
+### ✅ Fix
+
+- **`static/dashboard.html`**: the Status, Dept, and Result column headers are now clickable. `sortableHeader(label, key)` renders each as a `<th class="sortable" data-sort-key="...">` with a `▲`/`▼` arrow when it's the active sort key; a click handler on `th.sortable` toggles direction on the same key or resets to ascending on a new one, then re-renders. `sortTasks(tasks)` does the actual ordering: `status` and `department` sort alphabetically off the raw string; `quality_score` (what the Result column's badge renders) sorts numerically. With no sort key set (the initial state, and the only state before this checkpoint), it falls back to the original `tasks.slice().reverse()` - the default view is unchanged.
+- **Missing values sort last, in both directions.** A queued or escalated task has no `quality_score` - checkpoint 48's own convention is absence-means-never-computed, not a zero. Sorting by Result ascending *or* descending puts every task with a real score before every task without one; a `—` is never treated as lower or higher than a real number. Verified live: with one completed task (score 4) and one escalated task (no score), both sort directions put the scored task first.
+- Ties keep their original relative order (a stable sort via an index tie-break), so sorting by department when two tasks share one doesn't reshuffle them arbitrarily on every click.
+
+### 🧪 Validation
+
+Extended `tests/test_web_server.py`: the existing HTML-wiring test now pins the three `sortableHeader(...)` call sites, `sortTasks`, and the `th.sortable` click wiring, so a future edit can't silently drop sorting the way the header markup changed under this very fix (the old literal `<th>Result</th>` assertion is gone, since that header is no longer a plain string). One new test (`test_dashboard_tasks_table_sorts_by_status_department_and_result`, 12 total in the file) submits tasks that land in genuinely different departments with genuinely different statuses (one completed, one escalated) and confirms `/api/tasks` gives the frontend real, distinguishable values to sort over - not three rows that happen to already look alike. The frontend sort logic itself stays covered the way checkpoint 47 established (static string assertions, not a headless-browser test in the suite - see below).
+
+Full 49-file suite run twice back-to-back with zero failures; `python3 -m py_compile` clean across every tracked `.py` file; `node --check` clean on the extracted `<script>` body. Verified live end-to-end with the real server and the pre-installed Chromium (via a locally-installed `playwright`, used only as ad hoc QA this session and removed afterward - **not** added as a project dependency, same as checkpoints 47/48): submitted three tasks across three departments (one escalated), processed the queue, and drove the actual page - default order is newest-first (0003, 0002, 0001); clicking Status sorts `completed` before `escalated` with a `▲` arrow appearing; clicking Status again reverses it with `▼`; clicking Dept sorts `engineering` < `marketing` < `support`; clicking Result puts both real scores before the escalated task's `—`. Screenshot taken and inspected, not just DOM text asserted. Tracked seed files restored and generated ones removed after every run, per convention.
+
+### ⚠️ Not a behavior change
+
+Nothing about task execution, budgets, or the CLI changed. The Tasks table's default (unsorted) view renders identically to before - same newest-first order, same rows, same columns. This only adds an opt-in interaction on top of data (`status`, `department`, `quality_score`) that already reached the browser.
+
+### 🚧 Deliberately NOT addressed, and why
+
+- **The `$0.00001/token` rate and the `product_head`/`finance_head`/`ceo`/`tech_lead`/`product_coordinator` placeholders** - unchanged, still open policy questions for the owner, per checkpoints 42-48.
+- **No sort on ID, Description, or Est. hours.** The Next Steps that named this feature specifically called out status, department, and Result; ID is already the default order's basis (reversed), Description is free text with no natural sort a viewer asked for, and Est. hours wasn't part of the request. Adding sort to every column without a concrete reason would be scope creep on what checkpoint 48 actually asked for.
+- **No persistence of the chosen sort across a page reload or the 8-second auto-refresh.** `refreshAll()`'s poll re-renders through the same `sortTasks()` path, so an active sort survives every auto-refresh while the tab stays open - it only resets on a hard page reload, which is consistent with the rest of the dashboard's state (e.g. the open task-detail panel also doesn't survive a reload). Left as-is; no one has asked for cross-reload persistence.
+
+### 📝 Next Steps
+
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open.
+- **No further open item from checkpoint 48's own Next Steps remains** - both of the above are the same standing policy questions carried since checkpoint 42; today's session closed the one concrete engineering task on that list. The next session should either get an owner decision on one of the two policy questions above, or find a new gap the same way checkpoints 45-49 did: run the live system and look for a place a real computed value gets dropped, misrouted, or shown to only one of several consumers.
+
+---
+
 # Daily Progress Report - September 21, 2026
 
 ## 🏷️ CHECKPOINT 48: THE TASKS TABLE SHOWS A QUALITY/COST BADGE WITHOUT A CLICK-THROUGH
