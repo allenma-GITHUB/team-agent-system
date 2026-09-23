@@ -1,3 +1,56 @@
+# Daily Progress Report - September 23, 2026
+
+## 📈 CHECKPOINT 50: THE DASHBOARD SHOWS THE SYSTEM PERFORMANCE REPORT IT ALREADY FETCHES
+
+**Session opened with the same housekeeping check as the last several checkpoints**: `git fetch origin main` showed the local `main` branch pointer already at `origin/main` (`c957bdb`, checkpoint 49's own commit) with a clean working tree - no detached `HEAD`, no reset needed. Full 26-file suite run before touching anything: zero failures.
+
+**Closes the item checkpoint 49's own Next Steps described but didn't name**: "the next session should ... find a new gap the same way checkpoints 45-49 did: run the live system and look for a place a real computed value gets dropped, misrouted, or shown to only one of several consumers." The two standing policy questions (a real per-provider token-cost rate, and the `product_head`/`finance_head`/`ceo`/`tech_lead`/`product_coordinator` placeholders) are explicit decisions for the owner and were left untouched again, per checkpoints 42-49 - this session runs unattended, so there was no one to make either call.
+
+### 🐛 Proven live before touching anything
+
+`web_server.build_report_payload()` (the function behind `GET /api/report`) has computed and shipped `system` (`PerformanceAnalytics.get_system_metrics()` - avg quality, success rate, avg turnaround, total cost, cumulative across every run per this project's own accumulate-across-runs convention) and `top_performers` (`get_top_performers("quality", 5)`) since the report endpoint was added. `main_v2.show_report()` prints both as the CLI's "System Overview" and "Top Performers" sections. `static/dashboard.html`'s `loadReport()`, however, only ever destructured `report.recommendations` and `report.capacity_recommendations` - the other two keys reached the browser in every `/api/report` response and were then discarded, unread by any line of frontend code. Confirmed with a real submit-and-process cycle against an isolated server before writing any fix:
+
+```
+report top-level keys: ['capacity_recommendations', 'recommendations', 'resources', 'system', 'top_performers']
+system: {'total_tasks': 18, 'total_cost': 2190.0036600000003, 'avg_quality': 4.17,
+         'avg_turnaround_time': 2.71, 'system_success_rate': 0.939, 'bottleneck_agent': 'research_lead', ...}
+top_performers: [{'name': 'Engineering Lead', 'value': 4.62}, {'name': 'Design Lead', 'value': 4.3}, ...]
+```
+
+Same shape of gap as checkpoints 45-49: real, non-trivial numbers computed correctly and routed to only one of the two consumers that could show them - the CLI, never the dashboard.
+
+### ✅ Fix
+
+- **`static/dashboard.html`**: a new "Performance" panel renders `report.system` as four stat tiles (Avg Quality, Success Rate, Avg Turnaround, Total Cost - the same headline numbers `show_report()`'s "System Overview" prints) and `report.top_performers` as a ranked list, both inside `loadReport()` alongside the existing recommendations fetch (same `/api/report` call, no new endpoint or request).
+- **Absence-means-never-computed, same convention as the Result column and task detail view**: `get_system_metrics()` returns an all-zero `SystemMetrics()` (not a crash) before any agent has completed a task, which would render as a misleading "0.0/5.0 quality, 0% success" if shown at face value. Guarded on `sys.total_tasks > 0` instead: the stat tiles render only once at least one agent has a real recorded task, otherwise an explicit `"No completed tasks with recorded metrics yet."` Same treatment for `top_performers` (`"No agent performance data yet."` when the list is empty). Verified live both ways: a fresh instance with no completed tasks shows both empty states with no JS errors; three processed tasks across three departments populate both correctly.
+- **Total Cost uses the CLI's own `,.2f` precision, not the dashboard's existing `money()` helper.** `money()` rounds to whole dollars - built for the much larger per-department budget allocations already shown in the Departments panel - and would silently round a genuine fractional-cent total (routine for a handful of mock-provider tasks) down to the same `"$0"` a truly zero cost shows. Matching `show_report()`'s own `${total_cost:,.2f}` keeps the dashboard and the CLI printing the same number the same way, rather than inventing a third format.
+- **Agent names go through `escapeHtml()`** like every other dynamic value on this page since checkpoint 47's XSS fix - `top_performers[].name` comes from `AgentMetrics.name`, not literal config, so it gets the same treatment as `t.description` and everything in the task detail view rather than an unescaped exception.
+
+### 🧪 Validation
+
+Extended `tests/test_web_server.py` (13 test functions now, one new): `test_dashboard_html_wires_up_the_performance_panel` pins the two new containers (`#perf-stat-row`, `#perf-top-list`), the four `sys.*` fields `loadReport()` reads, `report.top_performers`, `escapeHtml(p.name)`, and both empty-state strings - so a future edit can't silently stop reading `report.system`/`report.top_performers` the way this checkpoint's predecessor never started. The existing `test_report_payload_has_the_shape_the_dashboard_reads` (test 8) already covered the server-side shape; this checkpoint's addition is the frontend-wiring half of that same contract, same split as checkpoint 47/48's own detail-view and Result-column tests.
+
+Full 27-file suite run twice back-to-back with zero failures; `python3 -m py_compile` clean across every tracked `.py` file; `node --check` clean on the extracted `<script>` body. Verified live end-to-end with the real server and the pre-installed Chromium (via a locally-installed `playwright`, used only as ad hoc QA this session and removed afterward - **not** added as a project dependency, same as checkpoints 47-49): ran two isolated server instances - one with three processed tasks across engineering/design/finance, one completely fresh - and drove both with the actual page. The populated instance showed real stat tiles (`4.0/5.0` quality, `100%` success, `1.0h` turnaround, `$0.00` cost - the mock provider's per-task cost is sub-cent for a handful of tasks, same rounding the CLI's own `.2f` would show) and a three-row Top Performers list (`Engineering Manager — 4.0/5.0`, etc.); the fresh instance showed both empty-state messages and zero console/page errors. Screenshots taken and inspected, not just DOM text asserted. Tracked seed files restored and generated ones removed after every run, per convention.
+
+### ⚠️ Not a behavior change
+
+Nothing about task execution, budgets, workflows, or the CLI changed. `/api/report`'s response shape is unchanged - `system` and `top_performers` were already present in every response; this only adds frontend code that finally reads them. The existing Recommendations panel and everything above it on the page render identically to before.
+
+### 🚧 Deliberately NOT addressed, and why
+
+- **The `$0.00001/token` rate and the `product_head`/`finance_head`/`ceo`/`tech_lead`/`product_coordinator` placeholders** - unchanged, still open policy questions for the owner, per checkpoints 42-49.
+- **`report.resources` (org-wide budget totals and capacity utilization) and `report.system.bottleneck_agent`/`bottleneck_department` still aren't rendered anywhere in the dashboard.** Deliberately left out of this checkpoint's scope: the per-department budget and capacity bars already in the Departments panel convey the same over/under-utilization signal `resources.capacity_recommendations` and `over_budget_departments` would add at the org level (and both already drive the Recommendations panel's text), and `bottleneck_department` is a dead field - nothing in `performance.py` ever sets it, `get_system_metrics()` only ever assigns `bottleneck_agent`. That's a genuine tautology worth naming here rather than wiring a `None` into the UI: fixing it (deciding what "department bottleneck" should even mean and computing it) is a `performance.py` change, not a dashboard-wiring one, and is a separate task from today's.
+- **No new HTTP endpoint.** `report.system`/`report.top_performers` were already in the one response `loadReport()` fetches every 8 seconds; reading two more keys off an object already in hand needed no new request.
+
+### 📝 Next Steps
+
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open.
+- **`bottleneck_department` is a dead field** - `SystemMetrics` declares it and `get_system_metrics()` never sets it, so it's always `None`. Either compute it for real (the department whose agents have the worst average turnaround/success, mirroring how `bottleneck_agent` is picked) or remove the field - left for whoever next has a concrete reason to touch `performance.py`'s bottleneck logic.
+- **`report.resources`' org-wide budget/capacity rollup remains dashboard-invisible**, though the per-department view already conveys the same signal - lower priority than the above, noted for completeness rather than as a recommended next task.
+
+---
+
 # Daily Progress Report - September 22, 2026
 
 ## ⇅ CHECKPOINT 49: THE TASKS TABLE IS SORTABLE BY STATUS, DEPARTMENT, AND RESULT

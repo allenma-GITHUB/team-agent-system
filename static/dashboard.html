@@ -155,6 +155,15 @@
   </div>
 
   <div class="panel">
+    <h2>Performance</h2>
+    <div class="stat-row" id="perf-stat-row"></div>
+    <div>
+      <h2 style="margin-top:2px;">Top Performers (Quality)</h2>
+      <ul class="recs" id="perf-top-list"></ul>
+    </div>
+  </div>
+
+  <div class="panel">
     <h2>Recommendations</h2>
     <ul class="recs" id="recs-list"></ul>
   </div>
@@ -403,6 +412,36 @@ async function loadReport() {
   $("#recs-list").innerHTML = recs.length
     ? recs.map(r => `<li><strong>${r.agent || r.department}</strong>: ${r.issue} — <span class="muted">${r.action}</span></li>`).join("")
     : `<li class="empty">No recommendations right now.</li>`;
+
+  // report.system/report.top_performers are the same cumulative
+  // agent-performance data main_v2.show_report() already prints to the CLI
+  // (analytics.generate_report()'s "System Overview" and "Top Performers"
+  // sections) - build_report_payload() has shipped both over /api/report
+  // since the dashboard's report endpoint was added, but no dashboard code
+  // ever read either key until now, so the browser never showed anything
+  // but the recommendations derived from the same underlying metrics.
+  // get_system_metrics() returns all-zero defaults (not a crash) when no
+  // agent has completed a task yet, which reads as "no data" here, not
+  // "0/5.0 quality" - same absence-means-never-computed convention as the
+  // Result column and task detail view.
+  const sys = report.system;
+  $("#perf-stat-row").innerHTML = (sys && sys.total_tasks > 0)
+    ? [
+        ["Avg Quality", `${sys.avg_quality.toFixed(1)}/5.0`],
+        ["Success Rate", `${(sys.system_success_rate * 100).toFixed(0)}%`],
+        ["Avg Turnaround", `${sys.avg_turnaround_time.toFixed(1)}h`],
+        // main_v2.show_report()'s own `${total_cost:,.2f}` precision, not
+        // money()'s whole-dollar rounding (built for the much larger
+        // per-department budget allocations) - a fractional-cent total
+        // from a handful of mock-provider tasks would otherwise round to
+        // the same "$0" a genuinely zero cost shows.
+        ["Total Cost", "$" + Number(sys.total_cost).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})],
+      ].map(([label, value]) => `<div class="stat-tile"><div class="value">${value}</div><div class="label">${label}</div></div>`).join("")
+    : `<div class="empty">No completed tasks with recorded metrics yet.</div>`;
+
+  $("#perf-top-list").innerHTML = report.top_performers.length
+    ? report.top_performers.map(p => `<li>${escapeHtml(p.name)} — ${p.value.toFixed(1)}/5.0</li>`).join("")
+    : `<li class="empty">No agent performance data yet.</li>`;
 }
 
 async function refreshAll() {

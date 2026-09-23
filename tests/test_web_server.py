@@ -423,6 +423,46 @@ def test_dashboard_tasks_table_sorts_by_status_department_and_result():
         assert len(scored) == 1 and len(unscored) == 1
 
 
+def test_dashboard_html_wires_up_the_performance_panel():
+    """`/api/report`'s `system` and `top_performers` keys - the same
+    cumulative agent-performance data main_v2.show_report() has printed to
+    the CLI all along, via PerformanceAnalytics.generate_report() - were
+    already asserted present in the JSON payload by test 8 above, but
+    nothing in dashboard.html ever read either key: loadReport() only ever
+    destructured report.recommendations/report.capacity_recommendations.
+    The System Overview stats and the "Top Performers" list a browser could
+    see were consequently always empty, the same shape of gap checkpoints
+    45-49 each found and closed one layer at a time. This pins the frontend
+    wiring that closes it: the two new containers exist, loadReport() reads
+    the fields sys.avg_quality/sys.system_success_rate/sys.avg_turnaround_time/
+    sys.total_cost and report.top_performers into them, an agent name goes
+    through escapeHtml() like every other dynamic value on this page, and
+    the empty state (no agent has completed a task yet) is handled
+    explicitly rather than rendering "NaN" or a blank panel."""
+    print_section("13. Dashboard HTML Wires Up The Performance Panel")
+
+    with RunningServer() as server:
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=10) as resp:
+            body = resp.read().decode("utf-8")
+
+        assert 'id="perf-stat-row"' in body
+        assert 'id="perf-top-list"' in body
+        assert "report.system" in body
+        assert "report.top_performers" in body
+        assert "sys.avg_quality" in body
+        assert "sys.system_success_rate" in body
+        assert "sys.avg_turnaround_time" in body
+        assert "sys.total_cost" in body
+        assert "escapeHtml(p.name)" in body
+
+        # Same absence-means-never-computed convention as the Result column
+        # and task detail view: get_system_metrics() returns all-zero
+        # defaults (not a crash) before any agent has completed a task, and
+        # that must render as an explicit empty state, not "0.0/5.0".
+        assert "No completed tasks with recorded metrics yet." in body
+        assert "No agent performance data yet." in body
+
+
 def main():
     print("\n" + "=" * 60)
     print("  WEB DASHBOARD (web_server.py) REGRESSION TESTS")
@@ -441,6 +481,7 @@ def main():
         test_escalated_task_detail_has_no_execution_only_fields()
         test_dashboard_html_wires_up_the_task_detail_view_safely()
         test_dashboard_tasks_table_sorts_by_status_department_and_result()
+        test_dashboard_html_wires_up_the_performance_panel()
 
     print("\n" + "=" * 60)
     print("  [OK] All web dashboard tests passed!")
