@@ -157,6 +157,7 @@
   <div class="panel">
     <h2>Performance</h2>
     <div class="stat-row" id="perf-stat-row"></div>
+    <div id="perf-bottleneck"></div>
     <div>
       <h2 style="margin-top:2px;">Top Performers (Quality)</h2>
       <ul class="recs" id="perf-top-list"></ul>
@@ -442,6 +443,19 @@ async function loadReport() {
   $("#perf-top-list").innerHTML = report.top_performers.length
     ? report.top_performers.map(p => `<li>${escapeHtml(p.name)} — ${p.value.toFixed(1)}/5.0</li>`).join("")
     : `<li class="empty">No agent performance data yet.</li>`;
+
+  // sys.bottleneck_agent/bottleneck_department (same generate_report()'s
+  // CLI "System Overview" now prints as "Bottleneck Agent"/"Bottleneck
+  // Department") - get_system_metrics() only sets these once at least one
+  // agent has a completed task, so this stays blank rather than showing a
+  // misleading "Bottleneck: null" until then. bottleneck_agent is the raw
+  // agent_id (e.g. "eng_lead") - there's no per-agent name lookup in this
+  // payload, same reason top_performers is capped at 5 rather than every
+  // agent; adding one would mean a new endpoint or field this checkpoint
+  // doesn't need.
+  $("#perf-bottleneck").innerHTML = (sys && sys.bottleneck_agent)
+    ? `<div class="muted">Bottleneck: <strong>${escapeHtml(sys.bottleneck_agent)}</strong> in <strong>${escapeHtml(sys.bottleneck_department || "—")}</strong> (slowest average turnaround)</div>`
+    : "";
 }
 
 async function refreshAll() {

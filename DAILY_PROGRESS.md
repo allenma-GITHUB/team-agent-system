@@ -1,3 +1,59 @@
+# Daily Progress Report - September 24, 2026
+
+## 🚦 CHECKPOINT 51: BOTTLENECK_DEPARTMENT STOPS BEING A DEAD FIELD, AND BOTH BOTTLENECK FIELDS REACH A CONSUMER
+
+**Session opened with the same housekeeping check as the last several checkpoints**: `git fetch origin main` showed the local `main` branch pointer already at `origin/main` (`246d337`, checkpoint 50's own commit) with a clean working tree - no detached `HEAD`, no reset needed. Full 50-file suite run before touching anything: zero failures.
+
+**Closes the concrete item named in checkpoint 50's own Next Steps**: "`bottleneck_department` is a dead field - `SystemMetrics` declares it and `get_system_metrics()` never sets it, so it's always `None`. Either compute it for real ... or remove the field." The two standing policy questions (a real per-provider token-cost rate, and the `product_head`/`finance_head`/`ceo`/`tech_lead`/`product_coordinator` placeholders) are explicit decisions for the owner and were left untouched again, per checkpoints 42-50 - this session runs unattended, so there was no one to make either call.
+
+### 🐛 Proven live before touching anything
+
+`SystemMetrics.bottleneck_department` (declared in `performance.py`) was never assigned anywhere in `get_system_metrics()` - confirmed with a real repro before writing any fix:
+
+```
+a.record_task("eng_lead", ..., duration=2.0, ...)
+a.record_task("design_lead", ..., duration=6.0, ...)   # genuinely the slowest
+a.record_task("research_lead", ..., duration=3.0, ...)
+
+system.bottleneck_agent: design_lead        # correct - the slowest single agent
+system.bottleneck_department: None          # wrong - "design" is genuinely the slowest department
+```
+
+`bottleneck_agent` next to it had the opposite problem: correctly computed since its introduction, but reached zero consumers. `generate_report()` (`main_v2.show_report()`'s CLI output) never printed it, and while `web_server.build_report_payload()` has shipped it in every `/api/report` response's `system` object via `asdict()` since checkpoint 50 added the Performance panel, that panel only ever read `avg_quality`/`system_success_rate`/`avg_turnaround_time`/`total_cost` off `report.system` - `bottleneck_agent` rode along in the same response and was discarded, same shape of gap as checkpoints 45-50.
+
+### ✅ Fix
+
+- **`performance.py`: `get_system_metrics()`** now groups `agents` by `department` and picks the department with the highest *mean* `avg_duration_hours` as `bottleneck_department` - the same "slowest wins" rule `bottleneck_agent` already applied one level down. This can't go through `get_department_metrics()`/`DepartmentMetrics.compute_from_agents()`, because `DepartmentMetrics` never tracked turnaround at all (only `avg_quality`/`avg_cost_per_task`/`success_rate`); the grouping happens directly off `agents` instead. Verified the mean (not just carrying over whichever department happens to own the single slowest agent) with two agents in one department (1h, 11h → mean 6h) against one agent in another (5h): `bottleneck_department` picks the 6h-mean department even though the single slowest agent overall sits in it either way, and a second case makes the two diverge - confirmed both directions live.
+- **`performance.py`: `generate_report()`** now prints `Bottleneck Agent: <name> (<Xh> avg)` and `Bottleneck Department: <dept> (<Xh> avg)` in the System Overview section, guarded on presence the same way Top Performers below it already is - absence means no agent has completed a task yet, not a genuine "no bottleneck". The agent line looks up the agent's display name and its own `avg_duration_hours` from `self.agent_metrics`; the department line recomputes the mean over that department's agents for the same real number `get_system_metrics()` used to pick it, rather than printing the name with no backing number.
+- **`static/dashboard.html`**: a new `#perf-bottleneck` line in the Performance panel reads `sys.bottleneck_agent`/`sys.bottleneck_department` off the same `/api/report` response `loadReport()` already fetches - no new endpoint. Renders nothing (not "Bottleneck: null") until `bottleneck_agent` is set, matching the same absence-means-never-computed convention as the stat tiles and Top Performers list next to it. Shows the raw agent_id (e.g. `eng_lead`) rather than a display name - the JSON payload has no per-agent name lookup outside the top-5-by-quality list, and adding one would mean a new endpoint or field this checkpoint doesn't need. `escapeHtml()` covers both values like every other dynamic string on this page.
+
+### 🧪 Validation
+
+New `tests/test_performance_bottleneck_department.py` (5 tests, same isolated-`data/test_*.json` pattern as `test_performance_zero_average_crash.py`): pins `bottleneck_department` actually computing (not staying `None`) with real data, that it uses the department *mean* rather than just carrying over the single slowest agent's department (the two-agents-in-one-department case above), that it stays `None` with no data at all, and that `generate_report()` prints both fields with their real backing numbers when data exists and omits both lines entirely when it doesn't.
+
+Extended `tests/test_web_server.py` (14 test functions now, one new): `test_report_payload_carries_bottleneck_fields_the_dashboard_now_reads` submits real tasks across two departments, confirms `/api/report`'s `system.bottleneck_agent`/`system.bottleneck_department` are both non-null (not asserting *which* one wins, since `analytics` is a module-level singleton accumulating across every test in the file and every pass of the idempotency loop, same caveat `test_report_payload_has_the_shape_the_dashboard_reads` already documents), and pins the new `#perf-bottleneck` container and `sys.bottleneck_agent`/`sys.bottleneck_department` read sites in the served HTML.
+
+Full 51-file suite run twice back-to-back with zero failures; `python3 -m py_compile` clean across every tracked `.py` file; `node --check` clean on the extracted `<script>` body. Tracked seed files restored and generated ones removed after every run, per convention.
+
+### ⚠️ Not a behavior change
+
+Nothing about task execution, budgets, workflows, or delegation changed. `/api/report`'s response shape is unchanged - `bottleneck_agent` and `bottleneck_department` were already present in every `system` object (as `null` for the latter); this only computes a real value for one and adds two read sites for data that already reached its consumers' hands.
+
+### 🚧 Deliberately NOT addressed, and why
+
+- **The `$0.00001/token` rate and the `product_head`/`finance_head`/`ceo`/`tech_lead`/`product_coordinator` placeholders** - unchanged, still open policy questions for the owner, per checkpoints 42-50.
+- **Ties between departments break toward whichever department a `dict` (insertion order, i.e. first-encountered-in-`agents`) puts first**, the same tie-break `bottleneck_agent`'s own `max()` already used - not a new behavior, just inherited from the existing pattern. Not worth a deterministic secondary sort key (e.g. alphabetical) without a concrete case where the current behavior caused confusion.
+- **No dashboard lookup from `bottleneck_agent`'s raw ID to a display name.** `report.top_performers` already gives the dashboard a name-lookup path for the top 5 agents by quality, but the bottleneck agent may not be one of them; building a full agent-name index into the payload for this one label is a bigger change than today's scope, and the raw ID (e.g. `eng_lead`) is still legible.
+
+### 📝 Next Steps
+
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open.
+- **`report.resources`' org-wide budget/capacity rollup remains dashboard-invisible**, though the per-department view already conveys the same signal - unchanged from checkpoint 50, still lower priority than the two policy questions above.
+- **No further dead or under-routed field is known right now.** The next session should either get an owner decision on one of the two policy questions above, or find a new gap the same way checkpoints 45-51 did: run the live system and look for a place a real computed value gets dropped, misrouted, or shown to only one of several consumers.
+
+---
+
 # Daily Progress Report - September 23, 2026
 
 ## 📈 CHECKPOINT 50: THE DASHBOARD SHOWS THE SYSTEM PERFORMANCE REPORT IT ALREADY FETCHES

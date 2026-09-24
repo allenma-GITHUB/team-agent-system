@@ -463,6 +463,40 @@ def test_dashboard_html_wires_up_the_performance_panel():
         assert "No agent performance data yet." in body
 
 
+def test_report_payload_carries_bottleneck_fields_the_dashboard_now_reads():
+    """Checkpoint 51: `SystemMetrics.bottleneck_department` was declared but
+    never assigned by get_system_metrics() - always None in the JSON
+    `system` object regardless of real data - and `bottleneck_agent`, while
+    correctly computed, was never read by any dashboard code even though it
+    rode along in every /api/report response via asdict(system). Confirmed
+    both fixed: after real tasks land in at least two departments, both
+    fields are non-null strings (not asserting *which* department/agent
+    wins - analytics is a module-level singleton accumulating across every
+    test in this file and every pass of the idempotency loop, same caveat
+    as test 8 above), and dashboard.html's Performance panel reads them off
+    the same payload."""
+    print_section("14. /api/report Carries Real bottleneck_agent/bottleneck_department")
+
+    with RunningServer() as server:
+        server.post("/api/submit", {"description": "Investigate a checkout error", "department": "engineering"})
+        server.post("/api/submit", {"description": "Redesign the pricing page", "department": "design"})
+        server.post("/api/process", {})
+
+        status, report = server.get("/api/report")
+        sys_ = report["system"]
+        print(f"  bottleneck_agent: {sys_['bottleneck_agent']}")
+        print(f"  bottleneck_department: {sys_['bottleneck_department']}")
+        assert status == 200
+        assert sys_["bottleneck_agent"]
+        assert sys_["bottleneck_department"]
+
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=10) as resp:
+            body = resp.read().decode("utf-8")
+        assert 'id="perf-bottleneck"' in body
+        assert "sys.bottleneck_agent" in body
+        assert "sys.bottleneck_department" in body
+
+
 def main():
     print("\n" + "=" * 60)
     print("  WEB DASHBOARD (web_server.py) REGRESSION TESTS")
@@ -482,6 +516,7 @@ def main():
         test_dashboard_html_wires_up_the_task_detail_view_safely()
         test_dashboard_tasks_table_sorts_by_status_department_and_result()
         test_dashboard_html_wires_up_the_performance_panel()
+        test_report_payload_carries_bottleneck_fields_the_dashboard_now_reads()
 
     print("\n" + "=" * 60)
     print("  [OK] All web dashboard tests passed!")

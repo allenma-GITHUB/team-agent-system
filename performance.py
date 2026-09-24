@@ -198,6 +198,21 @@ class PerformanceAnalytics:
         if slowest_agent:
             self.system_metrics.bottleneck_agent = slowest_agent.agent_id
 
+        # Same "slowest wins" rule one level up. DepartmentMetrics doesn't
+        # track turnaround at all (only avg_quality/avg_cost_per_task/
+        # success_rate - see compute_from_agents()), so this groups `agents`
+        # by department directly rather than going through
+        # get_department_metrics(). Declared on SystemMetrics since the
+        # field was added but never computed here - always None regardless
+        # of real data.
+        dept_durations: Dict[str, List[float]] = {}
+        for a in agents:
+            dept_durations.setdefault(a.department, []).append(a.avg_duration_hours)
+        if dept_durations:
+            self.system_metrics.bottleneck_department = max(
+                dept_durations, key=lambda dept: statistics.mean(dept_durations[dept])
+            )
+
         return self.system_metrics
 
     def get_top_performers(self, metric: str = "quality", limit: int = 5) -> List[Tuple[str, float]]:
@@ -294,6 +309,22 @@ class PerformanceAnalytics:
         report.append(f"  Success Rate: {system.system_success_rate:.0%}")
         report.append(f"  Avg Turnaround: {system.avg_turnaround_time:.1f}h")
         report.append(f"  Total Cost: ${system.total_cost:,.2f}")
+
+        # Bottlenecks: computed by get_system_metrics() above (bottleneck_agent
+        # since this field's introduction, bottleneck_department newly for
+        # real as of this checkpoint - previously declared on SystemMetrics
+        # but never assigned, always None regardless of real data). Guarded
+        # on presence the same way Top Performers below is: absence means no
+        # agent has completed a task yet, not a genuine "no bottleneck".
+        if system.bottleneck_agent:
+            agent = self.agent_metrics.get(system.bottleneck_agent)
+            agent_label = agent.name if agent else system.bottleneck_agent
+            agent_hours = agent.avg_duration_hours if agent else 0.0
+            report.append(f"  Bottleneck Agent: {agent_label} ({agent_hours:.1f}h avg)")
+        if system.bottleneck_department:
+            dept_agents = [a for a in self.agent_metrics.values() if a.department == system.bottleneck_department]
+            dept_hours = statistics.mean([a.avg_duration_hours for a in dept_agents]) if dept_agents else 0.0
+            report.append(f"  Bottleneck Department: {system.bottleneck_department} ({dept_hours:.1f}h avg)")
 
         # Top performers
         top_quality = self.get_top_performers("quality", 3)
