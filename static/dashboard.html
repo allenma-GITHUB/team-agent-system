@@ -83,6 +83,7 @@
   .empty { color: var(--muted); font-style: italic; padding: 6px 0; }
   .recs li { margin-bottom: 4px; }
   .muted { color: var(--muted); }
+  .alert { color: var(--bad); font-weight: 600; margin-top: 4px; }
   .toolbar { display: flex; gap: 8px; align-items: center; }
   #task-table-wrap tbody tr { cursor: pointer; }
   #task-table-wrap tbody tr:hover { background: var(--track); }
@@ -167,6 +168,12 @@
   <div class="panel">
     <h2>Recommendations</h2>
     <ul class="recs" id="recs-list"></ul>
+  </div>
+
+  <div class="panel" id="resource-panel" hidden>
+    <h2>Resource Overview</h2>
+    <div class="stat-row" id="resource-stat-row"></div>
+    <div id="resource-alert"></div>
   </div>
 </div>
 
@@ -456,6 +463,34 @@ async function loadReport() {
   $("#perf-bottleneck").innerHTML = (sys && sys.bottleneck_agent)
     ? `<div class="muted">Bottleneck: <strong>${escapeHtml(sys.bottleneck_agent)}</strong> in <strong>${escapeHtml(sys.bottleneck_department || "—")}</strong> (slowest average turnaround)</div>`
     : "";
+
+  // report.resources - same org-wide budget/capacity rollup
+  // generate_report()'s CLI "Resource Overview" section prints (checkpoint
+  // 51's own Next Steps named this as the concrete gap: the per-department
+  // bars in the Departments panel above come from /api/status, but the
+  // org-wide totals and the over-budget warning only ever reached the CLI).
+  // get_resource_summary() has shipped this on every /api/report response
+  // since the report endpoint was added; no dashboard code read it until
+  // now. Guarded on total_allocated > 0, same as the CLI section it
+  // mirrors - a fresh system with nothing allocated shows nothing here
+  // rather than an all-zero panel.
+  const resources = report.resources;
+  const budget = resources.budget;
+  const resourcePanel = $("#resource-panel");
+  resourcePanel.hidden = !(budget.total_allocated > 0);
+  if (!resourcePanel.hidden) {
+    $("#resource-stat-row").innerHTML = [
+      ["Budget Allocated", money(budget.total_allocated)],
+      ["Budget Spent", money(budget.total_spent)],
+      ["Budget Reserved", money(budget.total_reserved)],
+      ["Budget Available", money(budget.total_available)],
+      ["Capacity Utilization", `${(resources.capacity_utilization * 100).toFixed(0)}%`],
+    ].map(([label, value]) => `<div class="stat-tile"><div class="value">${value}</div><div class="label">${label}</div></div>`).join("");
+
+    $("#resource-alert").innerHTML = resources.over_budget_departments.length
+      ? `<div class="alert">⚠ Over-Budget: ${resources.over_budget_departments.map(escapeHtml).join(", ")}</div>`
+      : "";
+  }
 }
 
 async function refreshAll() {

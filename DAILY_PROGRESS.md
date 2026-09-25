@@ -1,3 +1,51 @@
+# Daily Progress Report - September 25, 2026
+
+## 💰 CHECKPOINT 52: THE DASHBOARD GAINS A RESOURCE OVERVIEW PANEL FOR THE ORG-WIDE BUDGET/CAPACITY ROLLUP
+
+**Session opened with a git state that needed fixing before anything else**: `HEAD` was detached at `13c3bda` (checkpoint 51's own finished commit, fully tested and documented in `DAILY_PROGRESS.md`) while the local `main` branch pointer still sat one commit behind at `246d337`. `git fetch origin main` showed `origin/main` was actually already at `13c3bda` - the commit had reached GitHub, this container's local `main` ref just hadn't been fast-forwarded to match. Ran the full 47-file suite at `13c3bda` (zero failures) before touching anything, then `git checkout main && git merge --ff-only 13c3bda` and confirmed `git push` reported "Everything up-to-date" - no work was at risk, just a stale local ref. Worth noting for whoever reviews this: nothing to fix in the codebase here, a one-time container/checkout quirk.
+
+**Closes the concrete item named in checkpoint 51's own Next Steps**: "`report.resources`' org-wide budget/capacity rollup remains dashboard-invisible, though the per-department view already conveys the same signal." The two standing policy questions (a real per-provider token-cost rate, and the `product_head`/`finance_head`/`ceo`/`tech_lead`/`product_coordinator` placeholders) are explicit decisions for the owner and were left untouched again, per checkpoints 42-51 - this session runs unattended, so there was no one to make either call.
+
+### 🐛 Proven live before touching anything
+
+`PerformanceAnalytics.get_resource_summary()` (`performance.py`) has shipped `budget` (org-wide `total_allocated`/`total_spent`/`total_reserved`/`total_available`), `over_budget_departments`, `capacity_utilization`, and `capacity_recommendations` on every `/api/report` response as the `resources` key since the endpoint was added, and `generate_report()`'s CLI output has printed the same numbers as its "Resource Overview" section all along. Confirmed live, before writing any fix, that the dashboard never read `resources` at all:
+
+```
+$ grep -n "resources\|capacity_recommendations" static/dashboard.html
+$("#recs-list") ... [...report.recommendations, ...report.capacity_recommendations]   # only this sibling key
+```
+
+Only `capacity_recommendations` (a list of per-department nudges) reached the browser, merged into the generic Recommendations panel - the same shape of gap checkpoints 45-51 each found and closed one layer at a time, just one field over. The `resources.budget` org-wide totals, `capacity_utilization`, and `over_budget_departments` warning - real numbers computed by the same function, sitting in the same JSON response - had zero consumers in the browser. Confirmed the Departments panel doesn't already cover this: its per-department budget/capacity bars come from `/api/status` (`build_status_payload()`), a different endpoint entirely, and show only per-department figures - never the organization-wide rollup `generate_report()`'s CLI section prints.
+
+### ✅ Fix
+
+- **`static/dashboard.html`**: a new "Resource Overview" panel (`#resource-panel`) reads `report.resources` inside the existing `loadReport()` - no new endpoint or request. Five stat tiles show `budget.total_allocated`/`total_spent`/`total_reserved`/`total_available` (reusing the same `money()` formatter the Departments panel's per-department bars already use) and `capacity_utilization` as a percentage. A red `.alert` line lists `over_budget_departments` when non-empty, mirroring the CLI's `[!] Over-Budget Departments: ...` line; department names go through `escapeHtml()` like every other dynamic string on this page. The whole panel stays `hidden` until `budget.total_allocated > 0` - the same guard `generate_report()`'s own "Resource Overview" section uses (`if budget_summary["total_allocated"] > 0`), so a fresh system with nothing allocated shows nothing rather than an all-zero panel.
+- Deliberately did **not** duplicate the per-department budget/capacity bar charts `generate_report()`'s CLI output also prints (`Budget Utilization By Department`, `Capacity Utilization By Department`) - the Departments panel above already shows that same per-department signal via `/api/status`, just via bars instead of the CLI's ASCII chart. Only the org-wide rollup and the over-budget warning were genuinely absent from the browser.
+
+### 🧪 Validation
+
+Extended `tests/test_web_server.py` (16 test functions now, two new, same `RunningServer`-on-an-ephemeral-port pattern as every other test in the file): `test_report_payload_resources_reflect_real_budget_and_capacity_after_a_task_runs` submits and processes a real task, confirms `resources.budget.total_allocated` is non-zero and `total_spent` grew (not asserting an absolute value - `budget_manager`/`capacity_manager` are module-level singletons accumulating across every test in the file and every pass of the idempotency loop, same caveat this file already documents for `analytics`), and sanity-checks `capacity_utilization` is a valid `[0, 1]` fraction. `test_dashboard_html_wires_up_the_resource_panel` pins the new container ids, the `report.resources`/`budget.total_allocated`/`resources.capacity_utilization`/`resources.over_budget_departments` read sites in the served HTML, and that `escapeHtml` guards the over-budget department names.
+
+Full 47-file suite run twice back-to-back with zero failures; `python3 -m py_compile` clean across every tracked `.py` file; `node --check` clean on the extracted `<script>` body. Also ran the real `web_server.py` standalone in an isolated temp directory (not the repo's `data/`), submitted and processed a live task against `mock` LLM provider, and confirmed `/api/report`'s `resources` object carries genuine non-zero numbers end to end (`total_allocated: 50000`, `total_spent: 210.0012`, `capacity_utilization: 0.0`, `capacity_recommendations` flagging the newly-staffed department as underutilized) - not just the isolated test harness. Tracked seed files restored and generated ones removed after every run, per convention.
+
+### ⚠️ Not a behavior change
+
+Nothing about task execution, budgets, workflows, or delegation changed. `/api/report`'s response shape is unchanged - `resources` was already present in every response; this only adds a dashboard read site for data that already reached the wire.
+
+### 🚧 Deliberately NOT addressed, and why
+
+- **The `$0.00001/token` rate and the `product_head`/`finance_head`/`ceo`/`tech_lead`/`product_coordinator` placeholders** - unchanged, still open policy questions for the owner, per checkpoints 42-51.
+- **The per-department budget/capacity bar charts `generate_report()`'s CLI prints** (`Budget Utilization By Department`, `Capacity Utilization By Department`) - not added to the dashboard, since the Departments panel's existing per-department bars (from `/api/status`) already convey the same signal in a different but equivalent form. Building a second, redundant rendering of the same per-department data wasn't worth it for this checkpoint's scope.
+- **No live browser screenshot.** Chromium/Playwright is available in this environment for browser automation, but the Python `playwright` package isn't installed and this is a zero-third-party-dependency repo by deliberate policy (`CLAUDE.md`) - installing it for a one-off visual check isn't a call this session gets to make unilaterally. Validated instead the way every prior dashboard checkpoint in this project has: `node --check` on the extracted script, static-HTML wiring assertions in `tests/test_web_server.py`, and a live end-to-end API check against a real running server.
+
+### 📝 Next Steps
+
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open.
+- **No further dead or under-routed field is known right now.** `report.resources` was the last concrete gap checkpoints 45-51 had named; the next session should either get an owner decision on one of the two policy questions above, or find a new gap the same way checkpoints 45-52 did: run the live system and look for a place a real computed value gets dropped, misrouted, or shown to only one of several consumers.
+
+---
+
 # Daily Progress Report - September 24, 2026
 
 ## 🚦 CHECKPOINT 51: BOTTLENECK_DEPARTMENT STOPS BEING A DEAD FIELD, AND BOTH BOTTLENECK FIELDS REACH A CONSUMER

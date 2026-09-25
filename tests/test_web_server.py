@@ -497,6 +497,65 @@ def test_report_payload_carries_bottleneck_fields_the_dashboard_now_reads():
         assert "sys.bottleneck_department" in body
 
 
+def test_report_payload_resources_reflect_real_budget_and_capacity_after_a_task_runs():
+    """budget_manager/capacity_manager are module-level singletons like
+    analytics - state accumulates across every test in this file and every
+    pass of the idempotency loop below, so this asserts real growth (an
+    allocation exists, spend increased) rather than an absolute number.
+    TaskExecutor.execute() calls budget_manager.ensure_allocated() on first
+    use of a department (task_executor_v2.py), so processing one real task
+    is enough to move get_resource_summary()'s org-wide totals off zero."""
+    print_section("15. /api/report's resources Reflect Real Budget/Capacity Data")
+
+    with RunningServer() as server:
+        before = server.get("/api/report")[1]["resources"]["budget"]["total_spent"]
+
+        server.post("/api/submit", {"description": "Investigate a checkout error", "department": "engineering"})
+        server.post("/api/process", {})
+
+        status, report = server.get("/api/report")
+        resources = report["resources"]
+        print(f"  budget: {resources['budget']}")
+        print(f"  capacity_utilization: {resources['capacity_utilization']}")
+        assert status == 200
+        assert resources["budget"]["total_allocated"] > 0
+        assert resources["budget"]["total_spent"] > before
+        assert 0.0 <= resources["capacity_utilization"] <= 1.0
+        assert isinstance(resources["over_budget_departments"], list)
+
+
+def test_dashboard_html_wires_up_the_resource_panel():
+    """Checkpoint 51's own Next Steps named this gap: get_resource_summary()
+    has shipped `resources` (org-wide budget totals, capacity_utilization,
+    over_budget_departments) on every /api/report response since the report
+    endpoint was added, and generate_report() has printed the same numbers
+    as the CLI's "Resource Overview" section all along - but no dashboard
+    code ever read the `resources` key; only its `capacity_recommendations`
+    sibling made it into the generic Recommendations list. The Departments
+    panel's per-department budget/capacity bars (from /api/status) conveyed
+    a related but different signal - never the org-wide rollup. This pins
+    the frontend wiring that closes it: the new panel and its containers
+    exist, loadReport() reads report.resources into them, department names
+    in the over-budget warning go through escapeHtml() like every other
+    dynamic value on this page, and the panel stays hidden (guard mirrors
+    generate_report()'s own `budget_summary["total_allocated"] > 0` check)
+    until something's actually been allocated."""
+    print_section("16. Dashboard HTML Wires Up The Resource Overview Panel")
+
+    with RunningServer() as server:
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=10) as resp:
+            body = resp.read().decode("utf-8")
+
+        assert 'id="resource-panel" hidden' in body
+        assert 'id="resource-stat-row"' in body
+        assert 'id="resource-alert"' in body
+        assert "report.resources" in body
+        assert "budget.total_allocated" in body
+        assert "resources.capacity_utilization" in body
+        assert "resources.over_budget_departments" in body
+        assert "escapeHtml" in body.split("resource-alert")[-1][:400]
+
+
 def main():
     print("\n" + "=" * 60)
     print("  WEB DASHBOARD (web_server.py) REGRESSION TESTS")
@@ -517,6 +576,8 @@ def main():
         test_dashboard_tasks_table_sorts_by_status_department_and_result()
         test_dashboard_html_wires_up_the_performance_panel()
         test_report_payload_carries_bottleneck_fields_the_dashboard_now_reads()
+        test_report_payload_resources_reflect_real_budget_and_capacity_after_a_task_runs()
+        test_dashboard_html_wires_up_the_resource_panel()
 
     print("\n" + "=" * 60)
     print("  [OK] All web dashboard tests passed!")
