@@ -1,3 +1,71 @@
+# Daily Progress Report - September 26, 2026
+
+## 🔀 CHECKPOINT 53: THE WORKFLOW ENGINE GETS A WEB CONSUMER FOR THE FIRST TIME
+
+**Session opened with a git state that needed fixing before anything else, the same quirk checkpoint 52 already documented once**: `HEAD` was detached at `f6f8d49` (checkpoint 52's own finished commit) while the local `main` branch pointer still sat two commits behind at `246d337`. `git fetch origin main` showed `origin/main` was already at `f6f8d49` - both checkpoint 51's and 52's commits had reached GitHub; this container's local `main` ref just hadn't been fast-forwarded to match, for the second session running. Ran the full 47-file suite at `f6f8d49` (zero failures) before touching anything, then `git checkout main && git merge --ff-only f6f8d49` and confirmed the working tree was clean - no work was at risk. Worth flagging again for whoever reviews this: two sessions in a row have opened on a stale local `main` ref pointing at a real, already-pushed commit - if a third session hits the same thing, it's worth finding out why this container's local ref isn't tracking origin/main between runs, rather than treating it as routine each time.
+
+**Finds and closes a new gap of the same shape checkpoints 45-52 each closed one field at a time - except this one is an entire subsystem, not a single field.**
+
+### 🐛 Proven live before touching anything
+
+`workflows.py`'s `WorkflowEngine` has run this simulation's multi-step business processes (feature requests, bug fixes: intake → design → estimation → budget approval → development → QA → launch) since it was built, with real persisted state per instance - `status`, `progress`, `current_step`, per-step `step_status`, `error`. `main_v2.py` has a full `workflow` CLI subcommand family (`list/start/next/complete/approve/retry/status`) built entirely on top of it. None of it ever reached the web layer:
+
+```
+$ grep -n "^from\|^import" web_server.py     # before this session
+  (imports main_v2, budgets, departments, llm_provider, performance - no workflows import)
+$ grep -c "workflow" static/dashboard.html   # before this session
+0
+```
+
+Worse than the single-field gaps checkpoints 45-52 found: even the CLI itself has no way to list running instances. `workflow_list()` lists only the two *templates*; `workflow status <id>` requires already knowing an `instance_id`, which is printed exactly once, at `workflow start` time, and nowhere else. Confirmed live with a real instance before writing any fix:
+
+```python
+main_v2.init_workflows()
+inst = workflow_engine.create_instance("feature_request", {"title": "Dark mode"})
+workflow_engine.start_instance(inst.instance_id)
+step1 = workflow_engine.get_next_step(inst.instance_id)   # "intake"
+workflow_engine.complete_step(inst.instance_id, step1.step_id, {"summary": "done"})
+
+workflow_engine.get_status(inst.instance_id)
+# {'instance_id': 'feature_request_1790432339_6992', 'workflow_name': 'Feature Request Process',
+#  'status': 'in_progress', 'progress': 0.142857, 'current_step': 'intake',
+#  'step_statuses': {'intake': 'completed', 'design': 'pending', ...}, 'error': None, ...}
+```
+
+Real, non-trivial, already-computed data (`WorkflowEngine.get_status()` has existed since the engine was written) with a grand total of one consumer: a CLI command you can only run if you already know the instance ID.
+
+### ✅ Fix
+
+- **`web_server.py`**: imports the global `workflow_engine` singleton (same DI-free pattern `budget_manager`/`capacity_manager`/`analytics` already use here) and adds `build_workflows_payload()` - every live instance's `get_status()` dict, the exact shape the CLI's `workflow status <id>` command has always printed, listed for *every* instance instead of requiring the caller to already know one's ID. Sorted newest-first by `created_at` (instances carry no other ordering field). New route: `GET /api/workflows`.
+- **`static/dashboard.html`**: new "Workflows" panel (`#workflow-panel`, hidden until an instance exists - same convention as the Resource Overview panel), rendering one card per instance: workflow name, a status badge (three new `.badge` color rules for `pending`/`in_progress`/`paused` - `completed`/`escalated`/`failed` already existed and happen to share the exact wording with task statuses), instance ID, current step, a progress bar (reusing the existing `bar()` helper), the per-step status breakdown, and an error line when the instance is blocked. `loadWorkflows()` wired into the existing `refreshAll()` poll alongside `loadStatus()`/`loadTasks()`/`loadReport()`. Every dynamic string goes through `escapeHtml()`, same as every other panel on this page.
+- Deliberately did **not** add a CLI "list all instances" command. The CLI's own gap (no way to enumerate instances without already knowing an ID) is real and noted below, but it's a different kind of fix - a new command, not a routing fix for something already computed and displayed elsewhere - and adding it wasn't necessary to close today's concrete gap (the web layer had *zero* workflow exposure, which is what this session fixes).
+
+### 🧪 Validation
+
+Extended `tests/test_web_server.py` (18 test functions now, two new, same `RunningServer` pattern as every other test in the file): `test_workflows_endpoint_exposes_a_real_running_instance` drives a real `feature_request` instance through the same global `workflow_engine`/`main_v2.init_workflows()` the CLI's own `workflow start`/`workflow next` commands use, advances one step, and confirms `/api/workflows` reports exactly what `get_status()` computes (name, status, per-step statuses, a progress strictly between 0 and 1) - looking its own instance up by ID rather than asserting the list's length, since `workflow_engine` is a module-level singleton every test in this file's two idempotency passes share (same caveat already documented for `budget_manager`/`capacity_manager`; confirmed live - the second pass saw 5 accumulated instances, and the by-ID lookup still found the right one). `test_dashboard_html_wires_up_the_workflow_panel` pins the new container IDs, the `/api/workflows` fetch, every dynamic-field read site, and `escapeHtml()` around each of them.
+
+Full 49-file suite (47 existing + one already-tracked new file's growth) run twice back-to-back with zero failures; `python3 -m py_compile` clean across every tracked `.py` file; `node --check` clean on the extracted `<script>` body. Also ran the real `web_server.py` standalone in an isolated temp directory, started a `bug_fix` instance through the live global engine, and confirmed `GET /api/workflows` on the real running server returns its genuine state end to end - not just through the test harness. Tracked seed files restored and generated ones removed after every run, per convention.
+
+### ⚠️ Not a behavior change
+
+Nothing about task execution, budgets, or workflow execution semantics changed. `WorkflowEngine.get_status()`'s shape is unchanged - this only gives it a first web consumer.
+
+### 🚧 Deliberately NOT addressed, and why
+
+- **The `$0.00001/token` rate and the `product_head`/`finance_head`/`ceo`/`tech_lead`/`product_coordinator` placeholders** - unchanged, still open policy questions for the owner, per checkpoints 42-52.
+- **No CLI command to list running workflow instances.** Noted above - a real, separate gap (you must already know an `instance_id` to do anything with `workflow status`/`next`/`complete`/`approve`), but it's a new capability rather than a routing fix, and out of today's scope.
+- **No way to start, advance, or approve a workflow step from the dashboard.** This session's panel is read-only, mirroring how the Resource Overview and Performance panels are read-only. Wiring the dashboard's existing `POST` machinery (submit/process) to workflow actions (`start`/`complete`/`approve`/`retry`) would need real approval-identity handling in the browser (`approve_step()` already checks the approver against the step's `approval_role`, per checkpoint 47's fix) - a bigger, separate feature.
+- **The stale local `main` git ref**, again. Two sessions in a row have now hit this. If it recurs a third time, it's worth someone with container-level access checking why this container's local branch pointer isn't tracking `origin/main` between runs - not a codebase bug, but worth a look outside this repo.
+
+### 📝 Next Steps
+
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open.
+- **A CLI command to list running workflow instances** (`workflow list-instances` or similar) - the dashboard can now do this over `/api/workflows`, but the CLI still can't without already knowing an ID.
+- **No further dead or under-routed field is known right now.** The next session should either get an owner decision on one of the two policy questions above, or find a new gap the same way checkpoints 45-53 did: run the live system and look for a place a real computed value gets dropped, misrouted, or shown to only one of several consumers.
+
+---
+
 # Daily Progress Report - September 25, 2026
 
 ## 💰 CHECKPOINT 52: THE DASHBOARD GAINS A RESOURCE OVERVIEW PANEL FOR THE ORG-WIDE BUDGET/CAPACITY ROLLUP

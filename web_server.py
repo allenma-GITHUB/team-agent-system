@@ -28,6 +28,7 @@ from budgets import budget_manager, capacity_manager
 from departments import DepartmentManager
 from llm_provider import LLMProvider
 from performance import analytics
+from workflows import workflow_engine
 
 STATIC_DIR = Path(__file__).parent / "static"
 DASHBOARD_HTML_PATH = STATIC_DIR / "dashboard.html"
@@ -135,6 +136,22 @@ def build_report_payload() -> dict:
     }
 
 
+def build_workflows_payload() -> list:
+    """Every live workflow instance's status, in the exact per-instance shape
+    WorkflowEngine.get_status() has always computed for main_v2.py's CLI
+    `workflow status <id>` command - status, progress, current_step,
+    step_statuses, error. That command requires already knowing an
+    instance_id (printed once, at `workflow start` time, and nowhere else);
+    there has never been a way to list running instances at all, in the CLI
+    or over the wire - workflows.py has had zero consumers outside main_v2.py
+    since the dashboard was added. Newest first (instances carry no explicit
+    ordering field, so this uses created_at, the same field the CLI's own
+    status view prints)."""
+    main_v2.init_workflows()
+    instances = sorted(workflow_engine.instances.values(), key=lambda i: i.created_at, reverse=True)
+    return [workflow_engine.get_status(i.instance_id) for i in instances]
+
+
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     server_version = "TeamAgentDashboard/1.0"
 
@@ -192,6 +209,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._send_json(build_status_payload())
         elif path == "/api/report":
             self._send_json(build_report_payload())
+        elif path == "/api/workflows":
+            self._send_json(build_workflows_payload())
         elif path == "/api/tasks":
             self._send_json([_task_summary(t) for t in _tasks()])
         elif path.startswith("/api/tasks/"):

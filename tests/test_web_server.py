@@ -30,6 +30,7 @@ import urllib.request
 import main_v2
 import web_server
 from http.server import ThreadingHTTPServer
+from workflows import workflow_engine
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # tests/ -> repo root
 
@@ -556,6 +557,78 @@ def test_dashboard_html_wires_up_the_resource_panel():
         assert "escapeHtml" in body.split("resource-alert")[-1][:400]
 
 
+def test_workflows_endpoint_exposes_a_real_running_instance():
+    """workflows.py's WorkflowEngine has run multi-step business processes
+    (feature requests, bug fixes) since it was built, but had zero consumers
+    outside main_v2.py's CLI - no API route ever shipped an instance's state,
+    so no dashboard code could read it. Worse, even the CLI's own `workflow
+    status <id>` command requires already knowing an instance_id (printed
+    once, at `workflow start` time) - there has never been a way to list
+    running instances at all. This starts a real instance through the same
+    global workflow_engine/main_v2.init_workflows() the CLI's own `workflow
+    start`/`workflow next` commands use, advances one step, and confirms
+    /api/workflows reports exactly what get_status() (the CLI's own status
+    source) computes - not a placeholder shape.
+
+    workflow_engine is the same module-level singleton every test in this
+    file's two idempotency passes share (same caveat
+    test_report_payload_resources_reflect_real_budget_and_capacity_after_a_task_runs
+    already documents for budget_manager/capacity_manager), so this looks up
+    this pass's own instance by id rather than assuming it's the only one
+    the endpoint returns."""
+    print_section("17. GET /api/workflows Reports A Real Instance's Live State")
+
+    with RunningServer() as server:
+        main_v2.init_workflows()
+        instance = workflow_engine.create_instance("feature_request", {"title": "Dark mode"})
+        workflow_engine.start_instance(instance.instance_id)
+        step = workflow_engine.get_next_step(instance.instance_id)
+        workflow_engine.complete_step(instance.instance_id, step.step_id, {"summary": "done"})
+
+        status, workflows = server.get("/api/workflows")
+        print(f"  workflows returned: {len(workflows)}")
+        assert status == 200
+        wf = next((w for w in workflows if w["instance_id"] == instance.instance_id), None)
+        assert wf is not None, f"instance {instance.instance_id} missing from /api/workflows"
+        print(f"  instance {wf['instance_id']}: status={wf['status']} progress={wf['progress']:.2f} "
+              f"current_step={wf['current_step']}")
+        assert wf["workflow_name"] == "Feature Request Process"
+        assert wf["status"] == "in_progress"
+        assert wf["step_statuses"]["intake"] == "completed"
+        assert wf["step_statuses"]["design"] == "pending"
+        assert 0 < wf["progress"] < 1
+        assert wf["error"] is None
+
+
+def test_dashboard_html_wires_up_the_workflow_panel():
+    """Pins the frontend wiring that closes the gap
+    test_workflows_endpoint_exposes_a_real_running_instance proves at the API
+    layer: the panel and its containers exist, loadWorkflows() reads
+    /api/workflows into them, every dynamic string (workflow_name,
+    instance_id, current_step, step id/status, error) goes through
+    escapeHtml() like every other value on this page, and the panel stays
+    hidden until a workflow instance actually exists."""
+    print_section("18. Dashboard HTML Wires Up The Workflow Panel")
+
+    with RunningServer() as server:
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=10) as resp:
+            body = resp.read().decode("utf-8")
+
+        assert 'id="workflow-panel" hidden' in body
+        assert 'id="workflow-list"' in body
+        assert "/api/workflows" in body
+
+        script_section = body.split("async function loadWorkflows")[-1].split("async function refreshAll")[0]
+        assert "w.workflow_name" in script_section
+        assert "w.step_statuses" in script_section
+        assert "w.progress" in script_section
+        assert "w.current_step" in script_section
+        assert "escapeHtml(w.workflow_name)" in script_section
+        assert "escapeHtml(w.instance_id)" in script_section
+        assert "escapeHtml(stepId)" in script_section
+        assert "escapeHtml(w.error)" in script_section
+
+
 def main():
     print("\n" + "=" * 60)
     print("  WEB DASHBOARD (web_server.py) REGRESSION TESTS")
@@ -578,6 +651,8 @@ def main():
         test_report_payload_carries_bottleneck_fields_the_dashboard_now_reads()
         test_report_payload_resources_reflect_real_budget_and_capacity_after_a_task_runs()
         test_dashboard_html_wires_up_the_resource_panel()
+        test_workflows_endpoint_exposes_a_real_running_instance()
+        test_dashboard_html_wires_up_the_workflow_panel()
 
     print("\n" + "=" * 60)
     print("  [OK] All web dashboard tests passed!")

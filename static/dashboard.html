@@ -67,6 +67,12 @@
   .badge.completed { background: #2f9e4433; color: var(--good); }
   .badge.escalated { background: #e8590c33; color: var(--warn); }
   .badge.failed { background: #e0313133; color: var(--bad); }
+  .badge.pending { background: #ced4da33; color: var(--muted); }
+  .badge.in_progress { background: #3b5bdb33; color: var(--accent); }
+  .badge.paused { background: #e8590c33; color: var(--warn); }
+  .workflow-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+  .workflow-card:last-child { margin-bottom: 0; }
+  .workflow-card h3 { margin: 0 0 4px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
   .field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 160px; }
   .field label { font-size: 11px; color: var(--muted); }
@@ -168,6 +174,11 @@
   <div class="panel">
     <h2>Recommendations</h2>
     <ul class="recs" id="recs-list"></ul>
+  </div>
+
+  <div class="panel" id="workflow-panel" hidden>
+    <h2>Workflows</h2>
+    <div id="workflow-list"></div>
   </div>
 
   <div class="panel" id="resource-panel" hidden>
@@ -493,9 +504,39 @@ async function loadReport() {
   }
 }
 
+// workflows.py's WorkflowEngine has run every multi-step business process
+// (feature requests, bug fixes) since it was built, but had zero consumers
+// outside main_v2.py's CLI - no API route shipped its instances, so no
+// dashboard code could read them. get_status()'s per-instance shape (status,
+// progress, current_step, step_statuses, error) is exactly what the CLI's
+// `workflow status <id>` command already prints; this lists every instance
+// instead of requiring the caller to already know an instance_id, which
+// the CLI itself has never had a way to do either. Hidden entirely when no
+// instance exists, same convention as the Resource Overview panel.
+async function loadWorkflows() {
+  const workflows = await api("/api/workflows");
+  const panel = $("#workflow-panel");
+  panel.hidden = workflows.length === 0;
+  if (panel.hidden) return;
+
+  $("#workflow-list").innerHTML = workflows.map(w => {
+    const steps = Object.entries(w.step_statuses)
+      .map(([stepId, status]) => `${escapeHtml(stepId)}: ${escapeHtml(status)}`)
+      .join(" · ");
+    const errorLine = w.error ? `<div class="alert">⚠ ${escapeHtml(w.error)}</div>` : "";
+    return `<div class="workflow-card">
+      <h3><span>${escapeHtml(w.workflow_name)}</span><span class="badge ${escapeHtml(w.status)}">${escapeHtml(w.status)}</span></h3>
+      <div class="muted" style="font-size:12px;">${escapeHtml(w.instance_id)}${w.current_step ? " · current: " + escapeHtml(w.current_step) : ""}</div>
+      ${bar("Progress", w.progress, `${(w.progress * 100).toFixed(0)}%`)}
+      <div class="muted" style="font-size:12px;margin-top:6px;">${steps}</div>
+      ${errorLine}
+    </div>`;
+  }).join("");
+}
+
 async function refreshAll() {
   try {
-    await Promise.all([loadStatus(), loadTasks(), loadReport(), refreshOpenTaskDetail()]);
+    await Promise.all([loadStatus(), loadTasks(), loadReport(), loadWorkflows(), refreshOpenTaskDetail()]);
   } catch (err) {
     console.error(err);
   }
