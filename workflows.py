@@ -475,6 +475,15 @@ class WorkflowEngine:
         """Retrieve workflow instance."""
         return self.instances.get(instance_id)
 
+    def list_instances(self) -> List[WorkflowInstance]:
+        """Every known instance, newest first. Instances carry no explicit
+        ordering field, so this uses created_at - the same field the CLI's
+        own `workflow status <id>` view prints. Before this, the only way to
+        find an instance_id at all was to already have one (printed once, at
+        `workflow start` time): there was no "list" in either the CLI or the
+        web layer, just per-id lookups."""
+        return sorted(self.instances.values(), key=lambda i: i.created_at, reverse=True)
+
     def get_status(self, instance_id: str) -> Optional[Dict[str, Any]]:
         """Get workflow status report."""
         instance = self.instances.get(instance_id)

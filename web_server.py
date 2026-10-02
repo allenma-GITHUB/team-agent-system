@@ -144,12 +144,11 @@ def build_workflows_payload() -> list:
     instance_id (printed once, at `workflow start` time, and nowhere else);
     there has never been a way to list running instances at all, in the CLI
     or over the wire - workflows.py has had zero consumers outside main_v2.py
-    since the dashboard was added. Newest first (instances carry no explicit
-    ordering field, so this uses created_at, the same field the CLI's own
-    status view prints)."""
+    since the dashboard was added. Newest first, via list_instances() - the
+    same ordering main_v2.py's own `workflow instances` command uses, so the
+    two consumers can't drift."""
     main_v2.init_workflows()
-    instances = sorted(workflow_engine.instances.values(), key=lambda i: i.created_at, reverse=True)
-    return [workflow_engine.get_status(i.instance_id) for i in instances]
+    return [workflow_engine.get_status(i.instance_id) for i in workflow_engine.list_instances()]
 
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):

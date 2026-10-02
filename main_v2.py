@@ -308,6 +308,26 @@ def workflow_list():
         print(f"  {template_id:<18} {template.name} ({len(template.steps)} steps)")
 
 
+def workflow_instances():
+    """List every running/completed workflow instance - the gap checkpoint
+    53 named: `workflow status <id>` requires already knowing an instance_id,
+    which is printed exactly once, at `workflow start` time, and nowhere
+    else. Same data and ordering as the dashboard's /api/workflows
+    (WorkflowEngine.list_instances(), newest first)."""
+    init_workflows()
+    instances = workflow_engine.list_instances()
+    if not instances:
+        print("No workflow instances. Start one with: python main_v2.py workflow start <template_id>")
+        return
+
+    print(f"\n📂 Workflow Instances ({len(instances)}):")
+    for instance in instances:
+        status = workflow_engine.get_status(instance.instance_id)
+        step = status["current_step"] or "-"
+        print(f"  {status['instance_id']:<32} {status['workflow_name']:<28} "
+              f"{status['status']:<12} {status['progress']:>4.0%}  step: {step}")
+
+
 def workflow_start(template_id: str, input_pairs: list):
     """Create and start a new workflow instance from a template."""
     init_workflows()
@@ -489,6 +509,7 @@ def main():
         print("  python main_v2.py status")
         print("  python main_v2.py report")
         print("  python main_v2.py workflow list")
+        print("  python main_v2.py workflow instances")
         print("  python main_v2.py workflow start <template_id> [key=value ...]")
         print("  python main_v2.py workflow next <instance_id>")
         print("  python main_v2.py workflow complete <instance_id> <step_id>")
@@ -564,12 +585,14 @@ def main():
 
     elif command == "workflow":
         if len(sys.argv) < 3:
-            print("Usage: python main_v2.py workflow <list|start|next|complete|approve|retry|status> ...")
+            print("Usage: python main_v2.py workflow <list|instances|start|next|complete|approve|retry|status> ...")
             return
         sub = sys.argv[2]
 
         if sub == "list":
             workflow_list()
+        elif sub == "instances":
+            workflow_instances()
         elif sub == "start":
             if len(sys.argv) < 4:
                 print("Usage: python main_v2.py workflow start <template_id> [key=value ...]")

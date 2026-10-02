@@ -1,3 +1,52 @@
+# Daily Progress Report - October 2, 2026
+
+## 📂 CHECKPOINT 54: THE CLI CAN FINALLY LIST ITS OWN WORKFLOW INSTANCES
+
+**Session opened with a clean git state, unlike the last two**: `git fetch origin main` showed the local `main` branch pointer already at `origin/main` (`68199be`, checkpoint 53's own commit), `HEAD` was not detached, and the working tree was clean - no reset needed this time. Full 47-file suite run before touching anything: zero failures.
+
+**Closes the concrete, non-policy item named in checkpoint 53's own Next Steps**: "A CLI command to list running workflow instances (`workflow list-instances` or similar) - the dashboard can now do this over `/api/workflows`, but the CLI still can't without already knowing an ID." The two standing policy questions (a real per-provider token-cost rate, and the `product_head`/`finance_head`/`ceo`/`tech_lead`/`product_coordinator` placeholders) are explicit decisions for the owner and were left untouched again, per checkpoints 42-53 - this session runs unattended, so there was no one to make either call.
+
+### 🐛 Proven live before touching anything
+
+Checkpoint 53 gave the dashboard a first consumer for `WorkflowEngine.get_status()` but explicitly left the CLI's own gap open: every `workflow` subcommand that operates on a running instance (`next`, `complete`, `approve`, `retry`, `status`) requires an `instance_id` as its first argument, and the *only* place that ID is ever printed is the one-line confirmation `workflow start` prints at creation time:
+
+```
+$ python main_v2.py workflow start bug_fix title='Crash on save'
+✓ Started 'Bug Fix Workflow' -> instance bug_fix_1790950489_1424
+```
+
+Lose that line - close the terminal, scroll past it, run `workflow start` in a script that doesn't capture output - and the instance becomes permanently unreachable from the CLI: `workflow list` only enumerates the two *templates* (`feature_request`, `bug_fix`), never instances. Confirmed live before writing any fix: started two real instances, then had no CLI command that could show either one existed.
+
+### ✅ Fix
+
+- **`workflows.py`: `WorkflowEngine.list_instances()`** - a new method returning every known instance, newest-first by `created_at` (instances carry no other ordering field). This is lifted out of `web_server.py`'s `build_workflows_payload()`, which computed the identical sort inline as a private implementation detail with exactly one caller; promoting it to the engine gives the CLI the same ordering for free and means the two consumers (dashboard, CLI) can't quietly drift apart on how "newest" is defined.
+- **`web_server.py`: `build_workflows_payload()`** now calls `workflow_engine.list_instances()` instead of re-deriving the same sort - pure refactor, confirmed identical output (see Validation).
+- **`main_v2.py`: `workflow_instances()`** - new CLI command printing every instance's id, workflow name, status, progress, and current step in one table, with a clean "No workflow instances." message (plus the exact command to start one) when there are none - instead of silently printing nothing or erroring. Wired up as `python main_v2.py workflow instances`, alongside the existing `workflow list` (templates only - left unrenamed/unchanged, since `list` already has an established, different meaning here and callers depending on it shouldn't need to change).
+
+### 🧪 Validation
+
+New `tests/test_workflow_list_instances.py` (4 tests): `list_instances()` returns `[]` on a fresh engine rather than erroring; on an isolated `WorkflowEngine` with its own `data_file`/`BudgetManager`, three instances created with a forced timing gap come back newest-first, pinning both the ordering and that nothing is dropped. Two CLI-level tests reuse `tests/test_main_cli_core.py`'s `IsolatedCwd` pattern against the real global `workflow_engine`/`main_v2.init_workflows()` singleton (same caveat `tests/test_web_server.py` already documents for this module: instances accumulate across tests sharing the process) - one pins the exact "No workflow instances." message text when none exist yet in that run, one starts a real `bug_fix` instance and confirms `workflow_instances()`'s captured stdout contains its real instance_id, workflow name, and status.
+
+Full 48-file suite (47 existing + this session's new file) run twice back-to-back with zero failures; `python3 -m py_compile` clean across every tracked `.py` file. Also ran the real CLI end-to-end in an isolated temp directory with a copy of `config.json`: `workflow instances` printed "No workflow instances." with nothing started, then correctly listed two real started instances (`feature_request`, `bug_fix`) newest-first by real `created_at` timestamps after `workflow start` was run twice.
+
+### ⚠️ Not a behavior change
+
+`build_workflows_payload()`'s refactor is behavior-preserving by construction - `list_instances()` is the exact sort it already did, just named and shared. Nothing about workflow execution, budgets, or task processing changed.
+
+### 🚧 Deliberately NOT addressed, and why
+
+- **The `$0.00001/token` rate and the `product_head`/`finance_head`/`ceo`/`tech_lead`/`product_coordinator` placeholders** - unchanged, still open policy questions for the owner, per checkpoints 42-53.
+- **No way to filter `workflow instances` by status** (e.g. only `in_progress` or only `escalated`). Real instance counts are still small in this system's current usage; added filtering with no concrete need for it yet would be exactly the kind of premature feature this project's conventions warn against. Worth adding the moment the unfiltered list becomes unwieldy in practice.
+- **`workflow list` (templates) and `workflow instances` stay as two separate subcommands** rather than merging into one. They answer genuinely different questions (what workflows *can* I start vs. what's *currently running*) and the dashboard already keeps template and instance data separate the same way.
+
+### 📝 Next Steps
+
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open.
+- **No further dead or under-routed field or CLI gap is known right now.** The next session should either get an owner decision on one of the two policy questions above, or find a new gap the same way checkpoints 45-54 did: run the live system and look for a place a real computed value gets dropped, misrouted, or shown to only one of several consumers.
+
+---
+
 # Daily Progress Report - September 26, 2026
 
 ## 🔀 CHECKPOINT 53: THE WORKFLOW ENGINE GETS A WEB CONSUMER FOR THE FIRST TIME
