@@ -29,6 +29,7 @@ class StepStatus(Enum):
     """Individual step status."""
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
+    AWAITING_APPROVAL = "awaiting_approval"  # work done on a requires_approval step; not yet APPROVED
     APPROVED = "approved"
     REJECTED = "rejected"
     COMPLETED = "completed"
@@ -229,13 +230,32 @@ class WorkflowEngine:
         return True
 
     def complete_step(self, instance_id: str, step_id: str, result: Dict[str, Any]) -> bool:
-        """Mark a step as complete with results."""
+        """Mark a step as complete with results.
+
+        A step with requires_approval=True moves to AWAITING_APPROVAL, not
+        COMPLETED - "the work got done" and "a human/role signed off on it"
+        must stay distinct outcomes (this engine's own stated invariant;
+        see approve_step()'s docstring), otherwise get_next_step() and
+        check_complete() - which both treat COMPLETED and APPROVED as
+        equally "done" - advance straight past an approval gate with no
+        approve_step() call ever having happened. Confirmed live before
+        this fix: a bug_fix instance's approval-gated "verify" step
+        ($500, approval_role="tech_lead") reached check_complete() == True
+        and status "completed" with approve_step() never called, while its
+        $500 reservation sat in the budget's `reserved` dict forever -
+        neither spent nor released.
+        """
         instance = self.instances.get(instance_id)
         if not instance:
             return False
 
+        template = self.templates.get(instance.workflow_id)
+        step = template.get_step_by_id(step_id) if template else None
+
         instance.step_results[step_id] = result
-        instance.step_status[step_id] = StepStatus.COMPLETED
+        instance.step_status[step_id] = (
+            StepStatus.AWAITING_APPROVAL if step and step.requires_approval else StepStatus.COMPLETED
+        )
         self.save()
         return True
 
@@ -264,7 +284,7 @@ class WorkflowEngine:
         # re-runs the department's task a second time: double billing,
         # double workload/performance-metric increments, all through code
         # that has no idea it's redoing already-completed work.
-        if instance.step_status.get(step_id) in (StepStatus.COMPLETED, StepStatus.APPROVED):
+        if instance.step_status.get(step_id) in (StepStatus.COMPLETED, StepStatus.APPROVED, StepStatus.AWAITING_APPROVAL):
             return True
 
         template = self.templates.get(instance.workflow_id)
@@ -428,7 +448,11 @@ class WorkflowEngine:
         # reservation for a step that already has one, and since the
         # existing hold is already excluded from available(), that
         # re-attempt fails and wrongly blocks a perfectly fine step.
-        if instance.step_status.get(next_step.step_id) == StepStatus.IN_PROGRESS:
+        # AWAITING_APPROVAL belongs here too: the step's work is already
+        # done and its budget (if any) already held - get_next_step() just
+        # needs to keep reporting it as the current step until approve_step()
+        # resolves it, not re-reserve funds against the same reference.
+        if instance.step_status.get(next_step.step_id) in (StepStatus.IN_PROGRESS, StepStatus.AWAITING_APPROVAL):
             return next_step
 
         if next_step.requires_approval and next_step.estimated_cost > 0:

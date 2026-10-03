@@ -1,3 +1,59 @@
+# Daily Progress Report - October 3, 2026
+
+## 🔓 CHECKPOINT 55: AN APPROVAL GATE THAT NEVER ACTUALLY GATED ANYTHING
+
+**Session opened with checkpoint 54's own commit stranded, not the usual stale-`main`-ref quirk documented in checkpoints 52-53**: `git status` showed a clean tree, but `HEAD` was detached at `13c6579` (checkpoint 54's finished commit) while both the local `main` ref *and* `origin/main` sat one commit behind at `68199be` - checkpoint 54's work had been committed but never pushed. Ran the full 48-file suite at the detached commit first (zero failures) to confirm it was sound, then `git checkout main && git merge --ff-only 13c6579 && git push origin main`, confirmed `origin/main` now matches, and cleaned the dirtied seed files before starting today's work. Worth flagging for whoever reviews this: three sessions in a row have now hit a git-state quirk at startup (stale local `main` ref twice, an unpushed commit once) - different symptoms, same theme of this container's git state not reliably reflecting what the prior session intended to leave behind. Each one was independently verified and recovered without losing work, but if a fourth session hits another variant, it's worth someone with container-level access looking at why.
+
+### 🐛 Proven live before touching anything
+
+`workflows.py`'s `WorkflowStep.requires_approval` exists specifically so a step's real work and a human/role's sign-off on it stay two separate actions - the engine's own `approve_step()` docstring says as much, and checkpoint 47 already closed one way to forge that sign-off (approving as nobody, or approving a step that was never gated at all). But `complete_step()`/`execute_step()` - what `workflow complete` and any `TaskExecutor`-backed caller actually call - set a step straight to `StepStatus.COMPLETED` regardless of `requires_approval`, with no check that `approve_step()` had ever run. And `get_next_step()`/`check_complete()`/`WorkflowInstance.get_progress()` all treated `COMPLETED` and `APPROVED` as interchangeably "done". The result: the approval gate didn't gate anything. Confirmed live with the real `bug_fix` template (`triage → fix → verify → deploy`, `verify` gated behind `approval_role="tech_lead"`, `estimated_cost=500`) on an isolated engine, `approve_step()` never called once:
+
+```
+step_statuses: {'triage': 'completed', 'fix': 'completed', 'verify': 'completed', 'deploy': 'completed'}
+check_complete(): True
+final status: completed
+engineering budget: spent=0.00  reserved={'wf:bug_fix_...:verify': 500}   <- $500 stuck forever
+```
+
+The whole workflow reported itself fully `completed` with its one approval gate never cleared, while the $500 reservation it never confirmed or released sat in the department's `reserved` dict permanently - neither spent nor returned. This is the project's own named signature bug (work recorded as done when it wasn't - see CLAUDE.md), landing on the one mechanism (`requires_approval`) that exists specifically to prevent it.
+
+### ✅ Fix
+
+- **`workflows.py`**: new `StepStatus.AWAITING_APPROVAL`. `complete_step()` now looks up the step's definition and sets a `requires_approval` step to `AWAITING_APPROVAL` instead of `COMPLETED` - "the work got done" and "someone signed off" stay distinct until `approve_step()` actually runs and moves it to `APPROVED` (or `REJECTED`). `get_next_step()`'s and `check_complete()`'s existing `status in [COMPLETED, APPROVED]` checks needed no changes at all - they now correctly exclude an unapproved gate automatically, since it's never `COMPLETED` in the first place. Two small follow-on guards so the new state doesn't open its own gaps: `execute_step()`'s idempotency check now also treats `AWAITING_APPROVAL` as "already done, don't re-run the department's work" (otherwise a second `workflow complete` call before approval would double-bill); `get_next_step()`'s "already advanced to this step" check now also covers `AWAITING_APPROVAL` (otherwise a second `workflow next`/status check before approval would try to re-reserve the same budget hold it already holds).
+- **`main_v2.py`**: `workflow_complete()` no longer prints "executed and marked complete" when the real outcome is `AWAITING_APPROVAL` - it now says "executed - awaiting approval, not yet complete". Printing the old message here would have been this exact bug's CLI-facing half: telling the operator a gated step was done when it wasn't.
+
+### 🧪 Validation
+
+New `tests/test_workflow_approval_gate_blocks_completion.py` (7 tests, isolated `BudgetManager`/`AgentRegistry`/`WorkflowEngine` per project convention, `allocate()` not `ensure_allocated()` so a prior run's accumulated `spent` can't mask the regression): executing a gated step leaves it `AWAITING_APPROVAL` not `COMPLETED`; `check_complete()` stays `False` and `get_next_step()` keeps returning the gated step (never jumps ahead to `deploy`) with every other step done; `get_progress()` doesn't count the gate toward completion; the $500 hold survives untouched while unapproved; a real `approve_step()` call unblocks `deploy`, flips the workflow to `completed`, and converts the $500 hold to real `spent`; calling `execute_step()` again on an already-`AWAITING_APPROVAL` step is a no-op, not a second billing.
+
+Full 49-file suite (48 existing + this session's new file) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every touched file. Also drove the real CLI end-to-end in an isolated temp directory with a copy of `config.json`: started a `bug_fix` instance, advanced and completed `triage`/`fix`, completed `verify` (printed the new "awaiting approval, not yet complete" message), confirmed `workflow status` showed `in_progress`/50% with `verify: awaiting_approval` rather than jumping to `completed`, confirmed `workflow next` kept returning `verify` rather than skipping to `deploy`, then called `workflow approve ... tech_lead` and confirmed `deploy` became reachable and the workflow finished for real. Verified the pre-fix behavior independently (not just inherited from the investigating subagent's report) via `git stash` back to `main` before writing any fix.
+
+### ⚠️ Not a behavior change (for the common path)
+
+A step that does *not* require approval behaves identically - still `COMPLETED` the moment its work finishes. Only `requires_approval=True` steps change, and only in the direction of actually enforcing what their own name and docstring already claimed.
+
+### 🚧 A second, larger, and more severe gap - found, proven, and deliberately NOT fixed today
+
+While driving the CLI repro above, `workflow complete <instance_id> deploy` was tried directly (bypassing `next` entirely) on a freshly-started instance where **none** of `triage`/`fix`/`verify` had been touched at all. It succeeded:
+
+```
+execute_step('deploy') with nothing else done: ok = True
+step_status: {'triage': 'pending', 'fix': 'pending', 'verify': 'pending', 'deploy': 'completed'}
+```
+
+Confirmed this is pre-existing on unmodified `main` (verified with `git stash`, not just inherited from today's fix): `execute_step()`/`complete_step()` look a step up by `step_id` and run it, full stop - `WorkflowStep.depends_on` is never consulted. The entire dependency graph that makes a workflow a *sequence* rather than an unordered bag of steps is enforced nowhere except as a side effect of `get_next_step()`'s own internal walk; any caller that names a `step_id` directly - which is exactly what `workflow complete <id> <step_id>` and the equivalent `execute_step()` call always do - can execute and complete any step in any order, including a later step whose approval gate (today's fix included) was never reached. Today's fix closes the "approve your way around the gate" path; it does **not** close "skip past the gate's step entirely by naming a later one."
+
+**Why not fixed today**: this is a different, larger-scoped change (`execute_step()`/`complete_step()` need a `depends_on`-satisfied check, with its own decision about what a caller gets back when they name an out-of-order step - a `False`, a specific error, or a block - the project's "never report unfinished work as finished" convention argues against the current bare `True`/`False`) than today's approval-gate fix, and conflating the two would make this session's diff harder to review on its own. It is also more impactful than today's fix and should be the next session's first priority.
+
+### 📝 Next Steps
+
+- **`execute_step()`/`complete_step()` don't check `depends_on` at all** - the gap proven above. A `step_id` named directly (what the CLI's `workflow complete` and any API-level caller always does) can run and complete any step regardless of whether its dependencies were ever started, let alone finished or approved. This should be the next session's first priority - it's a bigger, more consequential version of the same "unfinished work reported as done" family this session closed one instance of.
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open, per checkpoints 42-54.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-54.
+- **The repeated git-state quirk at session start** (three sessions, three different symptoms) - worth someone with container-level access looking into, per the note at the top of this checkpoint.
+
+---
+
 # Daily Progress Report - October 2, 2026
 
 ## 📂 CHECKPOINT 54: THE CLI CAN FINALLY LIST ITS OWN WORKFLOW INSTANCES

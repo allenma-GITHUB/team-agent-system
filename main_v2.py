@@ -380,7 +380,15 @@ def workflow_complete(instance_id: str, step_id: str):
     instance = workflow_engine.get_instance(instance_id)
     if ok:
         result = instance.step_results.get(step_id, {})
-        print(f"✓ Step '{step_id}' executed and marked complete")
+        status = instance.step_status.get(step_id)
+        if status is not None and status.value == "awaiting_approval":
+            # The work happened, but this step requires_approval - it is
+            # NOT done yet. Saying "marked complete" here would be exactly
+            # this project's signature bug: reporting unfinished work (an
+            # approval gate nobody has cleared) as finished.
+            print(f"✓ Step '{step_id}' executed - awaiting approval, not yet complete")
+        else:
+            print(f"✓ Step '{step_id}' executed and marked complete")
         if result.get("summary"):
             print(f"  {result['summary']}")
     elif instance and instance.status.value == "escalated" and instance.error:
