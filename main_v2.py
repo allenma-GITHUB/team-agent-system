@@ -391,8 +391,14 @@ def workflow_complete(instance_id: str, step_id: str):
             print(f"✓ Step '{step_id}' executed and marked complete")
         if result.get("summary"):
             print(f"  {result['summary']}")
-    elif instance and instance.status.value == "escalated" and instance.error:
-        print(f"⚠ Step '{step_id}' escalated, not completed: {instance.error}")
+    elif instance and instance.error:
+        # Covers both a real escalation (budget/capacity/decision-engine
+        # declined the work) and a step named ahead of its own depends_on
+        # (nothing declined it - it just isn't reachable yet) - either way
+        # instance.error already says which, so show it instead of the
+        # generic fallback below, which would wrongly suggest a bad id.
+        label = "escalated" if instance.status.value == "escalated" else "blocked"
+        print(f"⚠ Step '{step_id}' {label}, not completed: {instance.error}")
     else:
         print(f"Could not complete step '{step_id}' (check the instance/step id)")
 

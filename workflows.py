@@ -229,6 +229,19 @@ class WorkflowEngine:
         self.save()
         return True
 
+    def _unmet_dependencies(self, instance: WorkflowInstance, step: WorkflowStep) -> List[str]:
+        """depends_on step_ids that aren't COMPLETED/APPROVED yet - the same
+        "done" definition get_next_step()'s own completed-set check already
+        uses (workflows.py:436-439). Shared by execute_step() (checked
+        before any real department work happens, so a skipped dependency
+        can't still cost real budget/workload) and complete_step() (the
+        authoritative state transition, for any caller - direct API use,
+        tests - that hands in a result without going through execute_step())."""
+        return [
+            dep for dep in step.depends_on
+            if instance.step_status.get(dep) not in (StepStatus.COMPLETED, StepStatus.APPROVED)
+        ]
+
     def complete_step(self, instance_id: str, step_id: str, result: Dict[str, Any]) -> bool:
         """Mark a step as complete with results.
 
@@ -244,6 +257,18 @@ class WorkflowEngine:
         and status "completed" with approve_step() never called, while its
         $500 reservation sat in the budget's `reserved` dict forever -
         neither spent nor released.
+
+        A step named directly also can't be completed ahead of its own
+        depends_on - confirmed live, pre-existing, before this guard:
+        calling this (via execute_step()) on 'deploy' in the stock bug_fix
+        template, with 'triage'/'fix'/'verify' all still PENDING, marked
+        'deploy' COMPLETED outright. depends_on is the only thing that makes
+        a workflow a sequence rather than an unordered bag of steps that
+        happen to share an instance_id; nothing enforced it except as a side
+        effect of callers going through get_next_step() first, and nothing
+        stopped a caller - including 'workflow complete <id> <step>', which
+        names a step_id directly - from skipping that entirely, bypassing
+        any approval gate on the skipped steps in the process.
         """
         instance = self.instances.get(instance_id)
         if not instance:
@@ -252,10 +277,27 @@ class WorkflowEngine:
         template = self.templates.get(instance.workflow_id)
         step = template.get_step_by_id(step_id) if template else None
 
+        if step:
+            unmet = self._unmet_dependencies(instance, step)
+            if unmet:
+                instance.error = (
+                    f"Step '{step.name}' cannot be completed: depends on "
+                    f"{', '.join(unmet)}, which {'is' if len(unmet) == 1 else 'are'} not done yet"
+                )
+                self.save()
+                return False
+
         instance.step_results[step_id] = result
         instance.step_status[step_id] = (
             StepStatus.AWAITING_APPROVAL if step and step.requires_approval else StepStatus.COMPLETED
         )
+        # Clear a stale error from an earlier blocked/out-of-order attempt on
+        # this instance (same recovery pattern retry_blocked_step() already
+        # uses) - otherwise workflow status would keep showing a "cannot
+        # run: depends on X" message after the workflow has since made real,
+        # successful progress past that point, implying it's still blocked
+        # when it isn't.
+        instance.error = None
         self.save()
         return True
 
@@ -290,6 +332,20 @@ class WorkflowEngine:
         template = self.templates.get(instance.workflow_id)
         step = template.get_step_by_id(step_id) if template else None
         if not step:
+            return False
+
+        # Checked here too, before the executor ever runs - not just inside
+        # complete_step() below - so a step named ahead of its own
+        # depends_on doesn't still cost the department a real execution
+        # (budget charge, workload increment) for work that won't end up
+        # recorded as complete anyway.
+        unmet = self._unmet_dependencies(instance, step)
+        if unmet:
+            instance.error = (
+                f"Step '{step.name}' cannot run: depends on "
+                f"{', '.join(unmet)}, which {'is' if len(unmet) == 1 else 'are'} not done yet"
+            )
+            self.save()
             return False
 
         task_description = f"{step.name}: {step.description}" if step.description else step.name

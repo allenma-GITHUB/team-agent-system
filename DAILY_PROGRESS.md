@@ -1,3 +1,52 @@
+# Daily Progress Report - October 4, 2026
+
+## ⛓️ CHECKPOINT 56: STEPS COULD STILL BE COMPLETED OUT OF ORDER, GATE OR NO GATE
+
+**Session opened with the same git-state quirk flagged for the fourth session running (checkpoints 53-55)**: `git status` showed a clean tree, but `HEAD` was detached at `313eec0` (checkpoint 55's own commit, matching `origin/main`) while the local `main` branch ref still sat two commits behind at `68199be`. Confirmed `313eec0` is a strict fast-forward of `main` (`git merge-base --is-ancestor`), then re-pointed `main` to it and reattached `HEAD` with `git branch -f main 313eec0 && git symbolic-ref HEAD refs/heads/main` - no checkout/merge needed since the target commit was identical to the one already checked out, so this session's in-progress edits were untouched throughout. Full 49-file suite run at that commit first: zero failures. Flagging again, now a fourth time: the symptom keeps varying (stale ref, detached HEAD, an unpushed commit) but the pattern is the same - this container's local `main` ref does not reliably end a session pointed at what that session actually pushed. Still worth someone with container-level access looking into; each occurrence has been independently verified and recovered without losing work, so it hasn't blocked progress, only added a startup step every session.
+
+**Closes the item checkpoint 55 named as its own first priority** - a bigger, more consequential instance of the exact bug family (unfinished/out-of-order work recorded as done) that checkpoint 55 closed one instance of for approval gates specifically.
+
+### 🐛 Proven live before touching anything
+
+Checkpoint 55 fixed "approve your way around a gate" but explicitly left a larger gap open: `execute_step()`/`complete_step()` looked a step up by `step_id` and ran it, full stop - `WorkflowStep.depends_on` was never consulted anywhere except as a side effect of `get_next_step()`'s own internal walk. Any caller naming a `step_id` directly - exactly what `workflow complete <instance> <step_id>` and the equivalent `execute_step()`/`complete_step()` calls always do - could execute and complete any step in any order, skipping past an approval gate entirely rather than just around it. Reconfirmed live on unmodified `main` before writing any fix, on the stock `bug_fix` template (`triage -> fix -> verify[approval_role=tech_lead, $500] -> deploy`):
+
+```
+inst = engine.create_instance("bug_fix", {...}); engine.start_instance(inst.instance_id)
+# nothing else touched - triage/fix/verify all still PENDING
+ok = engine.execute_step(inst.instance_id, "deploy", exe)
+# ok = True
+# step_status: {'triage': 'pending', 'fix': 'pending', 'verify': 'pending', 'deploy': 'completed'}
+```
+
+`deploy` - the step whose only gate (`verify`, $500, `approval_role="tech_lead"`) was never even started - reported itself `completed` outright. Worse than checkpoint 55's bug: that one required someone to at least reach the gate and then forge sign-off; this one skips the gate's own step entirely, no forged approval needed.
+
+### ✅ Fix
+
+- **`workflows.py`: new `WorkflowEngine._unmet_dependencies(instance, step)`** - returns every `depends_on` entry not yet `COMPLETED`/`APPROVED` (the same "done" definition `get_next_step()`'s own completed-set check already uses). Shared by both mutation paths rather than duplicated:
+  - **`execute_step()`** now checks this *before* calling `executor.execute()` - not just before recording the result - so a step named ahead of its own dependencies can't still cost the department a real execution (budget charge, workload/performance-metric increment) for work that was never going to be recorded as done anyway.
+  - **`complete_step()`** checks it too, as the authoritative gate for any caller that hands in a result directly without going through `execute_step()` (the engine's own public API, used directly by several existing tests). Both blocked paths set `instance.error` to name the unmet dependency/dependencies and return `False`, leaving `step_status`/`status` otherwise untouched (this isn't a budget/capacity escalation - the step just isn't reachable yet).
+- **`complete_step()`'s success path now clears `instance.error`** (same recovery pattern `retry_blocked_step()` already uses). Caught by driving the CLI end-to-end: without this, a blocked out-of-order attempt's error message kept showing in `workflow status` forever afterward, even once the workflow was subsequently driven correctly and made real progress past that point - this fix would otherwise have introduced its own version of exactly the misleading-state problem it exists to close.
+- **`main_v2.py`: `workflow_complete()`** now prints `instance.error` whenever it's set, not only when `status == "escalated"` - the new blocked-by-dependency case doesn't change `status`, so the old `elif` would have fallen through to the generic "(check the instance/step id)" message, which is actively misleading here (the ids are fine; the step just isn't reachable yet). Labeled "blocked" vs. "escalated" based on `status` so the two real causes stay distinguishable.
+
+### 🧪 Validation
+
+New `tests/test_workflow_depends_on_enforced.py` (5 tests, isolated `BudgetManager`/`AgentRegistry`/`WorkflowEngine` per project convention): `execute_step()` refuses `deploy` with nothing else done and the executor is never invoked (zero cost for an unreachable step); `execute_step()` also refuses `deploy` while `verify` is only `AWAITING_APPROVAL` (an unapproved gate blocks the step after it too, not just the gate itself); `complete_step()` itself refuses a hand-typed result naming `verify` while `fix` is still pending; the normal in-order path through `get_next_step()` is unaffected end to end, including a real `approve_step()` call unblocking `deploy`; and the stale-error-clearing fix is pinned directly (error is set after a blocked attempt, then `None` again after subsequent real progress).
+
+Full 50-file suite (49 existing + this session's new file) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. Also drove the real CLI end-to-end in an isolated temp directory with a copy of `config.json`: started a `bug_fix` instance, ran `workflow complete <iid> deploy` directly with nothing else done - printed `⚠ Step 'deploy' blocked, not completed: Step 'Deploy Fix' cannot run: depends on verify, which is not done yet` and `workflow status` confirmed every step still `pending`; then completed `triage`/`fix`/`verify` in order (the last correctly landing on `awaiting_approval`) and confirmed `workflow status`'s `Error:` line was gone once real progress had been made, rather than still showing the earlier blocked message.
+
+### ⚠️ Not a behavior change (for the common path)
+
+Every existing test and the real `feature_request`/`bug_fix` templates already complete steps in the order `get_next_step()` hands them out, which only ever returns a step whose dependencies are already satisfied - so the in-order path is identical to before. Only a caller naming a `step_id` ahead of its own `depends_on` changes behavior, and only in the direction of refusing to silently do or record work for a step that isn't reachable yet.
+
+### 📝 Next Steps
+
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open, per checkpoints 42-55.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-55.
+- **The repeated git-state quirk at session start** - now four sessions in a row, three different symptoms - worth someone with container-level access looking into, per the note at the top of this checkpoint.
+- **No further dead/under-routed field, unenforced invariant, or CLI gap is known right now** in the workflow engine specifically. The next session should either get an owner decision on one of the two policy questions above, or look for a new gap the same way checkpoints 45-56 each did: run the live system and look for a place a real computed value or stated invariant isn't actually enforced or isn't reaching one of its consumers.
+
+---
+
 # Daily Progress Report - October 3, 2026
 
 ## 🔓 CHECKPOINT 55: AN APPROVAL GATE THAT NEVER ACTUALLY GATED ANYTHING
