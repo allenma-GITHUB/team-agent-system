@@ -29,6 +29,7 @@ import urllib.request
 
 import main_v2
 import web_server
+from budgets import budget_manager
 from http.server import ThreadingHTTPServer
 from workflows import workflow_engine
 
@@ -557,6 +558,81 @@ def test_dashboard_html_wires_up_the_resource_panel():
         assert "escapeHtml" in body.split("resource-alert")[-1][:400]
 
 
+def test_strategy_endpoint_exposes_a_real_reallocation_proposal():
+    """strategy.py's StrategicPlanner.propose_reallocations() has computed
+    real donor-to-recipient budget moves since it was built - main_v2.py's
+    `strategy` command has printed them all along - but had zero web
+    consumers, the same gap shape checkpoint 56's predecessor closed for
+    workflows.py (build_workflows_payload()): real logic, one CLI consumer,
+    nothing over the wire. Drives budget_manager (the same module-level
+    singleton test 15 above already documents as accumulating across every
+    test and idempotency pass in this file) to a genuine skew - one
+    department pinned at 95% utilization, another freshly allocated and
+    untouched at 0% - via allocate()/request_expense() exactly as a real
+    task's budget charge would, then confirms /api/strategy reports the
+    same proposal propose_reallocations() itself would compute, not a
+    placeholder shape. allocate() resets rather than accumulates (see its
+    own docstring), so the two departments under test are deterministic -
+    but propose_reallocations() funds a recipient from its *largest* idle
+    donor first (greedy by giveable amount), and other departments in this
+    shared singleton may also be sitting idle with their own config.json-
+    seeded allocation from earlier tests. "product" is given an allocation
+    no other department's idle budget could outrank, so it - not whichever
+    department happened to be touched last elsewhere in the suite - is
+    deterministically the donor named here. "research"/"product" are used
+    nowhere else in this file as a real submit target, unlike engineering/
+    support/design - so pinning them here can't starve a later test's own
+    department of the budget it needs to actually complete a task."""
+    print_section("17. GET /api/strategy Reports A Real Reallocation Proposal")
+
+    with RunningServer() as server:
+        budget_manager.allocate("research", 10000)
+        budget_manager.request_expense("research", 9500, "labor")
+        budget_manager.allocate("product", 10_000_000)
+
+        status, proposals = server.get("/api/strategy")
+        print(f"  proposals: {proposals}")
+        assert status == 200
+        proposal = next((p for p in proposals
+                          if p["from_department"] == "product" and p["to_department"] == "research"), None)
+        assert proposal is not None, "expected product (idle) -> research (95% utilized) in /api/strategy"
+        assert proposal["amount"] > 0
+        assert "product" in proposal["reason"] and "research" in proposal["reason"]
+
+
+def test_dashboard_html_wires_up_the_strategy_panel():
+    """Pins the frontend wiring that closes the gap the test above proves at
+    the API layer: the panel and its containers exist, loadStrategy() reads
+    /api/strategy into them, every dynamic string (from_department,
+    to_department, reason) goes through escapeHtml() like every other value
+    on this page, and the panel stays hidden until a proposal actually
+    exists - this is a preview only, never a dashboard button that applies
+    the move (that stays `strategy --apply` on the CLI, a reviewed action
+    per this project's "safety boundaries enforced in code" rule)."""
+    print_section("18. Dashboard HTML Wires Up The Strategic Reallocation Panel")
+
+    with RunningServer() as server:
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=10) as resp:
+            body = resp.read().decode("utf-8")
+
+        assert 'id="strategy-panel" hidden' in body
+        assert 'id="strategy-list"' in body
+        assert "/api/strategy" in body
+
+        script_section = body.split("async function loadStrategy")[-1].split("async function refreshAll")[0]
+        assert "p.from_department" in script_section
+        assert "p.to_department" in script_section
+        assert "p.amount" in script_section
+        assert "p.reason" in script_section
+        assert "escapeHtml(p.from_department)" in script_section
+        assert "escapeHtml(p.to_department)" in script_section
+        assert "escapeHtml(p.reason)" in script_section
+
+        # Never an apply/action control - this panel is a read-only mirror
+        # of the CLI's default (no --apply) preview.
+        assert "/api/strategy/apply" not in body
+
+
 def test_workflows_endpoint_exposes_a_real_running_instance():
     """workflows.py's WorkflowEngine has run multi-step business processes
     (feature requests, bug fixes) since it was built, but had zero consumers
@@ -576,7 +652,7 @@ def test_workflows_endpoint_exposes_a_real_running_instance():
     already documents for budget_manager/capacity_manager), so this looks up
     this pass's own instance by id rather than assuming it's the only one
     the endpoint returns."""
-    print_section("17. GET /api/workflows Reports A Real Instance's Live State")
+    print_section("19. GET /api/workflows Reports A Real Instance's Live State")
 
     with RunningServer() as server:
         main_v2.init_workflows()
@@ -608,7 +684,7 @@ def test_dashboard_html_wires_up_the_workflow_panel():
     instance_id, current_step, step id/status, error) goes through
     escapeHtml() like every other value on this page, and the panel stays
     hidden until a workflow instance actually exists."""
-    print_section("18. Dashboard HTML Wires Up The Workflow Panel")
+    print_section("20. Dashboard HTML Wires Up The Workflow Panel")
 
     with RunningServer() as server:
         with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=10) as resp:
@@ -651,6 +727,8 @@ def main():
         test_report_payload_carries_bottleneck_fields_the_dashboard_now_reads()
         test_report_payload_resources_reflect_real_budget_and_capacity_after_a_task_runs()
         test_dashboard_html_wires_up_the_resource_panel()
+        test_strategy_endpoint_exposes_a_real_reallocation_proposal()
+        test_dashboard_html_wires_up_the_strategy_panel()
         test_workflows_endpoint_exposes_a_real_running_instance()
         test_dashboard_html_wires_up_the_workflow_panel()
 

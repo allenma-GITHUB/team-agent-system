@@ -186,6 +186,11 @@
     <div class="stat-row" id="resource-stat-row"></div>
     <div id="resource-alert"></div>
   </div>
+
+  <div class="panel" id="strategy-panel" hidden>
+    <h2>Strategic Reallocation</h2>
+    <div id="strategy-list"></div>
+  </div>
 </div>
 
 <script>
@@ -534,9 +539,30 @@ async function loadWorkflows() {
   }).join("");
 }
 
+// strategy.py's StrategicPlanner has computed real donor->recipient budget
+// moves (an underspending department's idle allocation, toward one running
+// out of room) since it was built - main_v2.py's `strategy` command has
+// printed them all along - but had zero web consumers, the same gap shape
+// loadWorkflows() closed for workflows.py above. This surfaces the same
+// read-only preview the CLI shows without `--apply`; actually moving the
+// budget stays a reviewed CLI action, not a dashboard button. Hidden
+// entirely when nothing crosses either threshold, same convention as the
+// Resource Overview and Workflows panels.
+async function loadStrategy() {
+  const proposals = await api("/api/strategy");
+  const panel = $("#strategy-panel");
+  panel.hidden = proposals.length === 0;
+  if (panel.hidden) return;
+
+  $("#strategy-list").innerHTML = proposals.map(p => `<div class="workflow-card">
+    <div><strong>${escapeHtml(p.from_department)}</strong> &rarr; <strong>${escapeHtml(p.to_department)}</strong>: ${money(p.amount)}</div>
+    <div class="muted" style="font-size:12px;">${escapeHtml(p.reason)}</div>
+  </div>`).join("");
+}
+
 async function refreshAll() {
   try {
-    await Promise.all([loadStatus(), loadTasks(), loadReport(), loadWorkflows(), refreshOpenTaskDetail()]);
+    await Promise.all([loadStatus(), loadTasks(), loadReport(), loadWorkflows(), loadStrategy(), refreshOpenTaskDetail()]);
   } catch (err) {
     console.error(err);
   }

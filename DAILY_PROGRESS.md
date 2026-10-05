@@ -1,4 +1,50 @@
-# Daily Progress Report - October 4, 2026
+# Daily Progress Report - October 5, 2026
+
+## 📡 CHECKPOINT 57: STRATEGY.PY'S REALLOCATION SIGNAL HAD ZERO WEB CONSUMERS
+
+**Session opened with the exact git-state quirk flagged for the fifth session running (checkpoints 53-56), a new variant**: `git status` showed a clean tree, but `HEAD` was detached at `4675203` (checkpoint 56's own finished commit, matching `origin/main` after a fetch) while the local `main` ref sat three commits behind at `68199be`. Recovered with `git checkout main && git merge --ff-only 4675203` (a plain fast-forward onto an identical, already-pushed commit - no conflict possible, so the destructive-git-command guardrail that denied a `git branch -f`-based recovery attempt was correctly cautious, and the ff-only merge is the safe path checkpoint 55 already used for the same symptom). Fifth occurrence in a row, still worth container-level attention per every prior checkpoint's note; still independently verified and recovered without losing work.
+
+### 🐛 Proven live before touching anything
+
+`strategy.py`'s `StrategicPlanner.propose_reallocations()` has existed since (per `RESEARCH_LOG.md`/git history) an earlier checkpoint added CEO-level budget rebalancing: it reads the exact same `BudgetManager.utilization_pct()`/`available()` signals the dashboard's Departments panel and Resource Overview panel already render, and turns them into concrete donor-to-recipient transfer proposals. `main_v2.py`'s `strategy`/`strategy --apply` CLI commands have called it since it was built. But `web_server.py` - which mirrors every other read-only CLI view (`show_status`, `show_report`, `workflow status`) as a JSON route for the dashboard - never imported `strategy` at all, and `static/dashboard.html` had zero references to it (`grep -n "strategy\|reallocat" static/dashboard.html` → no output). The exact gap shape checkpoint 52 ("The workflow engine gets a web consumer for the first time") closed for `workflows.py`, now found in `strategy.py`: real logic, a real CLI consumer, nothing over the wire.
+
+Confirmed live with a genuine utilization skew (isolated `BudgetManager`, no dashboard code involved yet):
+
+```
+budget_manager.allocate('engineering', 10000); budget_manager.request_expense('engineering', 9500, 'labor')
+budget_manager.allocate('sales', 10000)
+strategic_planner.propose_reallocations()
+# [ReallocationProposal(from_department='sales', to_department='engineering', amount=1176.47,
+#    reason='sales at 0% utilization (underspending) -> engineering at 95% utilization (approaching limit)')]
+```
+
+A real, actionable proposal - invisible anywhere a browser could see it, same as a fresh checkout's `web_server.build_status_payload()`/`build_report_payload()`/`build_workflows_payload()`, none of which mention it.
+
+### ✅ Fix
+
+- **`web_server.py`**: new `build_strategy_payload()` - `[asdict(p) for p in strategic_planner.propose_reallocations()]`, same shape `main_v2.py`'s `strategy` command already prints, minus formatting. New `GET /api/strategy` route. Deliberately mirrors only the CLI's *default* (no `--apply`): this is the read-only preview, never the transfer itself - per this project's "safety boundaries enforced in code, not convention" rule, actually moving budget stays a reviewed CLI action (`strategy --apply`), not a dashboard button with no review step in between.
+- **`static/dashboard.html`**: new `Strategic Reallocation` panel (hidden until a proposal exists, same convention as the Workflows and Resource Overview panels), `loadStrategy()` fetches `/api/strategy` and renders each proposal's `from_department`/`to_department`/`amount`/`reason`, every dynamic string through `escapeHtml()` like every other value on this page. Wired into `refreshAll()`'s existing `Promise.all`.
+
+### 🧪 Validation
+
+Extended `tests/test_web_server.py` (now 20 test functions): `test_strategy_endpoint_exposes_a_real_reallocation_proposal` drives `budget_manager` (the module-level singleton other tests in this file already document as accumulating state) to a genuine skew via `allocate()`/`request_expense()` - the same calls a real task's budget charge makes - using `research`/`product`, two departments no other test in the file submits a real task to, so pinning their budgets here can't starve a later test's own department of what it needs to actually complete a task. `product` is given an allocation no other idle department could outrank, since `propose_reallocations()` funds a recipient from its *largest* idle donor first and other departments may also be sitting idle from earlier tests' own config.json-seeded allocations - without that, which department got named as donor would be order-dependent on suite history, not a property of the fix. `test_dashboard_html_wires_up_the_strategy_panel` pins the frontend wiring and its escaping, and confirms no apply/action control exists on the page (preview only).
+
+Full 50-file suite run twice back-to-back with zero failures (`tests/test_web_server.py` itself runs its own internal 2-pass idempotency loop on top of that); `python3 -m py_compile` clean on every tracked `.py` file. Also drove the real CLI directly in an isolated temp directory with a copy of `config.json`: `python3 main_v2.py strategy` against a fresh, unallocated system printed its existing "No reallocation needed" message unchanged - confirming the new web route is additive and didn't touch the CLI path it mirrors.
+
+### ⚠️ Not a behavior change
+
+Nothing about budget allocation, the CLI's `strategy`/`strategy --apply` commands, or `StrategicPlanner` itself changed. This is purely a new read path (one HTTP route, one dashboard panel) onto logic that already existed and already ran - the same category of change as checkpoint 52's workflow panel and checkpoint 51's resource panel.
+
+### 📝 Next Steps
+
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open, per checkpoints 42-56. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-56. Policy question for the owner.
+- **The repeated git-state quirk at session start** - now five sessions in a row - worth someone with container-level access looking into, per the note at the top of this checkpoint and every one since 53.
+- **No further dead/under-routed field is known right now** in `strategy.py`, `budgets.py`, or `workflows.py` specifically after this pass. The next session should either get an owner decision on one of the two policy questions above, or look for a new gap the same way checkpoints 45-57 each did: run the live system and look for a place a real computed value or stated invariant isn't actually enforced or isn't reaching one of its consumers - `agent_decisions.py`, `departments.py`, and `performance.py` haven't had this specific sweep (CLI/web-consumer parity) applied to them yet and are a reasonable place to start.
+
+---
+
+
 
 ## ⛓️ CHECKPOINT 56: STEPS COULD STILL BE COMPLETED OUT OF ORDER, GATE OR NO GATE
 

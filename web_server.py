@@ -28,6 +28,7 @@ from budgets import budget_manager, capacity_manager
 from departments import DepartmentManager
 from llm_provider import LLMProvider
 from performance import analytics
+from strategy import strategic_planner
 from workflows import workflow_engine
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -151,6 +152,22 @@ def build_workflows_payload() -> list:
     return [workflow_engine.get_status(i.instance_id) for i in workflow_engine.list_instances()]
 
 
+def build_strategy_payload() -> list:
+    """Every reallocation StrategicPlanner.propose_reallocations() would
+    make right now - the same CEO-level donor-to-recipient signal
+    main_v2.py's `strategy` command has printed since strategy.py was
+    built, with zero web consumers until now (the same gap shape
+    build_workflows_payload() above closed for workflows.py: real logic,
+    one CLI consumer, nothing over the wire). Deliberately mirrors the
+    CLI's default (no `--apply`) - this is the read-only preview only;
+    actually moving budget stays a reviewed CLI action
+    (`strategy --apply`), per this project's "safety boundaries enforced
+    in code, not convention" rule. Returns an empty list on most days,
+    same as propose_reallocations() itself - nothing crossing either
+    threshold is the common case, not an error."""
+    return [asdict(p) for p in strategic_planner.propose_reallocations()]
+
+
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     server_version = "TeamAgentDashboard/1.0"
 
@@ -210,6 +227,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._send_json(build_report_payload())
         elif path == "/api/workflows":
             self._send_json(build_workflows_payload())
+        elif path == "/api/strategy":
+            self._send_json(build_strategy_payload())
         elif path == "/api/tasks":
             self._send_json([_task_summary(t) for t in _tasks()])
         elif path.startswith("/api/tasks/"):
