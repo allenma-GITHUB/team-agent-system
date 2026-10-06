@@ -1,3 +1,51 @@
+# Daily Progress Report - October 6, 2026
+
+## 📉 CHECKPOINT 58: A QUALITY TREND METHOD WITH ZERO CALLERS, ANYWHERE
+
+**Session opened with a clean git state for the first time in six sessions** - `git status` clean, `HEAD` attached to `main`, `main` matching `origin/main` exactly (`8158a61`, checkpoint 57's own pushed commit). No recovery step needed. Worth noting if whoever has container-level access was looking into checkpoints 53-57's repeated quirk: whatever it was, it didn't recur today.
+
+Continued the CLI/web-consumer parity sweep checkpoint 57's Next Steps proposed, into the three files it named as not yet having had this specific pass applied: `agent_decisions.py`, `departments.py`, and `performance.py`. The first two came back clean on inspection - `agent_decisions.py`'s dead-trigger history is already closed (checkpoints 44-45's `test_decision_inputs.py` fixed the `complexity`/`required_approval_level` constants that made two of `requires_approval()`'s three triggers unreachable), and `departments.py`'s only unused surface (`create_department()`, the string-formatted `list_departments()`) is dead code with no computed signal behind it, not a "real value, no consumer" gap - not today's bug family. `performance.py` had one.
+
+### 🐛 Proven live before touching anything
+
+`performance.py`'s `AgentMetrics.get_quality_trend(window=5)` computes a recent-vs-prior-window quality delta and a `"declining"/"stable"/"improving"/"insufficient_data"` label - a real, working computation, present since early in this file's history. `grep -rn "get_quality_trend" .` turns up exactly one line in the whole repository: the method's own definition. Not `generate_report()`, not `get_recommendations()` (the two places `performance.py` already surfaces agent-level signals), not `web_server.py`, not `static/dashboard.html`, not one of the 50 existing test files. Every other public method on `PerformanceAnalytics`/`AgentMetrics` has at least one caller somewhere in that list; this is the only one with none.
+
+The gap matters because `avg_quality` - the number every existing consumer *does* show - is structurally incapable of catching what this method catches: it's an all-time mean, so an agent who was excellent for a long stretch and has been declining for their last several tasks still reads as fine until the decline has dragged the average down with it. Confirmed live with a direct repro before writing any fix - ten tasks, quality dropping from ~4.8 to ~3.0 partway through:
+
+```
+scores = [4.8, 4.7, 4.9, 4.6, 4.8, 3.2, 3.0, 2.8, 3.1, 2.9]
+agent.avg_quality        -> 3.88      (comfortably "fine" by every existing check)
+agent.success_rate       -> 1.0       (wouldn't trip the training_needed recommendation)
+agent.avg_duration_hours -> unremarkable (wouldn't trip workload_rebalance or the skill_gap check)
+agent.get_quality_trend() -> (-1.76, 'declining')   <- the one number that already knew
+analytics.get_recommendations() -> []   (zero recommendations, on live pre-fix main)
+```
+
+An agent getting visibly worse, with the system's own code already having computed that fact, and nothing - not the CLI report, not the dashboard - ever saying so.
+
+### ✅ Fix
+
+- **`performance.py`: `get_recommendations()`** now calls `agent.get_quality_trend()` for every agent and appends a `"quality_decline"` recommendation (same `{type, agent, issue, action}` shape as the three checks already there) whenever the recent trend reads `"declining"` - regardless of what `avg_quality`/`success_rate`/`avg_duration_hours` say, since this is specifically the signal that catches a decline *before* those others would. No other file needed to change: `get_recommendations()`'s return value already reaches `generate_report()`'s "Recommendations" section (`main_v2.py`'s `report` CLI command) and `web_server.build_report_payload()`'s `recommendations` key, which `static/dashboard.html`'s `loadReport()` already renders generically as `{agent, issue, action}` list items (`$("#recs-list")`, shared with `capacity_recommendations` since checkpoint 50) - the consumer side of this gap was already built for exactly this shape; the computation just never fed it.
+
+### 🧪 Validation
+
+New `tests/test_quality_trend_recommendation.py` (4 tests, isolated `PerformanceAnalytics(data_file="data/test_quality_trend*.json")` per project convention): a declining-then-recovering-looking-fine agent gets exactly one `quality_decline` recommendation despite a healthy average and perfect success rate; a stable-or-improving agent (same shape, scores reversed) gets none; an agent with fewer than one window's worth of tasks (`insufficient_data`) gets none and nothing crashes; `generate_report()`'s printed text includes the new recommendation's `action` line (confirmed against the actual string `generate_report()` prints - `rec['action']`, not `rec['issue']` - rather than assuming which field reaches the CLI).
+
+Full 51-file suite (50 existing + this session's new file) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. Also drove the real CLI in an isolated temp directory with a copy of `config.json`: `python3 main_v2.py report` against a fresh, dataless system printed its existing all-zero report unchanged (exit 0, no new section, no crash) - confirming the fix is additive and inert until a real declining trend exists, the same check every prior "wire up a dead signal" checkpoint (50, 51, 52) has run before calling the change done.
+
+### ⚠️ Not a behavior change (for every agent that isn't declining)
+
+An agent whose recent quality is stable, improving, or who hasn't yet completed one full window (5 tasks) gets exactly the same recommendation list as before this fix - empty, or whatever the three pre-existing checks already produced. Only an agent whose last-5-vs-prior-5 average has dropped by more than 0.1 picks up the one new recommendation.
+
+### 📝 Next Steps
+
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open, per checkpoints 42-57.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-57.
+- **`departments.py`'s `create_department()`/`list_departments()` are dead code**, not a "computed value with no consumer" gap (no computation backs them - `create_department()` just writes to `config.json`, `list_departments()` just formats what's already printed differently by `main_v2.show_status()`). Worth a policy decision from the owner rather than a unilateral fix: either give the CLI/dashboard a real "add a department" path that calls `create_department()`, or remove the dead functions - both are reasonable, and this project's "leave policy questions to the owner" rule argues against guessing which.
+- **The CLI/web-consumer parity sweep checkpoint 57 proposed is now done** for `agent_decisions.py`, `departments.py`, and `performance.py` - all three came back either already-clean or (for `performance.py`) fixed today. The next session should either get an owner decision on one of the policy questions above, or pick a new file for the same sweep - `tools.py`, `llm_provider.py`, and `agent_loop.py` haven't had it applied yet.
+
+---
+
 # Daily Progress Report - October 5, 2026
 
 ## 📡 CHECKPOINT 57: STRATEGY.PY'S REALLOCATION SIGNAL HAD ZERO WEB CONSUMERS

@@ -250,6 +250,31 @@ class PerformanceAnalytics:
                     "action": f"Provide training or mentoring for {agent.name}"
                 })
 
+        # Check for declining quality trends. get_quality_trend() has existed
+        # on AgentMetrics since this file's early history and is exercised
+        # by nothing - not generate_report(), not this method, not any test
+        # or web consumer (confirmed: it's the only method in this module
+        # with zero callers anywhere in the codebase). It catches something
+        # avg_quality structurally cannot: avg_quality is an all-time mean,
+        # so an agent who was excellent for 20 tasks and has been sliding
+        # for their last 5 still shows a healthy average right up until the
+        # decline has already dragged it down - confirmed live with a
+        # 10-task series (4.8s dropping to ~3.0s) that averaged 3.88/5.0
+        # while get_quality_trend() already read -1.76 "declining". This is
+        # the earliest signal available, before success_rate or
+        # avg_duration_hours (the two axes already checked here and below)
+        # would ever catch the same agent.
+        for agent in self.agent_metrics.values():
+            trend, direction = agent.get_quality_trend()
+            if direction == "declining":
+                recommendations.append({
+                    "type": "quality_decline",
+                    "agent": agent.name,
+                    "issue": f"Quality trending down ({trend:+.1f} over recent tasks, "
+                             f"avg {agent.avg_quality:.1f}/5.0 doesn't show it yet)",
+                    "action": f"Review {agent.name}'s recent work for a cause before it shows up in the average"
+                })
+
         # Check for overworked agents
         for agent in self.agent_metrics.values():
             if agent.avg_duration_hours > 8:
