@@ -1,3 +1,50 @@
+# Daily Progress Report - October 7, 2026
+
+## 🧯 CHECKPOINT 59: AN LLM CALL THAT RAISED WAS STILL REPORTED "COMPLETED"
+
+**Session opened with the same git-state quirk flagged for the sixth session running (checkpoints 53-58)**: `git status` showed a clean tree, but `HEAD` was detached at `456cf65` (checkpoint 58's own pushed commit, matching `origin/main`) while the local `main` ref sat one commit behind at `8158a61`. Recovered the same way checkpoints 55/57 did - confirmed `456cf65` is a strict fast-forward of `main`, then `git checkout main && git merge --ff-only 456cf65`; no conflict possible, nothing lost. Sixth occurrence in a row; still worth container-level attention, still independently verified and recovered without losing work.
+
+Picked up checkpoint 58's own suggestion to continue the CLI/web-consumer parity sweep into `tools.py`, `llm_provider.py`, and `agent_loop.py`. All three came back clean on inspection - `tools.py`'s read-only tool set and `delegate_to` both have real, exercised callers; `agent_loop.py`'s `AgentRunResult` fields (`stopped_reason`, `tool_calls`, `successful_tool_calls()`) already reach `task_executor_v2.py`, which already reports them through to `main_v2.py` and `web_server.py` (checkpoint 53's own pass). Not today's bug family. But tracing how `llm_provider.py`'s `generate_with_tools()` is actually consumed in `task_executor_v2.py` surfaced a different, more serious gap in the same file this session was already reading.
+
+### 🐛 Proven live before touching anything
+
+`task_executor_v2.py`'s `DepartmentHeadAgent._run_locked()` wraps its entire LLM call (both the tool-calling branch and the `generate()` fallback for gemini/groq/nvidia) in one `try`/`except Exception`. The handler set `quality_score = 2.0` and emitted an `llm_error` event - and did nothing else. It never set `incomplete_reason`, the one variable the method's own tail end checks to decide between returning `status: "escalated"` and `status: "completed"`. So a provider that *raises* - a real Anthropic/OpenAI outage, "all models overloaded", a network error, anything `_call_anthropic_tools`/`_call_openai_tools` can throw rather than return - fell through to the "completed" branch, carrying whatever generic placeholder text `analysis` was initialized to at the top of the method (`"<Dept> team analyzed the task and produced a plan."`) as if it were real output. `grep -rn "llm_error" tests/` found nothing: this branch had never been exercised by any of the 51 existing test files. Confirmed live with a provider built to explode on `generate_with_tools()`, pre-fix:
+
+```
+status        : completed
+approved      : True
+quality_score : 2.0
+analysis      : Engineering team analyzed the task and produced a plan.
+used_tools    : True
+```
+
+A task where the LLM never returned anything, reported as completed and approved, with text implying analysis that never happened. The same bug family this codebase has now found and fixed five separate times (checkpoints 27, 28, 34, and 55/56 for workflow gates) - "unfinished work recorded as finished" - just left open for the specific case of the call raising outright instead of merely running out of road.
+
+### ✅ Fix
+
+- **`task_executor_v2.py`'s exception handler** now sets `incomplete_reason = f"the LLM call raised {type(e).__name__}: {e}"`, routing this case into the exact same escalation path `run.completed() is False` already uses for the iteration-exhaustion case - same accounting (budget charged and not refunded, workload released, `record_performance(success=False)`), same `status: "escalated"`/`approved: False` shape.
+- **`analysis` is overwritten to `"(none: the LLM call failed before producing output)"`** in this branch specifically, rather than left at its generic initial placeholder. Without this, the escalated return's own `f"Partial output: {analysis[:200]}"` text would have read as if the placeholder sentence were genuine partial model output - a smaller version of the same honesty gap this fix exists to close, and it would have shipped invisibly if only `incomplete_reason` had been added.
+
+### 🧪 Validation
+
+New `tests/test_llm_exception_escalates.py` (2 tests, isolated `AgentRegistry`/`BudgetManager`/`PerformanceAnalytics` per project convention): a provider that raises inside `generate_with_tools()` (the tool-calling path) and one that raises inside `generate()` (the gemini/groq/nvidia fallback path) both get `status: "escalated"`, `approved: False`, an analysis string naming the real error with no trace of the generic placeholder sentence, `metrics.error_rate == 1.0` (counts against the agent rather than inflating success), workload released back to 0, and the labor budget still charged and not refunded (the attempt really consumed staff time).
+
+Full 52-file suite (51 existing + this session's new file) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file including the new test. Also drove the real CLI (`submit`, `report`) end-to-end in an isolated temp directory with a copy of `config.json` - unaffected, since the mock provider this container actually runs never raises; this change is additive and only reachable on an actual provider exception, exactly as intended.
+
+### ⚠️ Not a behavior change (for every task where the LLM call doesn't raise)
+
+Nothing about the mock provider, the normal tool-calling loop, or any currently-passing path changed. This only changes what happens in the one branch that was previously unreachable in this container (no real API key is configured here) but is very much reachable in production the moment a real Anthropic/OpenAI key is in play and that provider has a bad moment.
+
+### 📝 Next Steps
+
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open, per checkpoints 42-58.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-58.
+- **The repeated git-state quirk at session start** - now six sessions in a row - still worth someone with container-level access looking into.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58. Policy question for the owner.
+- **The CLI/web-consumer parity sweep is now done** for `agent_decisions.py`, `departments.py`, `performance.py`, `tools.py`, `llm_provider.py`, and `agent_loop.py` - every file that sweep named has now been checked. The next session should either get an owner decision on one of the policy questions above, or look for a new gap the way checkpoints 45-59 each did: run the live system (a real exception path, a real concurrency scenario, a real malformed input) and look for a place a real computed value or stated invariant isn't actually enforced or isn't reaching one of its consumers.
+
+---
+
 # Daily Progress Report - October 6, 2026
 
 ## 📉 CHECKPOINT 58: A QUALITY TREND METHOD WITH ZERO CALLERS, ANYWHERE

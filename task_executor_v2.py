@@ -536,8 +536,22 @@ class DepartmentHeadAgent(BaseAgent):
                         "tool_calls": 0,
                     })
             except Exception as e:
+                # A provider raising (API outage, all models overloaded, a
+                # malformed response) is not a lower-quality answer - it is
+                # no answer at all. Falling through with the generic
+                # placeholder `analysis` set above and no incomplete_reason
+                # would report this task "completed"/"approved" with text
+                # that implies real analysis happened, which is the exact
+                # bug family (escalations recorded as done) checkpoints 27,
+                # 28, and 34 each closed one instance of - this was the
+                # instance left open for an outright exception, with no
+                # test ever having exercised this branch. Confirmed live:
+                # an exploding provider returned status="completed",
+                # approved=True, quality_score=2.0 pre-fix.
                 self._emit("llm_error", {"error": str(e), "provider": provider_used})
                 quality_score = 2.0
+                incomplete_reason = f"the LLM call raised {type(e).__name__}: {e}"
+                analysis = "(none: the LLM call failed before producing output)"
 
         duration = time.time() - start  # wall-clock time of this call - near-instant for a mock LLM
         mock_cost = tokens_used * 0.00001
