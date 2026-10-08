@@ -339,11 +339,16 @@ class DepartmentHeadAgent(BaseAgent):
 
         # Staffing capacity is informational for now (there's no cross-department
         # rerouting yet), but a stretched-thin department should show up in traces.
+        # "Stretched thin" is CapacityManager.is_over_capacity()'s own threshold
+        # check (0.85 by default, the same one recommend_actions() uses) - previously
+        # computed nowhere this trace could use it, leaving a reader to re-derive the
+        # threshold from the raw utilization number instead of being told outright.
         capacity = self.capacity_manager.snapshot(self.department)
         self._emit("capacity_check", {
             "utilization": capacity.utilization_pct(),
             "agent_count": capacity.agent_count,
-            "slack": capacity.slack()
+            "slack": capacity.slack(),
+            "over_capacity": self.capacity_manager.is_over_capacity(self.department)
         })
 
         decision_info = self.decide_on_task(task, estimated_hours=estimated_hours)

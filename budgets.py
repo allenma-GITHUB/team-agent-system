@@ -264,7 +264,10 @@ class CapacityManager:
             if snap.agent_count == 0:
                 continue
             util = snap.utilization_pct()
-            if util >= over_threshold:
+            # is_over_capacity() already encodes this exact threshold check;
+            # before this fix it had no caller anywhere (including tests) and
+            # this method re-derived the comparison by hand instead of using it.
+            if self.is_over_capacity(dept, over_threshold):
                 recommendations.append({
                     "type": "hiring_needed",
                     "department": dept,

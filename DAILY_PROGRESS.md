@@ -1,3 +1,57 @@
+# Daily Progress Report - October 8, 2026
+
+## 📊 CHECKPOINT 60: is_over_capacity() GETS ITS FIRST REAL CALLERS
+
+**Session opened with the same git-state quirk flagged for the seventh session running (checkpoints 53-59)**: `git status` showed a clean tree, but `HEAD` was detached at `03d0f47` (checkpoint 59's own pushed commit, matching `origin/main`) while the local `main` ref sat two commits behind at `8158a61`. Recovered the same way checkpoints 55/57/59 did - confirmed `main` is a strict ancestor of `HEAD` (`git merge-base --is-ancestor`), then `git checkout main && git merge --ff-only 03d0f47`, then `git fetch origin main` to confirm `origin/main` matches exactly. No conflict possible, nothing lost. Seventh occurrence in a row; still worth container-level attention.
+
+Continued checkpoint 59's own suggestion to keep looking for a place a real computed value isn't reaching a consumer, this time in `budgets.py` (not yet swept this way).
+
+### 🐛 Proven live before touching anything
+
+`budgets.py`'s `CapacityManager.is_over_capacity(department, threshold=0.85)` is a one-line, correct threshold check (`snapshot(department).utilization_pct() >= threshold`) that has existed since this file's first commit. `grep -rn "is_over_capacity" .` turns up exactly one line in the whole repository: the method's own definition - not `main_v2.py`, not `web_server.py`, not `task_executor_v2.py`, not one of the 52 existing test files. The same "real computation, zero callers" shape checkpoint 58 found in `performance.py`'s `get_quality_trend()`, now in `budgets.py`.
+
+Two consequences, confirmed live before writing a fix:
+
+```
+registry: one agent, max_concurrent_tasks=2, current_workload=2  (100% booked)
+cap.utilization_pct()      -> 1.0
+cap.is_over_capacity('swamped')  -> True          <- the dedicated check, unused
+cap.recommend_actions()    -> [{'type': 'hiring_needed', ...}]   <- re-derives `util >= over_threshold` by hand
+```
+
+`recommend_actions()` needed exactly this comparison and reimplemented it inline instead of calling the method built for it - a real coupling this project's "pin couplings that span modules" rule would normally cover, left unpinned because nothing ever called the method it should have deferred to. Separately, `task_executor_v2.py`'s `_run_locked()` already has a comment reading "a stretched-thin department should show up in traces," and already emits a `capacity_check` event on every run (`utilization`, `agent_count`, `slack`) - but never the threshold verdict itself, so a trace reader (the CLI's `bus.print_trace()`, which does ship this event to the terminal on every `submit`/`process`) had to re-derive "stretched thin" from a raw percentage rather than being told outright, by code that already knows the answer:
+
+```
+# pre-fix capacity_check event for a department at 90% utilization
+{'utilization': 0.9, 'agent_count': 1, 'slack': 1}   # no verdict, despite one existing
+```
+
+### ✅ Fix
+
+- **`budgets.py`: `CapacityManager.recommend_actions()`** now calls `self.is_over_capacity(dept, over_threshold)` for its `hiring_needed` gate instead of a second, independent `util >= over_threshold`. Same output shape and thresholds as before (default `0.85`); the only change is that the one method built for this check now actually gets called.
+- **`task_executor_v2.py`: the `capacity_check` event** gains an `"over_capacity"` field, computed the same way (`self.capacity_manager.is_over_capacity(self.department)`), fulfilling the comment already sitting above it rather than leaving a reader to compute the threshold themselves.
+
+### 🧪 Validation
+
+New `tests/test_capacity_threshold_wiring.py` (2 tests): one pins that `recommend_actions()` and `is_over_capacity()` can no longer disagree, checked right at a threshold boundary (0.75) in both directions, so a future edit to either one's comparison alone would break this test; the other drives a real `DepartmentHeadAgent.run()` for a department at 90% utilization and one at 0%, and asserts the `capacity_check` trace's `over_capacity` field matches `is_over_capacity()` exactly in both directions. The over-capacity case is built at 9/10 concurrent tasks rather than fully booked - fully booked also crosses `should_execute()`'s separate 80% "prefer to delegate" threshold (`agent_decisions.py`), which is a different, already-correct code path with its own trace shape; 90% with slack keeps this test about the `capacity_check` field, not about delegation.
+
+Full 53-file suite (52 existing + this session's new file) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. Also drove the real CLI (`submit`, `process`, `report`) end-to-end in an isolated temp directory with a copy of `config.json`: the printed trace now shows `over_capacity` on every `capacity_check` line, and a normal low-utilization task still gets exactly the same `underutilized` recommendation as before - confirming the change is additive, not a behavior change for the common case.
+
+### ⚠️ Not a behavior change
+
+Every department that isn't at or above 85% utilization gets exactly the same `recommend_actions()` output as before. The only new user-visible surface is the `over_capacity` boolean in the `capacity_check` trace event, which the CLI already prints verbatim - no new UI, no new route, no change to what gets executed, delegated, or billed.
+
+### 📝 Next Steps
+
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open, per checkpoints 42-59. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-59. Policy question for the owner.
+- **The repeated git-state quirk at session start** - now seven sessions in a row - still worth someone with container-level access looking into.
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** (`approve_decision()`/`resolve_conflict()`) is only ever exercised by `tests/test_agent_decisions.py` - no production code path (`task_executor_v2.py`, `workflows.py`, `main_v2.py`) constructs it. It may be superseded by `budgets.py`'s own, differently-named `BudgetManager.approve_decision()` (which `task_executor_v2.py` does call) rather than simply unwired - worth checking git history for when that split happened before deciding whether to wire it up or remove it, per this project's "leave policy questions to the owner" rule for a dead-vs-superseded call either way.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58.
+- The next session should either get an owner decision on one of the policy questions above, or look for a new gap the way checkpoints 45-60 each did: run the live system and look for a place a real computed value or stated invariant isn't actually enforced or isn't reaching one of its consumers.
+
+---
+
 # Daily Progress Report - October 7, 2026
 
 ## 🧯 CHECKPOINT 59: AN LLM CALL THAT RAISED WAS STILL REPORTED "COMPLETED"
