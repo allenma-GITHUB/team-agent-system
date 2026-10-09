@@ -1,3 +1,54 @@
+# Daily Progress Report - October 9, 2026
+
+## 🤝 CHECKPOINT 61: TRUST_SCORE WAS READ ON EVERY DELEGATION, WRITTEN BY NONE
+
+**Session opened with the same git-state quirk flagged for the eighth session running (checkpoints 53-60)**: `git status` showed a clean tree, but `HEAD` was detached at `8d5e4b3` (checkpoint 60's own pushed commit, matching `origin/main`) while the local `main` ref sat three commits behind at `8158a61`. Recovered the same way checkpoints 55/57/59/60 did - confirmed `main` is a strict ancestor of `HEAD`, then `git checkout main && git merge --ff-only 8d5e4b3`, then `git fetch origin main` to confirm `origin/main` matches exactly (`8d5e4b3` both sides). Eighth occurrence in a row; still worth container-level attention, still independently verified and recovered without losing work.
+
+### 📎 Closed out checkpoint 60's open research question first
+
+Checkpoint 60 flagged `agent_decisions.py`'s `OrganizationDecisionMaker` (`approve_decision()`/`resolve_conflict()`) as possibly superseded rather than simply unwired, and asked for a git-history check before anyone decided whether to wire it up or remove it. That check is now done: `agent_decisions.py` (with this class) was added by the owner in `d894e20` (Sept 8), and its `approve_decision()` computes `estimated_cost` with a comment that says outright `# mock cost`. `budgets.py`'s `BudgetManager.approve_decision()` - the one `task_executor_v2.py:388` actually calls for every approval-required decision in production - was added two commits later in `9676694` (Sept 10) with a real cost formula (`estimated_hours * cost_per_hour`) tied to the real department budget. So this is confirmed superseded, not merely never-wired: a mock placeholder was left in place after a real implementation replaced it elsewhere under a different name. `resolve_conflict()` has no architecture hook to speak of either - `task_executor_v2.py`'s `decide_on_task()` constructs exactly one `DecisionResult` per task via `AgentDecisionEngine.decide()`, and nothing in the current delegation model (single department head per task, sequential hand-offs) ever produces two independent decisions on the same context that would need reconciling. Recording the finding here rather than acting on it unilaterally - checkpoint 60 named this a policy call either way ("leave policy questions to the owner"), and that framing doesn't change just because the archaeology is now done; it just means the owner can decide without redoing it. Still open for the owner: wire a real conflict scenario into `resolve_conflict()`, or delete both methods and their dedicated coverage in `tests/test_agent_decisions.py`.
+
+### 🐛 Proven live before touching anything
+
+`agent_decisions.py`'s `AgentDecisionEngine.find_best_delegate()` has ranked delegate candidates on five factors since Phase 1 - skill match, skill-breadth coverage, task-type affinity, workload, and (`rank_candidate()`'s own comment) "5. Trust score with delegator", reading `self.agent.relationships.get(candidate_id).trust_score`. `agent_state.py`'s `AgentState.update_trust_with_agent()` is the *only* method anywhere that can move a `RelationshipScore.trust_score` off its hardcoded `0.5` default. `grep -rn "update_trust_with_agent" .` turns up exactly two lines: the method's own definition, and one call inside `tests/test_agent_decisions.py` exercising it in isolation. Not `task_executor_v2.py`'s delegation dispatch, not anywhere else - the one path in the whole system that actually sees a delegation happen, and come back, never told the trust model about it.
+
+Confirmed live with a direct repro before writing any fix - two real `DepartmentHeadAgent`s wired through a real `TaskExecutor`, engineering forced to dislike its own task type so every task delegates to design, five consecutive *real, successful* delegations run end to end:
+
+```
+Before any delegation:        engineering_head.relationships = {}
+delegation 0..4: status=completed executed_by=design_head quality=4.0   (all five succeed)
+After 5 real, successful delegations to design_head:
+  engineering_head.relationships = {}   <- still empty. trust_score for design_head is
+                                            STILL the hardcoded 0.5 default, unmovable.
+```
+
+Five for five successful hand-offs to the same delegate, and the ranking formula's own "trust score with delegator" term could not tell that delegate apart from one that had never been tried, or one that had failed every time - because nothing fed it anything to tell them apart with. The consumer side (`rank_candidate()`'s `trust * 0.05` term) was already correct when given real relationship data - confirmed separately by constructing two otherwise-identical candidates with manually-set high vs. low trust and seeing `find_best_delegate()` correctly prefer the trusted one - so this was purely a missing producer, the inverse shape of most of this project's "computed value, no consumer" bugs: here the consumer existed and the producer never ran.
+
+### ✅ Fix
+
+**`task_executor_v2.py`'s `DepartmentHeadAgent._dispatch_delegation()`**, right after `target.run(...)` returns and before the result's hand-off bookkeeping, now calls `self.agent_state.update_trust_with_agent(target_id, 0.1 if delegation_succeeded else -0.1)`, where `delegation_succeeded` is `result["status"] == "completed" and result.get("quality_score", 0) >= 3.0` - the exact same completed-and-quality-≥3.0 bar `_run_locked()` already uses a few lines earlier for its own `learn_preference()` self-affinity update, just applied to the delegate's outcome instead of the delegator's own. This is the one place in the codebase that actually observes how a real delegation came back, so it is the only correct place to feed that outcome into the trust model `find_best_delegate()` already reads.
+
+### 🧪 Validation
+
+New `tests/test_delegation_trust_feedback.py` (3 tests, isolated `AgentRegistry`/`BudgetManager`/`PerformanceAnalytics` per project convention, reusing `tests/test_delegation.py`'s executor-construction pattern): a real successful delegation raises `design_head`'s trust above 0.5 with `collaboration_count == 1`, and a second successful delegation raises it further still (captured as a plain float before the second call, not a lingering reference into the same mutated `RelationshipScore` object - the first version of this test passed its own first assertion and then failed the second for exactly that reason, caught before the test was trusted); a delegation the delegate's own department cannot afford (zero budget, so the delegate's `request_expense()` denies it and the task comes back `escalated`) lowers trust below 0.5; and a third test drives `find_best_delegate()` directly with two otherwise-identical candidates differing only in accumulated trust, confirming the now-real trust signal actually changes who gets picked, not just that a number moves.
+
+Full 54-file suite (53 existing + this session's new file) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. Also drove the real CLI (`submit`, `process`, `report`) end-to-end in an isolated temp directory with a copy of `config.json`, for two tasks that don't trigger delegation: output is byte-for-byte the same shape as every prior checkpoint's CLI drive - trace events, report sections, and dollar figures all unaffected, confirming the change is additive and reachable only on the one path (a real delegation hand-off) this checkpoint touches.
+
+### ⚠️ Not a behavior change (for every task that doesn't delegate)
+
+A task an agent executes itself is untouched - `update_trust_with_agent()` is only ever called from inside `_dispatch_delegation()`, which only runs when a real hand-off to another department's agent actually happens. `find_best_delegate()`'s ranking formula and weights are unchanged; the only thing that changed is that its trust term now has real data to read instead of a frozen constant.
+
+### 📝 Next Steps
+
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - confirmed superseded this session (see above). Owner decision still needed: wire `resolve_conflict()` into a real multi-decision scenario, or remove both methods and their dedicated test coverage.
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open, per checkpoints 42-60. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-60. Policy question for the owner.
+- **The repeated git-state quirk at session start** - now eight sessions in a row - still worth someone with container-level access looking into.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58.
+- The next session should either get an owner decision on one of the policy questions above, or look for a new gap the way checkpoints 45-61 each did: run the live system and look for a place a real computed value or stated invariant isn't actually enforced or isn't reaching one of its consumers - or, as today's checkpoint found, a place a real consumer isn't actually hearing from its producer.
+
+---
+
 # Daily Progress Report - October 8, 2026
 
 ## 📊 CHECKPOINT 60: is_over_capacity() GETS ITS FIRST REAL CALLERS

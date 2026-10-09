@@ -317,6 +317,26 @@ class DepartmentHeadAgent(BaseAgent):
         })
 
         result = target.run(task, estimated_hours, delegation_chain=new_chain)
+
+        # agent_decisions.py's rank_candidate() has weighed trust_score as one
+        # of find_best_delegate()'s five ranking factors since Phase 1 - but
+        # RelationshipScore.trust_score only ever moves via
+        # update_trust_with_agent(), and nothing on this path (or anywhere
+        # else in production) ever called it: confirmed live by running five
+        # real, successful delegations to the same delegate and finding
+        # self.agent_state.relationships still empty afterward, so trust was
+        # stuck at the hardcoded 0.5 default for every candidate, forever -
+        # an inert 5% term that could never actually distinguish a reliable
+        # delegate from an unreliable one. This is the one place in the
+        # codebase that knows how a real delegation turned out, so it's the
+        # only correct place to feed that back. Same completed+quality>=3.0
+        # bar as learn_preference()'s self-affinity update just above in
+        # _run_locked(), applied to the delegate instead of the delegator.
+        delegation_succeeded = (
+            result.get("status") == "completed" and result.get("quality_score", 0) >= 3.0
+        )
+        self.agent_state.update_trust_with_agent(target_id, 0.1 if delegation_succeeded else -0.1)
+
         # The delegate's own result stands as the record of who did the work;
         # these fields record that a hand-off happened and who made it.
         #
