@@ -157,6 +157,17 @@ class DepartmentHeadAgent(BaseAgent):
         complexity = DepartmentManager.estimate_complexity(task)
         approval_level = DepartmentManager.approval_level_for_complexity(complexity)
 
+        # Urgency is now read from the task too, for the same reason
+        # complexity is: should_execute() was just fixed to read
+        # context.urgency on its near-full branch, but every task handed it
+        # a hardcoded 0.5 - a lone constant that branch's own "urgent" check
+        # (>= 0.5) could never distinguish from an actually-urgent task
+        # using the same number. estimate_urgency()'s DEFAULT_URGENCY is
+        # that same 0.5, so a task with no urgency language still behaves
+        # exactly as before; only a task whose wording says "urgent"/"ASAP"
+        # or "whenever"/"no rush" now diverges from that default.
+        urgency = DepartmentManager.estimate_urgency(task)
+
         # required_skills now comes from the task text itself
         # (DepartmentManager.infer_required_skills), not from this agent's
         # own expertise_areas. The previous version copied the deciding
@@ -189,7 +200,7 @@ class DepartmentHeadAgent(BaseAgent):
             task_type=self.department,
             required_skills=required_skills,
             complexity=complexity,
-            urgency=0.5,
+            urgency=urgency,
             estimated_hours=estimated_hours,
             required_approval_level=approval_level
         )

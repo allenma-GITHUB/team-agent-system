@@ -71,9 +71,21 @@ class AgentDecisionEngine:
         if affinity < -0.5:
             return False
 
-        # Neutral: decide based on workload and urgency
+        # Neutral: decide based on workload and urgency. Getting full alone
+        # used to always delegate, regardless of context.urgency - the field
+        # existed, every caller populated it, and this comment already
+        # claimed the branch read it, but nothing ever did (confirmed live:
+        # a near-full agent delegated identically at urgency 0.1 and 0.9).
+        # 0.5 is this field's own documented neutral point (the default
+        # every real task currently passes), so treating >= 0.5 as "urgent
+        # enough to delegate" keeps that existing, always-0.5 production
+        # path delegating exactly as before - only a caller that actually
+        # differentiates urgency (today: tests; later: a real deadline
+        # signal) can now get a different answer.
         if self.agent.current_workload >= self.agent.profile.max_concurrent_tasks * 0.8:
-            return False  # Getting full, delegate if urgent
+            if context.urgency >= 0.5:
+                return False  # Full and urgent: hand off to someone with room
+            return True  # Full but not urgent: no rush, finish it myself
 
         return True  # Moderate preference + available = execute
 

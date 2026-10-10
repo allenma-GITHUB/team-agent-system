@@ -1,3 +1,57 @@
+# Daily Progress Report - October 10, 2026
+
+## ⏱️ CHECKPOINT 62: SHOULD_EXECUTE() CLAIMED TO READ URGENCY. IT DID NOT.
+
+**Session opened with the same git-state quirk flagged for the ninth session running (checkpoints 53-61)** - `git status` showed a clean tree, but `HEAD` was detached at `0b8f5b3` (checkpoint 61's own commit) while the local `main` ref sat four commits behind at `8158a61`, the furthest behind this quirk has left `main` yet (checkpoints 55-61 each found it one to three commits behind). `git fetch origin main` confirmed `origin/main` already matched `HEAD` exactly - checkpoint 61's commit had made it to the remote, only the local `main` ref and the checkout were stale. Recovered the same way as every prior occurrence: confirmed `main` is a strict ancestor of `HEAD` (`git merge-base --is-ancestor`), then `git checkout main && git merge --ff-only 0b8f5b3`. No conflict possible, nothing lost. Ninth occurrence in a row, now with a bigger gap than before - still worth container-level attention.
+
+### 🐛 Proven live before touching anything
+
+`agent_decisions.py`'s `DecisionContext` has declared `urgency: float  # 0-1 scale (deadline pressure)` since Phase 1, and `AgentDecisionEngine.should_execute()`'s neutral-affinity branch has carried this exact comment the whole time:
+
+```python
+# Neutral: decide based on workload and urgency
+if self.agent.current_workload >= self.agent.profile.max_concurrent_tasks * 0.8:
+    return False  # Getting full, delegate if urgent
+```
+
+The comment states outright that this branch reads urgency. `grep -rn "urgency" --include=*.py .` across the whole repo turned up exactly one reader candidate (this branch, which doesn't actually reference `context.urgency` anywhere) and a pile of writers: `task_executor_v2.py:192` hardcoded `urgency=0.5` for every real task, and every one of seven test files that builds a `DecisionContext` passes a value (`test_agent_decisions.py` even sets `0.8` for a "major architecture redesign" scenario) without ever asserting it changes anything - because it couldn't.
+
+Confirmed live with a direct repro before writing any fix: a single agent at 4/5 workload (80%, the exact threshold), otherwise identical task, differing only in `urgency`:
+
+```
+near-full, LOW urgency (0.1)  -> should_execute = False
+near-full, HIGH urgency (0.9) -> should_execute = False
+```
+
+Identical outcome at both ends of the scale - the "urgent" term the comment describes could not move the decision by definition, because the code never looked at it.
+
+### ✅ Fix (two parts - a consumer that reads nothing is unobservable without a producer that varies)
+
+1. **`agent_decisions.py`'s `should_execute()`** near-full branch now checks `context.urgency`: `>= 0.5` delegates (hand off to someone with room), `< 0.5` executes anyway (no rush, finish it myself). `0.5` is deliberately this field's own documented neutral point and the exact value every real task was already hardcoded to - so a caller that still hands it the old default (every task, until part 2) keeps delegating exactly as before. Only a task whose wording actually differs from neutral can get a different answer. This branch is untouched outside the near-full condition - with capacity to spare, urgency still plays no role, by design (`should_execute()`'s own existing affinity branches handle that).
+2. **`departments.py`'s new `estimate_urgency()`**, mirroring the existing `estimate_complexity()`/`estimate_hours()` pattern exactly (same coarse keyword-tier approach, same disclaimer that it's a starting signal and not a real deadline): `HIGH_URGENCY_KEYWORDS` ("urgent", "asap", "emergency", "critical", "outage", "blocking", "hotfix", "deadline", ...) → 0.9, `LOW_URGENCY_KEYWORDS` ("whenever", "no rush", "low priority", "someday", "not urgent", ...) → 0.2, otherwise `DEFAULT_URGENCY` → 0.5. Without this, fix 1 alone could never fire for a real submitted task - only for a test that builds a `DecisionContext` by hand - because the one real caller never varied the number it was reading. `task_executor_v2.py`'s `decide_on_task()` now calls it instead of hardcoding `0.5`, the same change `estimate_complexity()` already made for `complexity` in an earlier checkpoint.
+
+### 🧪 Validation
+
+New `tests/test_urgency_wiring.py` (3 tests): pins `estimate_urgency()`'s three tiers and that `DEFAULT_URGENCY` sits exactly on the `>= 0.5` line `should_execute()` now checks (so the two files can't silently drift apart, the same coupling discipline `test_decision_inputs.py` already applies to the complexity tiers); drives `should_execute()` directly at both 4/5 and 0/5 workload to confirm urgency only ever matters on the near-full branch; and an end-to-end test through a real `DepartmentHeadAgent.decide_on_task()` with a real, available second agent registered as a delegate candidate - a near-full agent now **executes** "Clean up some old comments, whenever, no rush" itself, still **delegates** "Review the standard onboarding checklist" exactly as before (no urgency keyword, same old behavior), and **delegates** "Production outage, fix this ASAP" - three different outcomes driven by nothing but task wording, through the real production call path, not a hand-built `DecisionContext`.
+
+Full 55-file suite (54 existing + this session's new file) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. Also drove the real CLI (`submit`, `process`, `report`) end-to-end on an ordinary, non-near-full task in an isolated temp directory with a copy of `config.json`: output is the same shape as every prior checkpoint's CLI drive, confirming the ordinary path (not near-full) is unaffected.
+
+### ⚠️ Behavior change, scoped precisely
+
+This changes real behavior for real tasks, not just test-constructed ones - worth calling out per the project's own convention. But only on the narrow intersection of two conditions that must both hold: an agent already at ≥80% of its own `max_concurrent_tasks`, AND a task description containing one of the low- or high-urgency keyword lists above. Outside that intersection - any agent with capacity to spare, or any near-full agent whose task uses neither keyword list - behavior is identical to every prior checkpoint, by construction (`DEFAULT_URGENCY == 0.5` reproduces the old hardcoded value and its old always-delegate outcome exactly).
+
+### 📝 Next Steps
+
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open, per checkpoints 42-61. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-61. Policy question for the owner.
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - confirmed superseded (checkpoint 61). Owner decision still needed: wire `resolve_conflict()` into a real multi-decision scenario, or remove both methods and their dedicated test coverage.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58.
+- **The repeated git-state quirk at session start** - now nine sessions in a row, and today's gap was the widest yet (four commits) - still worth someone with container-level access looking into.
+- **`workflows.py`'s `WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`** - declared with real, already-chosen defaults (60 min, retry on, 2 retries) and consulted nowhere; `execute_step()` marks a step ESCALATED unconditionally on an escalated result, regardless of `retry_on_failure`. Spotted while researching today's fix but deliberately not taken today - unlike `urgency`, this needs a real design decision (what "retry" means operationally: re-run via the executor, how many times, what counts as a timeout with no wall-clock tracking on `WorkflowInstance` today) rather than a single-method wiring fix. Good candidate for the next session.
+- The next session should either get an owner decision on one of the policy questions above, or take the `WorkflowStep` retry/timeout gap just above, or look for a new gap the way checkpoints 45-62 each did.
+
+---
+
 # Daily Progress Report - October 9, 2026
 
 ## 🤝 CHECKPOINT 61: TRUST_SCORE WAS READ ON EVERY DELEGATION, WRITTEN BY NONE

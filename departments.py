@@ -39,6 +39,33 @@ HIGH_COMPLEXITY = 0.9
 DEFAULT_COMPLEXITY = 0.5
 LOW_COMPLEXITY = 0.2
 
+# Urgency tiers for estimate_urgency(). Same coarse keyword approach as the
+# complexity/effort tiers above, and the same caveat: a starting signal, not
+# a real deadline. Every task used to be handed a hardcoded urgency=0.5 -
+# DecisionContext.urgency was declared, populated by every caller, and
+# documented in agent_decisions.py's should_execute() as a decision input,
+# but nothing read it (confirmed live: a near-full agent delegated an
+# identical task at urgency 0.1 and 0.9). Fixing should_execute() to read
+# it needed a real, varying signal to read, not a lone constant - so these
+# tiers exist for the same reason the complexity ones do. Reuses the exact
+# complexity tier VALUES (0.9/0.5/0.2) for the >= 0.5 "urgent enough to
+# delegate" threshold should_execute() now checks: HIGH must clear it, LOW
+# must not, and DEFAULT (every task with no urgency keyword) sits exactly
+# on the boundary that already matched every real task's old hardcoded
+# behavior - so a task with no urgency language still delegates when full,
+# exactly as before.
+HIGH_URGENCY_KEYWORDS = [
+    "urgent", "asap", "emergency", "critical", "immediately", "outage",
+    "blocking", "right away", "hotfix", "deadline",
+]
+LOW_URGENCY_KEYWORDS = [
+    "whenever", "no rush", "low priority", "someday", "eventually",
+    "not urgent", "no hurry",
+]
+HIGH_URGENCY = 0.9
+DEFAULT_URGENCY = 0.5
+LOW_URGENCY = 0.2
+
 # Seniority a task's approver needs, by complexity tier. Compared against the
 # deciding agent's own skill_level in requires_approval(), so the same task
 # can need sign-off from a skill-3 support head and not from a skill-4
@@ -203,6 +230,26 @@ class DepartmentManager:
         if any(kw in desc_lower for kw in LOW_COMPLEXITY_KEYWORDS):
             return LOW_COMPLEXITY
         return DEFAULT_COMPLEXITY
+
+    @staticmethod
+    def estimate_urgency(description: str) -> float:
+        """Rough deadline pressure on a 0-1 scale, from the description.
+
+        Exists because every task was handed a hardcoded `urgency=0.5` -
+        see the tier comment above. Coarse on purpose, exactly like
+        estimate_complexity()/estimate_hours(): a real deadline would come
+        from a human or a task due-date, not from scanning prose for
+        adjectives. The point is that the number now varies with the task
+        at all, so should_execute()'s workload-vs-urgency branch has
+        something real to read.
+        """
+        desc_lower = description.lower()
+
+        if any(kw in desc_lower for kw in HIGH_URGENCY_KEYWORDS):
+            return HIGH_URGENCY
+        if any(kw in desc_lower for kw in LOW_URGENCY_KEYWORDS):
+            return LOW_URGENCY
+        return DEFAULT_URGENCY
 
     @staticmethod
     def approval_level_for_complexity(complexity: float) -> int:
