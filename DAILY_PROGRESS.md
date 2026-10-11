@@ -1,3 +1,60 @@
+# Daily Progress Report - October 11, 2026
+
+## ✅ CHECKPOINT 63: A WORKFLOW THAT FINISHED EVERY STEP STILL REPORTED "IN_PROGRESS" FOREVER
+
+**Session opened with the same git-state quirk flagged for the tenth session running (checkpoints 53-62)** - `git status` showed a clean tree, but `HEAD` was detached at `84c1f3e` (checkpoint 62's own commit) while the local `main` ref sat five commits behind at `8158a61` - the widest gap yet (checkpoint 62 itself was the previous record, at four). `git fetch origin main` confirmed `origin/main` already matched `HEAD` exactly - checkpoint 62's commit had reached the remote; only the local `main` ref and checkout were stale. Recovered the same way as every prior occurrence: `git checkout main && git merge --ff-only origin/main` (a clean fast-forward, no conflict possible, nothing lost). Tenth occurrence in a row, gap still growing - still worth someone with container-level access looking into.
+
+### Followed up on checkpoint 62's named next step, found something larger underneath it
+
+Checkpoint 62 flagged `workflows.py`'s `WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries` as a good candidate for this session, but also warned it needs real design decisions (what a retry means operationally, what a timeout means with no wall-clock tracking) rather than a single-method wiring fix. Before touching that, this session re-read the whole engine to scope the retry work properly - and ran a direct repro of the ordinary, non-retry, non-escalation path first, as a sanity check. That sanity check is what actually found this checkpoint's bug: it's not a retry-semantics gap, it's that a workflow which finishes cleanly, with no escalation or retry involved at all, never reports itself as finished.
+
+### 🐛 Proven live before touching anything
+
+`WorkflowEngine.check_complete()` is the only code in the entire engine that ever flips `WorkflowInstance.status` from `IN_PROGRESS` to `COMPLETED` (and sets `completed_at`). `grep -rn "check_complete" .` turns up its own definition and six call sites - every one of them inside `tests/`. Not `main_v2.py`'s `workflow complete`/`workflow next`/`workflow status` CLI commands, not `web_server.py`'s `build_workflows_payload()` (which just calls `get_status()` for the dashboard). The one method that performs the transition every other piece of code assumes happens automatically was only ever being called by tests that called it themselves.
+
+Confirmed live with a direct repro before writing any fix, driving a plain two-step workflow (no approval gates, no escalation - the ordinary case) through exactly the calls `workflow next` + `workflow complete` make:
+
+```
+step_statuses: {'a': 'completed', 'b': 'completed'}   <- every step genuinely done
+instance.status reported: in_progress                <- never flips
+completed_at: None                                    <- forever
+```
+
+A second, separate entry point had the identical gap for a different reason: `approve_step()`'s `approved=True` branch sets a step straight to `StepStatus.APPROVED` itself - it never calls `complete_step()`, so a workflow whose *last* step is approval-gated (the stock `feature_request` template's `launch`... no, `qa`/`launch`, and `bug_fix`'s `verify`/`deploy` sequence approves mid-chain, but any template ending on an approval step hits this) would never complete either, through a code path with no shared call site to patch once. Confirmed the same way: a workflow with `[plain step] -> [approval-gated final step]`, driven to `AWAITING_APPROVAL` then `approve_step(approved=True)`, stayed `in_progress` with `completed_at` still `None` after approval - the work was done and signed off, and the system still didn't know the workflow was over.
+
+Both gaps were end-to-end, not internal bookkeeping: `web_server.py`'s dashboard reads `get_status()` for exactly this field, so a real feature request or bug fix that finished every one of its steps through the real CLI would show as perpetually "in progress" on the dashboard, with no way to tell it apart from one that was still actually running.
+
+### ✅ Fix
+
+Two call sites, one line each - `check_complete()` already existed and already did the right thing; it just needed to be reached from the two places that can trigger a workflow's last transition:
+
+1. **`complete_step()`** now calls `self.check_complete(instance_id)` right after recording the step's result and clearing any stale error, covering both `execute_step()`'s production path and any direct `complete_step()` caller.
+2. **`approve_step()`**'s `approved=True` branch now calls `self.check_complete(instance_id)` right after setting `APPROVED` (and confirming the budget reservation) - covering the one transition `complete_step()`'s own hook can't see. The `approved=False` branch is untouched: rejecting a step `PAUSE`s the instance, which can never be "complete," so there's nothing to check there.
+
+`check_complete()` itself is unchanged - it already correctly refused to complete a workflow with any step still outstanding; it just needed real callers outside of tests.
+
+### 🧪 Validation
+
+New `tests/test_workflow_auto_completion.py` (4 tests): a plain two-step workflow reaches `status == "completed"` with `completed_at` set, driven only through `get_next_step()`/`execute_step()` - the real CLI's own calls, nothing test-only; a regression guard that completing only the *first* of two steps leaves the instance `in_progress` (so the fix can't have made `check_complete()` fire too eagerly); a workflow whose last step requires approval reaches `AWAITING_APPROVAL` after the work is done and *stays* `in_progress` until `approve_step(approved=True)` is called, at which point it auto-completes; and a final test that rejecting an approval-gated last step leaves the instance `paused`, never `completed`.
+
+Full 56-file suite (55 existing + this session's new file) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. Also drove the real CLI end-to-end in an isolated temp directory with a copy of `config.json`: started a `bug_fix` instance, ran `workflow complete` through `triage`/`fix`/`verify`, approved `verify` as `tech_lead`, ran `workflow complete deploy`, then `workflow status` - output now reads `Status: completed`, `Progress: 100%`, matching the live repro above exactly (pre-fix, the identical sequence left `Status: in_progress` forever). `tech_lead` isn't reachable through ordinary config-driven startup yet (checkpoints 42-62's own open item - see Next Steps), so this drive registered it directly in the temp `AgentRegistry`, the same way `tests/test_workflow_approval_role.py` already does, rather than exercising that separate, already-known gap.
+
+### ⚠️ Behavior change, called out per project convention
+
+Any workflow instance that finishes every one of its steps - through the CLI, the web dashboard's data, or a direct API caller - now actually transitions to `WorkflowStatus.COMPLETED` with a real `completed_at` timestamp, instead of sitting at `in_progress` forever once nothing test-only calls `check_complete()` for it. This is strictly a reporting correction, not a change to what gets executed, billed, or decided: no step runs differently, no budget charge changes, no approval requirement is added or removed. The only user-visible difference is that `workflow status`/the dashboard's `/api/workflows` now say "completed" at the moment a workflow genuinely is - which is what every existing caller (including the tests that already called `check_complete()` manually) already assumed was true.
+
+### 📝 Next Steps
+
+- **`workflows.py`'s `WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`** - still open, per checkpoint 62. Still needs the same real design decision before it's a single-method fix: what a retry means operationally (re-run via the executor, how many times, on what trigger - today the only way to re-attempt an escalated step is calling `workflow complete` again by hand, which `execute_step()` already permits unconditionally regardless of `retry_on_failure` or `max_retries`), and what a timeout means with no wall-clock tracking on `WorkflowInstance` today. Good candidate for the next session.
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open, per checkpoints 42-62. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-62; today's CLI validation ran directly into this gap (see Validation above) rather than resolving it.
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - confirmed superseded (checkpoint 61). Owner decision still needed: wire `resolve_conflict()` into a real multi-decision scenario, or remove both methods and their dedicated test coverage.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58.
+- **The repeated git-state quirk at session start** - now ten sessions in a row, and today's gap was the widest yet (five commits) - still worth someone with container-level access looking into.
+- The next session should either get an owner decision on one of the policy questions above, take the `WorkflowStep` retry/timeout gap just above, or look for a new gap the way checkpoints 45-63 each did.
+
+---
+
 # Daily Progress Report - October 10, 2026
 
 ## ⏱️ CHECKPOINT 62: SHOULD_EXECUTE() CLAIMED TO READ URGENCY. IT DID NOT.

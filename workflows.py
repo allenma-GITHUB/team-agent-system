@@ -299,6 +299,17 @@ class WorkflowEngine:
         # when it isn't.
         instance.error = None
         self.save()
+        # This step might be the last one the workflow needed - check_complete()
+        # is the only code that ever performs the in_progress -> completed
+        # transition, and nothing in production (main_v2.py's CLI, web_server.py's
+        # dashboard) ever called it; only tests did. Confirmed live before this
+        # fix: driving a two-step workflow end to end through get_next_step()/
+        # execute_step() - the exact path the CLI and dashboard use - left both
+        # steps COMPLETED but the instance permanently reporting status
+        # "in_progress" and completed_at None. Calling it here, right after the
+        # transition that could trigger it, makes this method's own docstring
+        # ("the authoritative state transition") actually true end to end.
+        self.check_complete(instance_id)
         return True
 
     def execute_step(self, instance_id: str, step_id: str, executor) -> bool:
@@ -440,6 +451,16 @@ class WorkflowEngine:
                 self.budget_manager.cancel_reservation(step.budget_dept(), reference)
 
         self.save()
+        if approved:
+            # An approval-gated step reaches APPROVED here directly, never
+            # through complete_step() - so it needs its own check_complete()
+            # call for the same reason complete_step() now does (see its
+            # comment above). Without this, a workflow whose *last* step
+            # requires approval would complete the moment it's approved but
+            # keep reporting "in_progress" forever, same bug, different entry
+            # point. Only on approval - a rejection PAUSEs the instance, which
+            # can never be "complete".
+            self.check_complete(instance_id)
         verb = "approved" if approved else "rejected"
         return True, f"Step {step_id} {verb} by {approver_id}"
 
