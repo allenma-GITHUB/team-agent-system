@@ -438,7 +438,7 @@ class DepartmentHeadAgent(BaseAgent):
             }
 
         # Check workload
-        self.agent_state.add_task()
+        self.agent_state.add_task(estimated_hours)
 
         prompt = (
             f"As the {self.department.title()} Head, analyze this task and provide "
@@ -516,7 +516,7 @@ class DepartmentHeadAgent(BaseAgent):
                         # uses. No performance/analytics are recorded here,
                         # matching the decision-engine delegate path: this
                         # agent didn't do the task, so it isn't scored on it.
-                        self.agent_state.remove_task()
+                        self.agent_state.remove_task(estimated_hours)
                         self.agent_state_registry.save()
                         return _DelegationRequest(
                             agent_id=f"{target_department}_head",
@@ -667,7 +667,7 @@ class DepartmentHeadAgent(BaseAgent):
         staff_count = DepartmentManager.get_staff_count(self.department)
 
         # Clean up workload
-        self.agent_state.remove_task()
+        self.agent_state.remove_task(estimated_hours)
         self.agent_state_registry.save()
 
         # An agent that ran out of iterations mid-thought has NOT done the

@@ -93,24 +93,51 @@ class AgentState:
     metrics: PerformanceMetrics = field(default_factory=PerformanceMetrics)
     relationships: Dict[str, RelationshipScore] = field(default_factory=dict)
     current_workload: int = 0  # number of active tasks
+    # Hours committed by those active tasks - kept in lockstep with
+    # current_workload (incremented in add_task(), released in remove_task())
+    # so is_available() can weigh a task's SIZE, not just whether another
+    # task slot is free. Like current_workload, this is a live in-flight
+    # total, not a true calendar-week accumulator: nothing resets it on a
+    # period boundary, because nothing records *when* in the week a task
+    # ran. That's an honest limitation, not the bug this checkpoint fixes -
+    # see is_available()'s docstring.
+    active_hours: float = 0.0
     learned_preferences: Dict[str, float] = field(default_factory=dict)  # task_type -> affinity
     availability_until: Optional[str] = None  # ISO timestamp when current tasks complete
 
     def is_available(self, task_hours: float) -> bool:
-        """Check if agent has capacity for new task."""
+        """Check if agent has capacity for new task.
+
+        `task_hours` was accepted and documented ("capacity for new task")
+        since this method was written, but the body never referenced it -
+        confirmed live: an agent with current_workload well under
+        max_concurrent_tasks reported available for a 1-hour task and a
+        10,000,000-hour task identically, because nothing ever compared
+        task_hours to anything. max_hours_per_week existed the whole time
+        as the field this should have been checked against, and was only
+        ever read here as a static on/off switch (<= 0), never as an actual
+        cap. Now a task that alone - or added to whatever this agent is
+        already carrying - would blow the weekly hour budget is correctly
+        reported unavailable, same as a task that would blow the concurrent-
+        task-count budget already was.
+        """
         if self.current_workload >= self.profile.max_concurrent_tasks:
             return False
         if self.profile.max_hours_per_week <= 0:
             return False
+        if self.active_hours + task_hours > self.profile.max_hours_per_week:
+            return False
         return True
 
-    def add_task(self):
-        """Increment current workload."""
+    def add_task(self, hours: float = 1.0):
+        """Increment current workload and the hours it commits."""
         self.current_workload = min(self.current_workload + 1, self.profile.max_concurrent_tasks)
+        self.active_hours += hours
 
-    def remove_task(self):
-        """Decrement current workload."""
+    def remove_task(self, hours: float = 1.0):
+        """Decrement current workload and release the hours it committed."""
         self.current_workload = max(self.current_workload - 1, 0)
+        self.active_hours = max(0.0, self.active_hours - hours)
 
     def record_performance(self, quality: float, hours: float, cost: float, success: bool = True):
         """Record task result in metrics."""
@@ -167,6 +194,7 @@ class AgentRegistry:
                         metrics=metrics,
                         relationships=relationships,
                         current_workload=agent_data.get("current_workload", 0),
+                        active_hours=agent_data.get("active_hours", 0.0),
                         learned_preferences=agent_data.get("learned_preferences", {}),
                         availability_until=agent_data.get("availability_until")
                     )
@@ -182,6 +210,7 @@ class AgentRegistry:
                 "metrics": asdict(state.metrics),
                 "relationships": {rel_id: asdict(rel) for rel_id, rel in state.relationships.items()},
                 "current_workload": state.current_workload,
+                "active_hours": state.active_hours,
                 "learned_preferences": state.learned_preferences,
                 "availability_until": state.availability_until
             }

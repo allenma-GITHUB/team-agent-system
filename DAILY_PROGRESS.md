@@ -1,3 +1,71 @@
+# Daily Progress Report - October 12, 2026
+
+## ✅ CHECKPOINT 64: is_available() ACCEPTED task_hours AND NEVER LOOKED AT IT
+
+**Session opened with the same git-state quirk flagged for the eleventh session running (checkpoints 53-63)** - `git status` showed a clean tree, but `HEAD` was detached at `0c2101f` (checkpoint 63's own commit) while the local `main` ref sat six commits behind at `8158a61` - the widest gap yet (checkpoint 63 itself was the previous record, at five). `git fetch origin main` confirmed `origin/main` already matched `HEAD` exactly - checkpoint 63's commit had reached the remote; only the local `main` ref and checkout were stale. Recovered the same way as every prior occurrence: confirmed `main` is a strict ancestor of `HEAD` (`git merge-base --is-ancestor`), then `git checkout main && git merge --ff-only origin/main` - a clean fast-forward, no conflict possible, nothing lost. Eleventh occurrence in a row, gap still growing - still worth someone with container-level access looking into.
+
+### Looked for a new gap the way checkpoints 45-63 each did
+
+Checkpoint 63's own Next Steps named three candidates for this session: `WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries` (needs a real design decision about what a retry/timeout means operationally - not a one-line fix), a real per-provider token-cost rate (policy question for the owner), and `departments.py`'s `create_department()`/`list_departments()` dead-code question (explicitly flagged at checkpoint 58 as a policy call - "either give the CLI/dashboard a real add-a-department path... or remove the dead functions... this project's 'leave policy questions to the owner' rule argues against guessing which"). None of those are a unilateral call for an unattended run to make, so this session swept the rest of the codebase for a new instance of the project's own signature bug family instead - a declared field or parameter that nothing real ever reads - the same way checkpoints 45-63 each found theirs.
+
+### 🐛 Proven live before touching anything
+
+`agent_state.py`'s `AgentState.is_available(task_hours: float) -> bool` has taken a `task_hours` parameter, documented as "Check if agent has capacity for new task," since Phase 1. The body never referenced it:
+
+```python
+def is_available(self, task_hours: float) -> bool:
+    """Check if agent has capacity for new task."""
+    if self.current_workload >= self.profile.max_concurrent_tasks:
+        return False
+    if self.profile.max_hours_per_week <= 0:
+        return False
+    return True
+```
+
+`max_hours_per_week` (a real `AgentProfile` field, default `40.0`, never overridden anywhere in `config.json` or in code - confirmed with `grep -rn "max_hours_per_week"`) sat right there as the field this should have been compared against, and was only ever read as a static on/off switch (`<= 0`), never as an actual cap. `grep -rln "is_available" tests/` turned up nothing - no test had ever exercised this method at all.
+
+Confirmed live with a direct repro before writing any fix: an agent at 1/5 workload (comfortably under `max_concurrent_tasks`), asked about tasks of wildly different sizes:
+
+```
+is_available(task_hours=1)           -> True
+is_available(task_hours=1000)        -> True
+is_available(task_hours=10,000,000)  -> True
+```
+
+Identical outcome at every scale - the parameter named for exactly this check could not, by construction, affect the result, because nothing in the method ever looked at it.
+
+### ✅ Fix (two parts, same shape as checkpoint 62's urgency fix - a producer and a consumer, both needed to make this observable outside a hand-built call)
+
+1. **`AgentState` gains `active_hours: float = 0.0`**, incremented by `add_task(hours)` and released by `remove_task(hours)` (both now take an optional `hours` parameter, default `1.0` for backward compatibility - no prior caller passed one). This mirrors `current_workload`'s own lifecycle exactly: a live in-flight total, not a true calendar-week accumulator - nothing resets it on a period boundary, because nothing records *when* in the week a task ran. That is an honest, documented limitation (see the comment on the field in `agent_state.py`), not a bug this checkpoint claims to close; a real weekly accumulator would need period-tracking this system doesn't have, which is itself a design question, not a one-line fix.
+2. **`is_available()`** now also rejects a task when `self.active_hours + task_hours > self.profile.max_hours_per_week`. `AgentRegistry.load()`/`save()` persist `active_hours` alongside `current_workload` for the same crash-recovery reason the latter is already persisted.
+3. **`task_executor_v2.py`**'s three call sites (`add_task()`/`remove_task()` at the start and end of `_run_locked()`, and the mid-run `remove_task()` on the tool-initiated delegation path) now pass the task's own `estimated_hours` - already in scope at every call site - instead of relying on the new default.
+
+`can_execute()` (the one real caller of `is_available()`, via `agent_decisions.py`) needed no changes: it already called `self.agent.is_available(context.estimated_hours)` correctly - it just handed a check that silently could not fail on hours alone.
+
+### 🧪 Validation
+
+New `tests/test_task_hours_capacity.py` (6 tests): pins the exact repro above now diverging (`is_available(10_000_000)` is `False`) and the boundary (`40.0` fits, `40.01` does not); `add_task()`/`remove_task()` keeping `active_hours` in lockstep, including that `remove_task()` floors at `0.0` the same way `current_workload`'s own `remove_task()` already does; `can_execute()` rejecting a 1000-hour task with the same "Insufficient capacity or workload limits" reason it already used for a workload-based rejection; `decide()` escalating (not silently executing) a 500-hour task for a lone agent with no registered delegate; a regression guard that every size `DepartmentManager.estimate_hours()` can actually produce (up to `HIGH_EFFORT_HOURS = 16.0`, well under the 40-hour default) stays unaffected; and an end-to-end run through the real `DepartmentHeadAgent.run()` - not a hand-built `DecisionContext` - showing a 2-hour task still completes and a 2000-hour task now comes back `escalated`.
+
+Full 58-file suite (57 existing + this session's new file) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. Also drove the real CLI end-to-end in an isolated temp directory with a copy of `config.json`: `submit "Rebuild the entire platform from scratch" --hours 2000` followed by `submit "Review a small config change" --hours 2`, then `process --sequential` - the 2000-hour task now reads `⚠ Task 0001 [ENGINEERING] escalated: ... Insufficient capacity or workload limits ... no suitable delegates available`, while the 2-hour task reads `✓ Task 0002 [ENGINEERING] completed`, matching the live repro above exactly (pre-fix, both would have completed identically).
+
+### ⚠️ Behavior change, scoped precisely
+
+This changes real behavior for real tasks, not just test-constructed ones. But only when a task's `estimated_hours` alone - or combined with whatever hours an agent already has active - would exceed `max_hours_per_week` (default `40.0`, never configured lower anywhere today). `DepartmentManager.estimate_hours()`'s own auto-estimate never exceeds `16.0`, so this cannot fire for any task that goes through the ordinary, no-`--hours`-flag submission path; it only reaches a real task today via an explicit `--hours`/`estimated_hours` override larger than the weekly cap, which previously executed (or delegated) exactly as if it were a normal-sized task. Outside that intersection, behavior is identical to every prior checkpoint, by construction (the new check is additive - `current_workload`'s own gate is untouched, and the hours gate was previously always-pass).
+
+### 📝 Next Steps
+
+- **A real weekly-hours accumulator** - today's fix makes `active_hours` track in-flight committed hours correctly, but it is not a true calendar-week total (nothing resets it on a period boundary, because nothing timestamps *when* in the week a task ran). Would need the same kind of period-tracking design decision as the token-cost-rate and workflow-retry items below - a reasonable next step, but a design question, not a one-line fix.
+- **`workflows.py`'s `WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`** - still open, per checkpoints 62-63. Still needs a real design decision (what a retry means operationally, what a timeout means with no wall-clock tracking on `WorkflowInstance` today).
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open, per checkpoints 42-63. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-63.
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - confirmed superseded (checkpoint 61). Owner decision still needed: wire `resolve_conflict()` into a real multi-decision scenario, or remove both methods and their dedicated test coverage.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58. Policy question for the owner.
+- **`agent_state.py`'s `AgentState.availability_until`** - newly noticed while reading this file for today's fix: declared, round-tripped through `load()`/`save()`, and documented as "ISO timestamp when current tasks complete," but nothing anywhere ever assigns it - unlike `is_available()`'s `task_hours`, there is no existing consumer claiming to read it either, so this is a true "never implemented" stub rather than a wired-but-dead signal. Setting it (e.g. in `add_task()`, using the same hours now threaded through) and giving it a real consumer (a delegate-ranking tiebreaker, or a "back in service at" field in reporting) is a reasonable, scoped candidate for a future session.
+- **The repeated git-state quirk at session start** - now eleven sessions in a row, gap still growing (six commits this time) - still worth someone with container-level access looking into.
+- The next session should either get an owner decision on one of the policy questions above, take the `availability_until` or weekly-accumulator gap just above, or look for a new gap the way checkpoints 45-64 each did.
+
+---
+
 # Daily Progress Report - October 11, 2026
 
 ## ✅ CHECKPOINT 63: A WORKFLOW THAT FINISHED EVERY STEP STILL REPORTED "IN_PROGRESS" FOREVER
