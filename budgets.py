@@ -253,6 +253,22 @@ class CapacityManager:
     def is_over_capacity(self, department: str, threshold: float = 0.85) -> bool:
         return self.snapshot(department).utilization_pct() >= threshold
 
+    def earliest_relief(self, department: str) -> Optional[str]:
+        """Earliest availability_until among the department's agents that
+        actually have one set (i.e. carry an active backlog right now), or
+        None if nobody in the department does - either because everyone is
+        idle, or because availability_until is a live projection (see
+        AgentState's own field comment) and nothing has moved it yet.
+        Deliberately omitted rather than guessed when unknown, same
+        absence-means-never-computed convention the rest of this project's
+        reporting already follows."""
+        timestamps = [
+            s.availability_until
+            for s in self.registry.all().values()
+            if s.profile.department == department and s.availability_until
+        ]
+        return min(timestamps) if timestamps else None
+
     def organization_report(self) -> Dict[str, CapacitySnapshot]:
         """Capacity snapshot for every department currently staffed."""
         return {dept: self.snapshot(dept) for dept in self.departments()}
@@ -268,12 +284,19 @@ class CapacityManager:
             # before this fix it had no caller anywhere (including tests) and
             # this method re-derived the comparison by hand instead of using it.
             if self.is_over_capacity(dept, over_threshold):
-                recommendations.append({
+                recommendation = {
                     "type": "hiring_needed",
                     "department": dept,
                     "issue": f"Utilization at {util:.0%} across {snap.agent_count} agents",
                     "action": f"Add headcount or redistribute work out of {dept}",
-                })
+                }
+                # Omitted, not guessed, when no agent in the department has
+                # an active backlog recorded yet - see earliest_relief()'s
+                # own comment on why this is a projection, not a real ETA.
+                relief = self.earliest_relief(dept)
+                if relief:
+                    recommendation["earliest_relief_at"] = relief
+                recommendations.append(recommendation)
             elif util <= under_threshold:
                 recommendations.append({
                     "type": "underutilized",

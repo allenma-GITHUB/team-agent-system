@@ -1,3 +1,54 @@
+# Daily Progress Report - October 13, 2026
+
+## 🕐 CHECKPOINT 65: AVAILABILITY_UNTIL GETS A PRODUCER AND A CONSUMER
+
+**Session opened with the same git-state quirk flagged for the twelfth session running (checkpoints 53-64)** - `git status` showed a clean tree, but `HEAD` was detached at `f6b0488` (checkpoint 64's own commit) while the local `main` ref sat seven commits behind at `8158a61` - the widest gap yet (checkpoint 64 itself was the previous record, at six). `git fetch origin main` confirmed `origin/main` already matched `HEAD` exactly - checkpoint 64's commit had reached the remote; only the local `main` ref and checkout were stale. Recovered the same way as every prior occurrence: confirmed `main` is a strict ancestor of `HEAD` (`git merge-base --is-ancestor`), then `git checkout main && git merge --ff-only origin/main` - a clean fast-forward, no conflict possible, nothing lost. Twelfth occurrence in a row, gap still growing - still worth someone with container-level access looking into.
+
+### Took checkpoint 64's own named candidate
+
+Checkpoint 64 flagged `agent_state.py`'s `AgentState.availability_until` while reading that file for an unrelated fix: declared since Phase 1, documented as "ISO timestamp when current tasks complete," round-tripped through `AgentRegistry.load()`/`save()` the whole time - but unlike this project's more common "wired but dead" bug shape, confirmed to have *no producer and no consumer at all*. `grep -rn "availability_until" --include=*.py .` turns up exactly three lines: the field's own declaration, and the two lines inside `load()`/`save()` that pass it through unchanged. Nothing anywhere ever assigns it, and nothing anywhere ever reads it for a decision. Checkpoint 64 named this "a reasonable, scoped candidate for a future session" rather than a policy question, so it didn't need an owner decision the way most of the other open items do.
+
+### 🐛 Proven live before touching anything
+
+Confirmed live with a direct repro: a brand-new `AgentState`, given real work through `add_task()` repeatedly (the same call `task_executor_v2.py` already makes on every real task), never moves `availability_until` off its `None` default - regardless of how much backlog the agent is carrying:
+
+```
+fresh agent:                       availability_until = None
+after add_task(10.0):              availability_until = None   <- should reflect ~10h of backlog
+after add_task(5.0) more (15h):    availability_until = None   <- still None
+```
+
+A second check: `budgets.py`'s `CapacityManager`, the one place in the codebase that already reports on department-wide staffing pressure (`is_over_capacity()`, `recommend_actions()`), has no way to say *when* an over-capacity department might have room again - every agent in a stretched-thin department could be carrying wildly different amounts of committed work, and nothing surfaced that difference anywhere.
+
+### ✅ Fix (producer and consumer, same two-part shape checkpoints 61/62/64 already established for this kind of gap)
+
+1. **`agent_state.py`'s `add_task()`/`remove_task()`** now call a new private `_refresh_availability_until()` after updating `active_hours`: `now + active_hours` (ISO-formatted) whenever there's an active backlog, `None` the instant `active_hours` drops back to `0.0` - mirroring `active_hours`' own floor in `remove_task()` exactly. This is a live projection recomputed fresh on every call, not a true calendar-aware ETA (nothing in this system timestamps *when* in the week a task actually started, the same honest limitation `active_hours` itself already documents) - the field's own comment states this plainly, per this project's "prefer an honest limitation to a convenient fiction" convention.
+2. **`budgets.py`'s `CapacityManager` gains `earliest_relief(department)`**: the minimum `availability_until` among that department's agents that actually have one set, or `None` if nobody does (either genuinely idle, or simply never routed a task through `add_task()` with real hours). **`recommend_actions()`**'s `hiring_needed` entries now include an `earliest_relief_at` key - but only when `earliest_relief()` returns something real; omitted, not guessed or zeroed, when it can't, following the same absence-means-never-computed convention `web_server.py`'s own task-summary comment already names for this exact reason (checkpoint 46/47).
+3. **`static/dashboard.html`**'s recommendations list renders `earliest_relief_at` as a formatted local time next to a `hiring_needed` row, when present - so the one new reporting signal this checkpoint adds is actually visible somewhere a person looks, not just reachable through a JSON endpoint nothing renders.
+
+### 🧪 Validation
+
+New `tests/test_availability_until.py` (5 tests): the repro above now diverging - `add_task()` sets `availability_until` to within a few seconds of `now + active_hours` (checked against the *cumulative* total across two calls, not just the latest call's own hours), and `remove_task()` floors it back to `None` exactly when `active_hours` reaches `0.0`, not before; a `save()`/`load()` round-trip now carries a real, non-`None` value (the existing plumbing was already correct - this just exercises it with real data for the first time); `earliest_relief()` returns `None` for a department that's over capacity by slot count alone but has no agent with real backlog data, and `recommend_actions()` omits `earliest_relief_at` entirely in that case rather than fabricating one; `earliest_relief()` picks the *minimum* across two agents with deliberately different backlogs (2h vs. 20h) and `recommend_actions()` carries that exact value through; and an end-to-end run through a real `DepartmentHeadAgent.run()` - not a hand-built `AgentState` - showing a real task sets `availability_until` while in flight and clears it back to `None` once `_run_locked()`'s own `remove_task()` releases the hours it reserved, on both the success and escalation exit paths.
+
+Full 59-file suite (58 existing + this session's new file) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. Also drove the real CLI end-to-end in an isolated temp directory with a copy of `config.json`: `submit "Review a small config change" --hours 2` followed by `process --sequential` and `status` - output is byte-for-byte the same shape as every prior checkpoint's CLI drive, confirming the ordinary path (no department over capacity) is completely unaffected, since `recommend_actions()` and its new field are reached only through `/api/report`, which this drive doesn't call.
+
+### ⚠️ Not a behavior change for task execution or decisions
+
+Nothing about whether a task executes, delegates, or escalates changes - `availability_until` has no reader anywhere in the decision path (`is_available()`, `should_execute()`, `find_best_delegate()` are all untouched). This is purely a new, additive reporting signal: a field that silently did nothing now populates itself and shows up as an optional key on one recommendation type, visible on the dashboard, with no existing caller's output shape altered when the new field doesn't apply (every hand-rolled dict checkpoints 55-64 ever asserted on gains at most one new optional key, never loses or renames one).
+
+### 📝 Next Steps
+
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open, per checkpoints 42-64. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-64. Policy question for the owner.
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - confirmed superseded (checkpoint 61). Owner decision still needed: wire `resolve_conflict()` into a real multi-decision scenario, or remove both methods and their dedicated test coverage.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58. Policy question for the owner.
+- **`workflows.py`'s `WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`** - still open, per checkpoints 62-64. Still needs a real design decision (what a retry means operationally, what a timeout means with no wall-clock tracking on `WorkflowInstance` today).
+- **A real weekly-hours accumulator** - `active_hours` (checkpoint 64) and now `availability_until` both track in-flight committed hours correctly, but neither is a true calendar-week total (nothing resets on a period boundary, because nothing timestamps *when* in the week a task ran). Same design-question shape as the items above.
+- **The repeated git-state quirk at session start** - now twelve sessions in a row, gap still growing (seven commits this time) - still worth someone with container-level access looking into.
+- The next session should either get an owner decision on one of the policy questions above, or look for a new gap the way checkpoints 45-65 each did.
+
+---
+
 # Daily Progress Report - October 12, 2026
 
 ## ✅ CHECKPOINT 64: is_available() ACCEPTED task_hours AND NEVER LOOKED AT IT

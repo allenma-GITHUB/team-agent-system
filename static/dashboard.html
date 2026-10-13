@@ -434,7 +434,17 @@ async function loadReport() {
   const report = await api("/api/report");
   const recs = [...report.recommendations, ...report.capacity_recommendations];
   $("#recs-list").innerHTML = recs.length
-    ? recs.map(r => `<li><strong>${r.agent || r.department}</strong>: ${r.issue} — <span class="muted">${r.action}</span></li>`).join("")
+    ? recs.map(r => {
+        // earliest_relief_at is a live projection (now + an agent's
+        // currently committed hours, assuming no interruptions) - present
+        // only on hiring_needed recommendations, and only when at least one
+        // agent in the department actually has a backlog to project from.
+        // See CapacityManager.earliest_relief()'s own comment.
+        const relief = r.earliest_relief_at
+          ? ` <span class="muted">(earliest relief: ${new Date(r.earliest_relief_at).toLocaleString()})</span>`
+          : "";
+        return `<li><strong>${r.agent || r.department}</strong>: ${r.issue} — <span class="muted">${r.action}</span>${relief}</li>`;
+      }).join("")
     : `<li class="empty">No recommendations right now.</li>`;
 
   // report.system/report.top_performers are the same cumulative

@@ -6,7 +6,7 @@ import json
 import threading
 from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # Base hourly compensation by agent_type, before the skill_level multiplier.
@@ -103,7 +103,14 @@ class AgentState:
     # see is_available()'s docstring.
     active_hours: float = 0.0
     learned_preferences: Dict[str, float] = field(default_factory=dict)  # task_type -> affinity
-    availability_until: Optional[str] = None  # ISO timestamp when current tasks complete
+    # ISO timestamp when current tasks complete. Recomputed from active_hours
+    # on every add_task()/remove_task() as "now + active_hours", the same
+    # honest-projection shape active_hours itself documents: it assumes this
+    # agent works its current backlog with no interruptions starting this
+    # instant, not a real calendar/queue-aware ETA (nothing here tracks when
+    # in the week a task actually started). None means no outstanding
+    # backlog - there is nothing to be "available until".
+    availability_until: Optional[str] = None
 
     def is_available(self, task_hours: float) -> bool:
         """Check if agent has capacity for new task.
@@ -130,14 +137,29 @@ class AgentState:
         return True
 
     def add_task(self, hours: float = 1.0):
-        """Increment current workload and the hours it commits."""
+        """Increment current workload and the hours it commits, and refresh
+        availability_until to match (see its own field comment for exactly
+        what the projection does and doesn't mean)."""
         self.current_workload = min(self.current_workload + 1, self.profile.max_concurrent_tasks)
         self.active_hours += hours
+        self._refresh_availability_until()
 
     def remove_task(self, hours: float = 1.0):
-        """Decrement current workload and release the hours it committed."""
+        """Decrement current workload and release the hours it committed,
+        and refresh availability_until to match."""
         self.current_workload = max(self.current_workload - 1, 0)
         self.active_hours = max(0.0, self.active_hours - hours)
+        self._refresh_availability_until()
+
+    def _refresh_availability_until(self):
+        """Recompute availability_until from the current active_hours total.
+        None (no outstanding backlog) once active_hours drops back to zero -
+        see the field's own comment for why this is a live projection, not a
+        real calendar-aware ETA."""
+        if self.active_hours <= 0:
+            self.availability_until = None
+        else:
+            self.availability_until = (datetime.utcnow() + timedelta(hours=self.active_hours)).isoformat()
 
     def record_performance(self, quality: float, hours: float, cost: float, success: bool = True):
         """Record task result in metrics."""
