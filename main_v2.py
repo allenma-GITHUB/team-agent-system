@@ -232,6 +232,8 @@ def show_task(task_id: str):
         if result.get('used_tools'):
             print(f"  Tool Calls: {result.get('tool_calls', 0)} "
                   f"({result.get('tool_calls_failed', 0)} failed)")
+            for err in result.get('tool_call_errors', []):
+                print(f"    ✗ {err['tool']}: {err['error']}")
         if result.get('delegation_chain'):
             print(f"  Delegation Chain: {' -> '.join(result['delegation_chain'])}")
         if result.get('delegation_declined'):

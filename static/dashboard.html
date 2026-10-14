@@ -384,6 +384,11 @@ function renderTaskDetail(task) {
     }
     if (result.used_tools) {
       extra.push(`<dt>Tool Calls</dt><dd>${result.tool_calls || 0} (${result.tool_calls_failed || 0} failed)</dd>`);
+      if (result.tool_call_errors && result.tool_call_errors.length) {
+        extra.push(`<dt>Tool Errors</dt><dd>${
+          result.tool_call_errors.map(e => `${escapeHtml(e.tool)}: ${escapeHtml(e.error)}`).join("<br>")
+        }</dd>`);
+      }
     }
     if (result.delegation_chain) {
       extra.push(`<dt>Delegation Chain</dt><dd>${result.delegation_chain.map(escapeHtml).join(" → ")}</dd>`);

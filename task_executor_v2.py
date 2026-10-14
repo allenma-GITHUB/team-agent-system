@@ -462,6 +462,13 @@ class DepartmentHeadAgent(BaseAgent):
         used_tools = False
         tool_calls_made = 0
         tool_calls_failed = 0
+        # Which tool failed and why - run.tool_calls already carries this
+        # (ToolCallRecord.name/.error) but was only ever reduced to the bare
+        # count above, so "a hallucinated tool name" and "a malformed
+        # argument" both looked identical from outside this method: just a
+        # failed-count going up by one. Populated below, alongside
+        # tool_calls_failed, from the same loop over run.tool_calls.
+        tool_call_errors = []
         # Set when the agent stopped without finishing. Checked after the
         # bookkeeping below, which must happen either way - an unfinished
         # run still consumed budget, workload and tokens.
@@ -528,6 +535,10 @@ class DepartmentHeadAgent(BaseAgent):
                     provider_used = run.provider
                     tool_calls_made = len(run.tool_calls)
                     tool_calls_failed = tool_calls_made - run.successful_tool_calls()
+                    tool_call_errors = [
+                        {"tool": call.name, "error": call.error}
+                        for call in run.tool_calls if not call.ok
+                    ]
 
                     # quality_score is NOT a quality measurement and never has
                     # been - it was a hardcoded 4.0 for "the HTTP call didn't
@@ -696,6 +707,7 @@ class DepartmentHeadAgent(BaseAgent):
                 "used_tools": used_tools,
                 "tool_calls": tool_calls_made,
                 "tool_calls_failed": tool_calls_failed,
+                "tool_call_errors": tool_call_errors,
             }
 
         return {
@@ -713,6 +725,7 @@ class DepartmentHeadAgent(BaseAgent):
             "used_tools": used_tools,
             "tool_calls": tool_calls_made,
             "tool_calls_failed": tool_calls_failed,
+            "tool_call_errors": tool_call_errors,
             "metrics": {
                 "avg_quality": self.agent_state.metrics.avg_quality_score,
                 "tasks_completed": self.agent_state.metrics.tasks_completed,

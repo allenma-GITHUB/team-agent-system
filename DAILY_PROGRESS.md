@@ -1,3 +1,58 @@
+# Daily Progress Report - October 14, 2026
+
+## 🧰 CHECKPOINT 66: A FAILED TOOL CALL WAS COUNTED, NEVER NAMED
+
+**Session opened with a clean git state** - `git status` clean, `HEAD` attached to `main`, `main` matching `origin/main` exactly (`b8223a4`, checkpoint 65's own pushed commit). No recovery step needed, unlike the twelve-session-long quirk checkpoints 53-65 each flagged.
+
+### Swept the files checkpoint 58 named as not yet having had the CLI/web-consumer parity pass applied
+
+Checkpoint 58's own Next Steps named three files for this specific audit - "a real, computed value with zero consumers, the same bug family as `get_quality_trend`" - and left two of them unswept: `tools.py`, `llm_provider.py`, and `agent_loop.py`. Reading `agent_loop.py` first (the smallest of the three, and the one `task_executor_v2.py` actually calls into on every real task) is what turned up this checkpoint's bug. Along the way, `core.py` also turned up a *different*-shaped gap - `agent_registry`/`skill_registry` (a class-registration `Registry`, distinct from `agent_state.py`'s same-named `AgentRegistry`) has a real consumer (`task_executor_v2.get_agent_for_department()`'s override check) but **zero** producers anywhere in the repo, including every test file - `grep -rn "@agent_registry.register\|@skill_registry.register"` returns nothing at all. That's checkpoint 58's *other* bucket - dead code with no computation behind it, not "real value, no consumer" - so, per that same checkpoint's precedent (`departments.py`'s `create_department()`/`list_departments()`), it's recorded below as a policy question rather than unilaterally fixed or deleted.
+
+### 🐛 Proven live before touching anything
+
+`agent_loop.py`'s `run_agent_loop()` builds a full `ToolCallRecord` (`name`, `arguments`, `ok`, `error`) for every tool call a model makes - including failed ones, by design: the module's own docstring says a tool the model asked for three times that doesn't exist "is exactly the signal that tells you a tool's description is wrong, and it's invisible if only successes are kept." But `task_executor_v2.py`'s `_run_locked()` reduced that whole list down to two bare integers (`tool_calls`, `tool_calls_failed`) before any of it left the method - the per-call detail was real, computed, and then discarded.
+
+Confirmed live with a direct repro before writing any fix - a scripted provider that asks for `get_quarterly_forecast` (a plausible-sounding tool name that doesn't exist), then answers from the registry's own error message fed back to it:
+
+```
+status: completed
+tool_calls: 1  failed: 1
+result keys: [... 'tool_calls', 'tool_calls_failed', ... ]   <- no field names the tool, or the reason
+Is there ANY field saying which tool failed or why? -> False
+```
+
+The task completes, the dashboard would show "Tool Calls: 1 (1 failed)", and that is the entire signal available anywhere - CLI, dashboard, or `tasks.json` - for which tool, and why. Exactly the invisibility `agent_loop.py`'s own docstring warned about, still live.
+
+### ✅ Fix
+
+1. **`task_executor_v2.py`**: alongside the existing `tool_calls_failed = tool_calls_made - run.successful_tool_calls()` computation, a new `tool_call_errors = [{"tool": call.name, "error": call.error} for call in run.tool_calls if not call.ok]` - same loop, same data, just kept instead of reduced away. Added to **both** result dicts that can carry tool-call information: the `completed` return, and the `escalated` return used when the agent runs out of iterations mid-loop (a run can fail some tool calls and *still* never finish - both are real signals). The pre-execution escalation paths (decision-engine escalation, budget denial) are untouched and still return their minimal dict with no tool-related keys at all - same absence-means-never-ran contract `used_tools`/`tool_calls` already established (checkpoint 46/47).
+2. **`main_v2.py`**'s `show_task()` prints one `✗ {tool}: {error}` line per failure, right under the existing `Tool Calls: N (M failed)` line - inert (prints nothing extra) when the list is empty, which is every task today except one deliberately constructed to fail.
+3. **`static/dashboard.html`**'s task detail view adds a `Tool Errors` row under the same `Tool Calls` block, only when the list is non-empty - each tool name and error code passed through `escapeHtml()`, same as every other dynamic field this view renders (a tool name here is model-generated text that reaches `innerHTML`, not a trusted constant, so this follows `test_dashboard_html_wires_up_the_task_detail_view_safely()`'s existing rule rather than being a new exception to it).
+
+### 🧪 Validation
+
+New `tests/test_tool_call_errors_surfaced.py` (5 tests, self-contained per project convention - its own `ScriptedToolProvider`/`AlwaysWantsToolsProvider` doubles rather than importing another test file's): the repro above now diverging (`tool_call_errors == [{"tool": "get_quarterly_forecast", "error": "unknown_tool"}]`); an all-successful run gets `tool_call_errors == []` - present and empty, not absent, matching how `tool_calls_failed` itself is always present once `used_tools` is True; a task escalated before any LLM call (budget denial, zero allocated budget) carries none of `used_tools`/`tool_calls`/`tool_calls_failed`/`tool_call_errors` at all; a run that exhausts `AGENT_MAX_ITERATIONS` asking for a nonexistent tool the whole time still reports every one of those failures in the escalated result, even though the task itself never completed; and a direct read of `main_v2.py`/`static/dashboard.html`'s source confirming both new interpolations exist and the dashboard one is escaped.
+
+Full 59-file suite (58 existing + this session's new file) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. Also drove the real CLI end-to-end in an isolated temp directory with a copy of `config.json`: `submit "Review a small config change" --hours 2 --department engineering"` → `process --sequential` → `show 0001` - the ordinary, no-failure path prints the exact same `Tool Calls: 1 (0 failed)` line as every prior checkpoint, with no new `✗` line, confirming the fix is additive and silent until a real failure exists.
+
+### ⚠️ Not a behavior change for task execution or decisions
+
+Nothing about whether a task executes, completes, or escalates changes, and no existing field's value changes - this is purely additive detail on an already-computed signal. The only prior consumer of `run.tool_calls` beyond the two counts (the reversed-scan for a `delegate_to` call, `task_executor_v2.py`'s own `allow_delegation` branch) is untouched.
+
+### 📝 Next Steps
+
+- **`core.py`'s `agent_registry`/`skill_registry`** (the class-registration `Registry`, not `agent_state.py`'s same-named instance) - found while reading `core.py` for this checkpoint's fix. `task_executor_v2.get_agent_for_department()` genuinely checks it (`"Uses a registered override if one exists"`) and falls back to the generic `DepartmentHeadAgent` when it finds nothing - but nothing anywhere, including every test file, ever calls `.register()` on it, so the override branch is permanently dead and `skill_registry` has no consumer at all. Same shape as checkpoint 58's `departments.py` finding, not this project's "real value, no consumer" bug family: a policy decision for the owner (build a real specialized-subclass use case for it, or remove the unused registries and the dead branch) rather than a unilateral fix.
+- **A real per-provider token-cost rate**, replacing the hardcoded `$0.00001/token` placeholder - unchanged, still open, per checkpoints 42-65. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-65. Policy question for the owner.
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - confirmed superseded (checkpoint 61). Owner decision still needed: wire `resolve_conflict()` into a real multi-decision scenario, or remove both methods and their dedicated test coverage.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58. Policy question for the owner.
+- **`workflows.py`'s `WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`** - still open, per checkpoints 62-64. Still needs a real design decision.
+- **A real weekly-hours accumulator** - unchanged, still open, per checkpoint 65.
+- **The CLI/web-consumer parity sweep checkpoint 58 proposed is now fully done** for `tools.py`, `llm_provider.py`, and `agent_loop.py` - `agent_loop.py` is what turned up this checkpoint's bug. `llm_provider.py` came back clean (every public method has a real caller; `_mock_tool_response()`'s `flush_results()` is a local closure, not a dead method). `tools.py`'s only unused surface is `ToolRegistry.get(name)` - a thin accessor with no computation behind it (parallel to `core.py`'s own `Registry.get()`), not this bug family either.
+- The next session should either get an owner decision on one of the policy questions above, or look for a new gap the way checkpoints 45-66 each did.
+
+---
+
 # Daily Progress Report - October 13, 2026
 
 ## 🕐 CHECKPOINT 65: AVAILABILITY_UNTIL GETS A PRODUCER AND A CONSUMER

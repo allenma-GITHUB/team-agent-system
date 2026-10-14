@@ -18,6 +18,28 @@ reasoning rather than relitigated every week.
 
 ---
 
+## 2026-10-14 — Slice 3: Agent frameworks — org/budget/capacity modeling (NOTHING CHANGED)
+
+Least-recently-checked slice - never dedicated-checked before today (only the 2026-09-11 baseline sweep touched it in passing). Standing question: has anything appeared that actually models an org (departments, budgets, capacity) the way this project does?
+
+**Finding: still no.** No agent framework, open-source or otherwise, treats departments/budgets/capacity/staffing as first-class data. Checked against the baseline's named candidates plus 2026 activity:
+
+- **Microsoft Agent Framework** (MIT, 1.0 GA 2026-04-03) - AutoGen's successor; generic orchestration, no org-structure primitives.
+- **CrewAI** (MIT) - 1.15.x line through 2026-07-20 added a "skills" registry; role/goal/backstory is persona flavor, not org modeling.
+- **LangGraph** - unchanged from baseline (library MIT; `langgraph-api` server still Elastic 2.0 - the source-available trap flagged previously still applies).
+- **OpenAI AgentKit/Agents SDK** - visual builder plus sequential handoffs; no org concept. Swarm remains dead/archived.
+- **MetaGPT** (MIT; canonical repo moved `geekan/MetaGPT` → `FoundationAgents/MetaGPT`) - CEO/CTO/PM role-play models a dev team's SDLC, not departments/budgets/capacity.
+- **ChatDev** - moved to "ChatDev 2.0 / DevAll" (2026-01-07), now a general zero-code multi-agent platform; the original CEO/CTO virtual-software-company metaphor is frozen on a maintenance-only `chatdev1.0` branch.
+- **Anthropic Claude Agent SDK** - subagents/Agent Teams/hooks are generic, nestable orchestration primitives; no org/budget concept.
+
+Two 2026 research papers are the closest things in spirit, but neither is an adoptable framework and neither ships code: **CORPGEN** (Microsoft Research, arXiv:2602.14229, Feb 2026) - digital employees with persistent identity and daily/monthly plans, evaluated on OSWorld Office; no public code found. **MiniCorp** (arXiv listing, Oct 2026) - an office simulator pairing a market model with internal agents, checkpointed/replayable decisions; research-only, no code to evaluate for license or maintenance.
+
+**Confidence note:** several sources above (the MetaGPT repo-move date, some CrewAI/ChatDev specifics) came back via third-party aggregator/blog summaries rather than primary docs or changelogs, not confirmed against a primary source this pass - flagged here rather than upgraded to verified fact, per this log's own convention.
+
+**No action needed.** Nothing found changes the 2026-09-11 baseline conclusion. Zero-dependency stdlib-only stays the design regardless of findings, per project rule.
+
+---
+
 ## 2026-09-18 — Slice 2: MCP spec changes (NOTHING CHANGED)
 
 Least-recently-checked slice in the rotation - the baseline sweep (2026-09-11)
