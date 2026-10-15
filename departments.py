@@ -4,7 +4,7 @@ Department Management - Routing and department definitions.
 import json
 import re
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 # Keyword-based effort tiers for estimate_hours(). Deliberately coarse: this
 # is a starting default for --hours when a caller doesn't supply one, not a
@@ -301,6 +301,27 @@ class DepartmentManager:
         config = DepartmentManager.load_config()
         dept_config = config.get("departments", {}).get(department, {})
         return dept_config.get("staff", 5)
+
+    @staticmethod
+    def get_staff_range(department: str) -> Optional[Tuple[int, int]]:
+        """The [min, max] staffing band declared on this department's own
+        head config (e.g. "engineering_head": {"staff_range": [5, 15]}).
+
+        Declared on every built-in department head since this project's
+        very first commit (d894e20) and never read anywhere until now -
+        get_staff_count() returned departments.json's flat `staff` number
+        regardless of it. Looked up by convention (f"{department}_head",
+        the same id DepartmentHeadAgent.agent_id uses - see
+        get_agent_config()'s own docstring), not every department: a
+        custom one created via create_department(), or one with no
+        matching "agents" entry in config.json, has none - callers must
+        treat None as "no declared band," not as a band of [0, 0].
+        """
+        agent_config = DepartmentManager.get_agent_config(f"{department}_head")
+        if not agent_config or "staff_range" not in agent_config:
+            return None
+        low, high = agent_config["staff_range"]
+        return int(low), int(high)
 
     @staticmethod
     def get_monthly_budget(department: str) -> float:

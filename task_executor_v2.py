@@ -12,6 +12,7 @@ from departments import DepartmentManager
 from agent_state import agent_registry as _default_agent_state_registry, AgentState, AgentProfile
 from agent_decisions import AgentDecisionEngine, DecisionContext
 from budgets import budget_manager as _default_budget_manager, capacity_manager as _default_capacity_manager
+from budgets import CapacitySnapshot
 from performance import analytics as _default_analytics
 from tools import build_readonly_registry, build_delegation_tool
 from agent_loop import run_agent_loop
@@ -362,6 +363,48 @@ class DepartmentHeadAgent(BaseAgent):
         result.setdefault("delegation_reasoning", request.reasoning)
         return result
 
+    def _effective_staff_count(self, capacity: CapacitySnapshot) -> int:
+        """How many staff this task's simulated staff_contributions should
+        show - config.json's flat departments.<dept>.staff number, flexed
+        within this department head's own declared staff_range band
+        (agents.<dept>_head.staff_range, e.g. [5, 15] for engineering) by
+        how booked that department's real registered agents are right now.
+
+        staff_range has been declared since this project's very first
+        commit and had zero consumers anywhere - get_staff_count() always
+        returned the flat config number regardless of load. Confirmed live
+        before this fix: an idle department and one at 90% utilization
+        produced the exact same staff_contributions count.
+
+        The flat number is kept as the pivot, not discarded: at exactly
+        50% utilization this returns precisely what get_staff_count()
+        always has, so a department sitting at its "normal" load looks
+        the same as before. Only above or below that midpoint does it
+        flex proportionally toward the declared ceiling or floor, clamped
+        so it can never leave the explicit band the department head's own
+        config declares. A department with no declared staff_range (a
+        custom one created via create_department(), or a built-in one
+        missing an "agents" entry) falls back to the flat number
+        unchanged, same as before this fix existed.
+
+        This is a simulation knob, not a literal headcount prediction -
+        nothing here tracks real hiring/firing, same honest-projection
+        caveat active_hours/availability_until already document for their
+        own corner of this system.
+        """
+        baseline = DepartmentManager.get_staff_count(self.department)
+        staff_range = DepartmentManager.get_staff_range(self.department)
+        if not staff_range or staff_range[1] <= staff_range[0]:
+            return baseline
+
+        low, high = staff_range
+        utilization = capacity.utilization_pct()
+        if utilization >= 0.5:
+            scaled = baseline + (high - baseline) * ((utilization - 0.5) / 0.5)
+        else:
+            scaled = baseline - (baseline - low) * ((0.5 - utilization) / 0.5)
+        return max(low, min(high, round(scaled)))
+
     def _run_locked(self, task: str, estimated_hours: float = 1.0,
                     chain: tuple = (), allow_delegation: bool = True,
                     **kwargs) -> Dict[str, Any]:
@@ -675,7 +718,7 @@ class DepartmentHeadAgent(BaseAgent):
             "workload": self.agent_state.current_workload
         })
 
-        staff_count = DepartmentManager.get_staff_count(self.department)
+        staff_count = self._effective_staff_count(capacity)
 
         # Clean up workload
         self.agent_state.remove_task(estimated_hours)

@@ -1,3 +1,61 @@
+# Daily Progress Report - October 15, 2026
+
+## 👥 CHECKPOINT 67: staff_range HAS EXISTED SINCE THE FIRST COMMIT, READ BY NOTHING
+
+**Session opened with the same git-state quirk flagged for the thirteenth session running (checkpoints 53-66)** - `git status` showed a clean tree, but `HEAD` was detached at `b0c9b69` (checkpoint 66's own commit) while the local `main` ref sat one commit behind. `git fetch origin main` confirmed `origin/main` already matched `HEAD` exactly - checkpoint 66's commit had reached the remote; only the local `main` ref and checkout were stale. Recovered the same way as every prior occurrence: confirmed `main` is a strict ancestor of `HEAD`, then `git checkout main && git merge --ff-only origin/main` - a clean fast-forward. Thirteenth occurrence in a row - still worth someone with container-level access looking into, but no longer growing (gap back down to one, the smallest since checkpoint 53).
+
+### Looked for a new gap the way checkpoints 45-66 each did
+
+Checkpoint 66's own Next Steps named five policy questions (`core.py`'s dead `agent_registry`/`skill_registry`, the token-cost placeholder, `product_head`/`finance_head` placeholders, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`) and two design questions (`WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`, a real weekly-hours accumulator) - none a unilateral call for an unattended run, per this project's "leave policy questions to the owner" rule. Swept `budgets.py`, `workflows.py`, `performance.py`, `agent_decisions.py`, `agent_state.py`, `core.py`, `strategy.py`, and `tools.py` for a new instance of this project's own signature bug instead - a declared field or parameter nothing real ever reads. All eight came back clean (every public method traced to a real caller in `main_v2.py`, `web_server.py`, or another module - the two thin accessors with only test callers, `performance.py`'s `get_department_metrics()` and `core.py`'s `Registry.get()`, are the same harmless shape as `tools.py`'s already-noted `ToolRegistry.get()`, not this bug family).
+
+`config.json` itself turned up the gap: every built-in department head's entry (`engineering_head`, `design_head`, `research_head`, `support_head`, `sales_head`, `product_head`, `finance_head`) declares a `staff_range` - e.g. `"staff_range": [5, 15]` for engineering. `git log --all -S "staff_range" --oneline -- "*.py"` returns **nothing at all** - unlike this project's more common "wired but dead" shape, this field has never had a single line of Python reference it, in any commit, since `d894e20` (Phase 1's very first commit). `grep -rn "staff_range" --include=*.py --include=*.html .` confirms the same for the current tree: zero matches outside `config.json`'s own JSON.
+
+### 🐛 Proven live before touching anything
+
+`departments.py`'s `get_staff_count(department)` is the one place `DepartmentHeadAgent` learns how many staff to show as having contributed to a completed task (`task_executor_v2.py`'s `staff_contributions` list, which becomes `execution_steps`/`staff_count` once `TaskExecutor.execute()` wraps it - the exact keys `main_v2.py`'s `show_task()` and `static/dashboard.html`'s task detail view already render). It reads only `departments.<dept>.staff`, a flat number - never `staff_range`. Confirmed live: the same freshly-registered engineering department, run once idle (0% utilization) and once at 90% utilization, produced the identical `staff_contributions` count both times:
+
+```
+idle run staff_contributions: 5
+90%-utilization run staff_contributions: 5
+Identical regardless of load: True
+```
+
+despite `engineering_head`'s own config declaring a `[5, 15]` staffing band for exactly this kind of signal.
+
+### ✅ Fix (a producer and a consumer, same shape checkpoints 61/62/64/65 established for this kind of gap)
+
+1. **`departments.py` gains `get_staff_range(department) -> Optional[Tuple[int, int]]`**: looks up the matching `"{department}_head"` agents entry (the same convention `get_agent_config()`'s own docstring already names) and returns its declared `staff_range`, or `None` when no such entry or key exists - never a fabricated `[0, 0]`. A custom department created via `create_department()`, or a built-in one missing an `agents` entry, correctly gets `None`.
+2. **`task_executor_v2.py`'s `DepartmentHeadAgent` gains `_effective_staff_count(capacity)`**: the flat `get_staff_count()` baseline stays the pivot - at exactly 50% utilization this returns precisely what the flat number always was, so a department at its "normal" load looks the same as before. Above or below that midpoint, it scales proportionally toward the declared ceiling or floor, clamped so it can never leave the band `staff_range` itself declares. A department with no declared range falls back to the flat baseline unchanged, same as before this fix existed. The utilization input is the exact `CapacitySnapshot` already computed earlier in `_run_locked()` for the `capacity_check` trace - no second, independent capacity read.
+3. **`_run_locked()`'s staff_count line** now calls `self._effective_staff_count(capacity)` instead of `DepartmentManager.get_staff_count(self.department)` directly.
+
+This is deliberately a simulation knob, not a literal headcount prediction - documented in `_effective_staff_count()`'s own docstring with the same honest-projection caveat `active_hours`/`availability_until` already carry for their own corner of this system.
+
+### 🧪 Validation
+
+New `tests/test_staff_range_wiring.py` (4 tests): `get_staff_range()` reads the real declared band for engineering (`(5, 15)`) and returns `None` for an undeclared department; `_effective_staff_count()` in isolation (hand-built `CapacitySnapshot`s, no LLM run needed) confirms the no-declared-range fallback, the exact-50%-reproduces-baseline pivot, and clamping to the floor/ceiling at 0%/100% utilization; a real `DepartmentHeadAgent.run()` through engineering shows a different `staff_contributions` count idle vs. at 90% utilization, bounded by the declared range in both directions - the exact repro this checkpoint's fix closes; and `TaskExecutor.execute()`'s `staff_count`/`execution_steps` keys (what the CLI and dashboard actually read) carry the same scaled count through automatically, with no separate wiring needed.
+
+One test-isolation trap surfaced and got fixed while writing these: an early draft registered a second, idle agent in the *shared* module-level registry just to test the "no declared range" fallback. Once engineering was later driven to 90% utilization in a different test, `should_execute()`'s near-full-and-urgent branch correctly wanted to delegate, and `find_best_delegate()` found that leftover idle agent as a candidate - silently routing the task to the WRONG department and invalidating the test's premise (the symptom looked identical to the original bug: an unchanged staff count). Fixed by giving that one sub-test its own fully isolated registry/budget/capacity instances, per this project's own "tests inject isolated managers" convention - not by special-casing the production delegation logic, which was behaving correctly throughout.
+
+Full 60-file suite (59 existing + this session's new file) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. Also drove the real CLI end-to-end in an isolated temp directory with a copy of `config.json`: `submit "Fix a small typo in the README" --hours 1 --department engineering"` → `process --sequential` → `show 0001` - a fresh, idle engineering department prints exactly 5 "Staff Contributions" lines, byte-for-byte the same as every prior checkpoint's CLI drive, confirming the ordinary (0% utilization) path is unaffected.
+
+### ⚠️ Behavior change, flagged per project convention
+
+This **does** change what an ordinary task reports, not just how it's computed - any department with a declared `staff_range` (all seven built-in heads) now shows a `staff_contributions`/`execution_steps` count that varies with that department's real registered-agent workload instead of a frozen constant, the moment utilization moves away from exactly 50%. A department sitting idle with a baseline above its own declared floor (e.g. design: baseline 5, range `[3, 8]`) now reports as low as 3 staff at 0% utilization, where it always reported 5 before. No other field, decision, execution, or escalation path changes - `is_available()`, `should_execute()`, `find_best_delegate()`, budget/capacity checks are all untouched; this is additive detail on one already-computed, already-rendered signal.
+
+### 📝 Next Steps
+
+- **`core.py`'s `agent_registry`/`skill_registry`** - unchanged, still open, per checkpoint 66. Policy question for the owner.
+- **A real per-provider token-cost rate** - unchanged, still open, per checkpoints 42-66. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-66. Policy question for the owner.
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - unchanged, still open, per checkpoint 61.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58. Policy question for the owner.
+- **`workflows.py`'s `WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`** - unchanged, still open, per checkpoints 62-64.
+- **A real weekly-hours accumulator** - unchanged, still open, per checkpoint 65.
+- **The repeated git-state quirk at session start** - thirteenth session in a row, though the gap stopped growing this time (one commit, down from checkpoint 66's own record of seven) - still worth someone with container-level access looking into.
+- The next session should either get an owner decision on one of the policy questions above, or look for a new gap the way checkpoints 45-67 each did.
+
+---
+
 # Daily Progress Report - October 14, 2026
 
 ## 🧰 CHECKPOINT 66: A FAILED TOOL CALL WAS COUNTED, NEVER NAMED
