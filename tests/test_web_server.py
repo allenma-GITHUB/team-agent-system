@@ -526,6 +526,30 @@ def test_report_payload_resources_reflect_real_budget_and_capacity_after_a_task_
         assert isinstance(resources["over_budget_departments"], list)
 
 
+def test_report_payload_resources_include_expense_breakdown_after_a_task_runs():
+    """Checkpoint 68: get_resource_summary() has always shipped `resources`
+    in /api/report (the test above pins `budget`/`capacity_utilization`),
+    but nothing summed a department's spend by category - `expense_log`
+    (budgets.py) logged a real "labor" ExpenseRecord on every task's
+    budget check from the start, with zero readers anywhere outside
+    budgets.py's own persistence and tests. expense_breakdown() finally
+    sums it; this proves the new key reaches the same endpoint the
+    existing resources test above already checks, with a real nonzero
+    "labor" total after one real task runs."""
+    print_section("15b. /api/report's resources Carry A Real expense_breakdown")
+
+    with RunningServer() as server:
+        server.post("/api/submit", {"description": "Investigate a checkout error", "department": "engineering"})
+        server.post("/api/process", {})
+
+        status, report = server.get("/api/report")
+        breakdown = report["resources"]["expense_breakdown"]
+        print(f"  expense_breakdown: {breakdown}")
+        assert status == 200
+        assert "labor" in breakdown
+        assert breakdown["labor"] > 0
+
+
 def test_dashboard_html_wires_up_the_resource_panel():
     """Checkpoint 51's own Next Steps named this gap: get_resource_summary()
     has shipped `resources` (org-wide budget totals, capacity_utilization,
@@ -556,6 +580,16 @@ def test_dashboard_html_wires_up_the_resource_panel():
         assert "resources.capacity_utilization" in body
         assert "resources.over_budget_departments" in body
         assert "escapeHtml" in body.split("resource-alert")[-1][:400]
+
+        # expense_breakdown (checkpoint 68) rides the same payload and the
+        # same panel - reads resources.expense_breakdown, escapes the
+        # category name like every other dynamic string here, and uses the
+        # 5-decimal money formatter for a sub-$1 category total instead of
+        # rounding it down to a misleading "$0.00".
+        assert 'id="resource-breakdown"' in body
+        assert "resources.expense_breakdown" in body
+        assert "escapeHtml(c)" in body
+        assert "moneyPrecise(breakdown[c])" in body
 
 
 def test_strategy_endpoint_exposes_a_real_reallocation_proposal():
@@ -726,6 +760,7 @@ def main():
         test_dashboard_html_wires_up_the_performance_panel()
         test_report_payload_carries_bottleneck_fields_the_dashboard_now_reads()
         test_report_payload_resources_reflect_real_budget_and_capacity_after_a_task_runs()
+        test_report_payload_resources_include_expense_breakdown_after_a_task_runs()
         test_dashboard_html_wires_up_the_resource_panel()
         test_strategy_endpoint_exposes_a_real_reallocation_proposal()
         test_dashboard_html_wires_up_the_strategy_panel()

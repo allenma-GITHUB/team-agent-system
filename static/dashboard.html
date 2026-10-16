@@ -185,6 +185,7 @@
     <h2>Resource Overview</h2>
     <div class="stat-row" id="resource-stat-row"></div>
     <div id="resource-alert"></div>
+    <div id="resource-breakdown"></div>
   </div>
 
   <div class="panel" id="strategy-panel" hidden>
@@ -520,6 +521,25 @@ async function loadReport() {
 
     $("#resource-alert").innerHTML = resources.over_budget_departments.length
       ? `<div class="alert">⚠ Over-Budget: ${resources.over_budget_departments.map(escapeHtml).join(", ")}</div>`
+      : "";
+
+    // expense_breakdown ("labor", "llm_tokens", "workflow_step", ...) -
+    // get_resource_summary() has shipped this on every /api/report response
+    // since checkpoint 68; category names come from this codebase's own
+    // fixed set of category literals (request_expense()/confirm_reservation()
+    // call sites), not model- or user-supplied text, but escaped anyway on
+    // the same "every dynamic field gets escaped" rule this file already
+    // follows rather than carving out an exception for a string that's safe
+    // today.
+    const breakdown = resources.expense_breakdown;
+    const categories = Object.keys(breakdown);
+    const totalSpend = categories.reduce((sum, c) => sum + breakdown[c], 0);
+    $("#resource-breakdown").innerHTML = categories.length
+      ? `<h3>Spend By Category</h3>` + categories
+          .sort((a, b) => breakdown[b] - breakdown[a])
+          .map(c => bar(escapeHtml(c), totalSpend > 0 ? breakdown[c] / totalSpend : 0,
+                         breakdown[c] >= 1 ? money(breakdown[c]) : moneyPrecise(breakdown[c])))
+          .join("")
       : "";
   }
 }

@@ -206,6 +206,30 @@ class BudgetManager:
             "total_available": sum(b.available() for b in self.budgets.values()),
         }
 
+    def expense_breakdown(self, department: Optional[str] = None) -> Dict[str, float]:
+        """Total committed spend per expense category ("labor", "llm_tokens",
+        "workflow_step", ...), org-wide or scoped to one department.
+
+        Every real spend in this system - the labor charge in
+        decide_on_task()'s budget check, the token charge after an LLM run,
+        a workflow step's committed reservation - has logged an
+        ExpenseRecord with a real `category` since the budget system
+        existed, and every one of those records has been persisted to
+        data/budgets.json and reloaded on every startup. Nothing ever
+        summed them back up: organization_summary() and DepartmentBudget
+        itself only ever answered "how much", never "on what" - the same
+        shape as this project's other "computed and recorded, zero
+        consumer" gaps. Returns {} rather than a department's nonexistent
+        key when no expense has been logged yet, matching this file's own
+        absence-means-never-spent convention.
+        """
+        breakdown: Dict[str, float] = {}
+        for expense in self.expense_log:
+            if department is not None and expense.department != department:
+                continue
+            breakdown[expense.category] = breakdown.get(expense.category, 0.0) + expense.amount
+        return breakdown
+
     def over_budget_departments(self, threshold: float = 0.9) -> List[str]:
         """Departments whose utilization has crossed the warning threshold."""
         return [dept for dept, b in self.budgets.items() if b.utilization_pct() >= threshold]

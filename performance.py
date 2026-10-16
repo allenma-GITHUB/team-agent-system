@@ -13,6 +13,13 @@ from budgets import budget_manager as _default_budget_manager, capacity_manager 
 from visualization import bar_chart
 
 
+def _format_amount(amount: float) -> str:
+    """Dollar amount for a report line, enough decimals to stay honest
+    about a sub-$1 total - 2 decimals round a few cents of llm_tokens
+    spend down to "$0.00", which looks identical to no spend at all."""
+    return f"${amount:,.2f}" if amount >= 1 else f"${amount:,.5f}"
+
+
 @dataclass
 class AgentMetrics:
     """Metrics for a single agent over time."""
@@ -314,6 +321,7 @@ class PerformanceAnalytics:
         capacity = capacity or _default_capacity_manager
         return {
             "budget": budgets.organization_summary(),
+            "expense_breakdown": budgets.expense_breakdown(),
             "over_budget_departments": budgets.over_budget_departments(),
             "capacity_utilization": capacity.organization_utilization(),
             "capacity_recommendations": capacity.recommend_actions(),
@@ -403,6 +411,29 @@ class PerformanceAnalytics:
                     (b.department, b.utilization_pct(),
                      f"{b.utilization_pct():.0%} (${b.spent:,.0f}/${b.allocated:,.0f})")
                     for b in depts_by_util
+                ]))
+
+            # Per-category spend ("labor", "llm_tokens", "workflow_step") -
+            # the department bars above show WHO is spending, this shows
+            # WHAT the money went to. expense_breakdown() has read every
+            # ExpenseRecord's category since the budget system existed;
+            # nothing summed it back up until now (checkpoint 68).
+            #
+            # A sub-$1 total (a handful of llm_tokens charges, priced at the
+            # placeholder $0.00001/token rate) rounds to "$0.00" at 2 decimal
+            # places - a real, nonzero spend rendered as if nothing was
+            # spent at all. main_v2.py's own per-task token-cost line
+            # already uses 5 decimals for exactly this reason; matched here
+            # instead of reintroducing the same "convenient fiction" for the
+            # org-wide total.
+            breakdown = resources["expense_breakdown"]
+            if breakdown:
+                total_spend = sum(breakdown.values())
+                report.append(f"\nSpend By Category:")
+                report.append(bar_chart([
+                    (category, (amount / total_spend) if total_spend > 0 else 0.0,
+                     f"{_format_amount(amount)} ({(amount / total_spend) if total_spend > 0 else 0.0:.0%})")
+                    for category, amount in sorted(breakdown.items(), key=lambda kv: kv[1], reverse=True)
                 ]))
 
             # Per-department staffing utilization, same reasoning - and same
