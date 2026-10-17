@@ -1,3 +1,62 @@
+# Daily Progress Report - October 17, 2026
+
+## 📐 CHECKPOINT 69: A STEP'S OUTPUT_SCHEMA WAS DECLARED SINCE COMMIT ONE, NEVER CHECKED AGAINST A REAL RESULT
+
+**Session opened with the same git-state quirk flagged for the fifteenth session running (checkpoints 53-68)** - `git status` showed a clean tree, but `HEAD` was detached one commit ahead of the local `main` ref (checkpoint 68's own commit). `git fetch origin main` confirmed `origin/main` already matched `HEAD` exactly - checkpoint 68's commit had reached the remote; only the local `main` ref and cached `remotes/origin/main` were stale. Recovered the same way as every prior occurrence: `git checkout main && git merge --ff-only origin/main` - a clean fast-forward, gap back down to one (the smallest short of zero). Fifteenth occurrence in a row - still worth someone with container-level access looking into.
+
+### Took checkpoint 68's own named lead instead of sweeping for a new one
+
+Checkpoint 68's Next Steps named `workflows.py`'s `WorkflowStep.input_schema`/`output_schema` as "the most promising lead already on file" but left it uninvestigated - "not investigated deeply enough this session to say whether it's a quick producer+consumer fix or a real design question." This session did that investigation first.
+
+`grep -rn "input_schema\|output_schema" --include=*.py --include=*.html --include=*.json .` (repo-wide, not just `workflows.py`) turns up exactly two lines, both the fields' own declarations in `WorkflowStep` (`workflows.py:46-47`), both defaulted to `{}`. Neither of the two shipped templates (`create_feature_request_workflow()`, `create_bug_fix_workflow()`) sets either field on any of their 11 combined steps, and nothing anywhere reads them - not `complete_step()`, not `execute_step()`, not a test. Exactly this project's signature shape: a real, typed field, round-tripped through every `WorkflowStep` construction, with zero consumers.
+
+The two fields aren't symmetric, though, and splitting them mattered. `output_schema` has an obvious, already-existing subject to check against: the `result` dict `execute_step()`'s executor returns and `complete_step()` persists to `step_results[step_id]` - the same dict `main_v2.py`'s `workflow complete` and the dashboard already print. `input_schema` does not: this engine has no notion of a step's "input" today at all - `execute_step()` builds its executor call from only `step.name`/`step.description`, never from the workflow's own `input_data` or an upstream step's `step_results`. Giving `input_schema` a real consumer would mean first inventing a data-flow model (is a step's input the workflow's `input_data` if it has no `depends_on`, the merged output of its dependencies otherwise, both?) that doesn't exist in any form yet - exactly the kind of unwritten business-logic guess checkpoint 68's own `AgentProfile.capabilities` dead end warned against, not a "quick fix." Scoped this checkpoint to `output_schema` alone for that reason, and recorded `input_schema` as a design question below rather than silently dropping it.
+
+### 🐛 Proven live before touching anything
+
+Built a step whose `output_schema` declares `{"severity": "str"}`, then ran it twice - once through `execute_step()` with a real department executor returning a result that forgot `severity`, once with one that included it:
+
+```
+result missing 'severity': complete_step() returned True, step_status == COMPLETED
+result including 'severity': complete_step() returned True, step_status == COMPLETED
+Distinguishable by output_schema today: False
+```
+
+Both calls succeeded identically - the declared schema had no effect on either outcome. A step's real output could be any shape, missing any field the schema names, and nothing in this engine, the CLI, or the dashboard would ever notice or say so.
+
+### ✅ Fix
+
+1. **`workflows.py` gains `WorkflowStep.validate_output(result) -> List[str]`**: for each `field_name: type_name` pair in `output_schema`, returns a human-readable violation if the field is missing or its value doesn't match the declared type (`str`, `int`, `float`, `number` for int-or-float, `bool`, `list`, `dict`). An unrecognized type name (a schema typo) falls back to presence-only checking rather than rejecting every real call on a name the validator can't interpret. `isinstance(True, int)` is `True` in plain Python, so booleans get a deliberate carve-out - a `bool` value never satisfies a declared `"int"`/`"number"` field, checked via a small `_matches_schema_type()` helper rather than relying on `isinstance` alone. Returns `[]` whenever `output_schema` itself is `{}` - the default every built-in template leaves it at - so a step with no declared schema is accepted exactly as before.
+2. **`WorkflowEngine.complete_step()`** calls `step.validate_output(result)` right alongside its existing `depends_on` check (the one place every caller - `execute_step()`, or a direct `complete_step()` call from a test or future API use - ends up, per that method's own "authoritative state transition, for any caller" docstring). A violation sets `instance.error` and returns `False` without touching `step_status` - the step stays wherever it was (typically `IN_PROGRESS`), never advanced to `COMPLETED`/`AWAITING_APPROVAL`, the same "don't mark unfinished work done" shape `complete_step()`'s unmet-`depends_on` guard already established.
+3. **No CLI or dashboard change needed** - `main_v2.py`'s `workflow complete` already prints `instance.error` on any `ok=False` result (the existing `depends_on`-violation path uses the identical mechanism), so a schema violation surfaces through the exact same `⚠ Step '{step_id}' blocked, not completed: {instance.error}` line with no new code.
+
+### 🧪 Validation
+
+New `tests/test_workflow_output_schema.py` (10 tests): `validate_output()` in isolation - a no-op on an empty schema (both `{}` and a schema checked against an arbitrary value), a missing field, a wrong-type field, a `bool` correctly rejected as `int`/accepted as `bool`, `"number"` accepting both `int` and `float`, and an unrecognized type name falling back to presence-only; `complete_step()` rejecting a schema-failing result (step stays `IN_PROGRESS`, `instance.error` names the missing field, no unrelated leakage) and accepting a schema-satisfying one (completes normally, and - being the workflow's last step - the whole instance reaches `COMPLETED` too, confirming `check_complete()`'s existing cascade still fires); `execute_step()` end-to-end through a fake executor, blocking on a schema-violating real result exactly like the direct `complete_step()` case; and a direct read of both shipped templates confirming every one of their 11 steps still declares `output_schema == {}` and so stays fully dormant under this fix.
+
+Ran the new file twice back-to-back with byte-identical output. Full 62-file suite (61 existing + 1 new) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. Also drove the real CLI end-to-end in an isolated temp directory with a copy of `config.json`: `workflow start bug_fix severity=low` → `workflow next <id>` → `workflow complete <id> triage` → `workflow status <id>` - `triage` (no declared `output_schema`, like every step in both shipped templates) completes and prints exactly as every prior checkpoint's CLI drive, confirming the fix is additive and silent on the ordinary path.
+
+### ⚠️ Not a behavior change
+
+Neither shipped template (`feature_request`, `bug_fix`) declares an `output_schema` on any step, so no existing workflow instance, CLI command, or dashboard view changes behavior today. This only takes effect for a step a future template - or a test - explicitly opts into by setting `output_schema`; every other code path (`get_next_step()`, `approve_step()`, budget reservation/release, `check_complete()`) is untouched.
+
+### 📝 Next Steps
+
+- **`WorkflowStep.input_schema` has zero production consumers and, unlike `output_schema`, no existing subject to check it against** (this checkpoint's scoping decision, above) - this engine has no data-flow model for a step's "input" today: `execute_step()` never passes a prior step's `step_results` or the workflow's own `input_data` into the next step's executor call. A real consumer needs an owner decision on what a step's input actually is (workflow-level `input_data` for entry steps? merged `step_results` of `depends_on`? both?) before `input_schema` can check anything meaningful - not something to invent unilaterally. Policy question for the owner.
+- **`AgentProfile.capabilities` has zero production consumers** - unchanged, still open, per checkpoint 68. Policy question for the owner.
+- **`ceo`'s `must_approve_over_100k` constraint has no implementation attempt at all** - unchanged, still open, per checkpoint 68. Design question (what signal represents cost) for the owner.
+- **`core.py`'s `agent_registry`/`skill_registry`** - unchanged, still open, per checkpoint 66. Policy question for the owner.
+- **A real per-provider token-cost rate** - unchanged, still open, per checkpoints 42-68. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-68. Policy question for the owner.
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - unchanged, still open, per checkpoint 61.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58. Policy question for the owner.
+- **`WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`** - unchanged, still open, per checkpoints 62-64.
+- **A real weekly-hours accumulator** - unchanged, still open, per checkpoint 65.
+- **The repeated git-state quirk at session start** - fifteenth session in a row, gap back down to one commit - still worth someone with container-level access looking into.
+- The next session should either get an owner decision on one of the policy questions above, or look for a new gap the way checkpoints 45-69 each did - `input_schema`'s data-flow design question (above) is the most promising lead already on file, once an owner has weighed in on what a step's "input" should mean.
+
+---
+
 # Daily Progress Report - October 16, 2026
 
 ## 💰 CHECKPOINT 68: A DEPARTMENT'S SPEND WAS LOGGED BY CATEGORY, NEVER SUMMED BACK UP

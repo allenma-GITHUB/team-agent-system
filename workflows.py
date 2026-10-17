@@ -25,6 +25,31 @@ class WorkflowStatus(Enum):
     ESCALATED = "escalated"
 
 
+# output_schema's declared type names -> the concrete Python type(s) a
+# field's value must be. "number" accepts int or float (JSON has no int/
+# float distinction); every other name is exact, so a bool value never
+# satisfies "int" (isinstance(True, int) is True in plain Python, which
+# would wrongly pass a boolean off as an integer).
+_SCHEMA_TYPES: Dict[str, Tuple[type, ...]] = {
+    "str": (str,), "int": (int,), "float": (float,), "number": (int, float),
+    "bool": (bool,), "list": (list,), "dict": (dict,),
+}
+
+
+def _matches_schema_type(value: Any, type_name: str) -> bool:
+    """True if value satisfies type_name, or type_name isn't one this
+    validator recognizes - an unrecognized name (schema typo, or a type
+    this validator hasn't been taught yet) falls back to presence-only
+    checking rather than rejecting every real value on a name it can't
+    interpret."""
+    allowed = _SCHEMA_TYPES.get(type_name)
+    if allowed is None:
+        return True
+    if isinstance(value, bool) and bool not in allowed:
+        return False
+    return isinstance(value, allowed)
+
+
 class StepStatus(Enum):
     """Individual step status."""
     PENDING = "pending"
@@ -61,6 +86,23 @@ class WorkflowStep:
         """Department whose budget backs this step (may differ from who executes it,
         e.g. a finance-owned approval step that draws against engineering's budget)."""
         return self.budget_department or self.owner_department
+
+    def validate_output(self, result: Dict[str, Any]) -> List[str]:
+        """Check a step's real result dict against output_schema
+        ({field_name: type_name}). Returns one human-readable violation per
+        missing or mistyped field - empty when output_schema itself is
+        empty (every built-in template today) or every declared field is
+        present with the declared type, so a template that never sets
+        output_schema is completely unaffected."""
+        violations = []
+        for field_name, type_name in self.output_schema.items():
+            if field_name not in result:
+                violations.append(f"missing field '{field_name}' (expected {type_name})")
+                continue
+            if not _matches_schema_type(result[field_name], type_name):
+                actual = type(result[field_name]).__name__
+                violations.append(f"field '{field_name}' is {actual}, expected {type_name}")
+        return violations
 
 
 @dataclass
@@ -286,6 +328,23 @@ class WorkflowEngine:
                 )
                 self.save()
                 return False
+
+            # output_schema declares what a real result must contain -
+            # checked here, the one place every caller (execute_step(),
+            # a direct complete_step() call) ends up, so a step whose
+            # work produced the wrong shape can't be recorded COMPLETED/
+            # AWAITING_APPROVAL any more than one with unmet depends_on
+            # can. Dormant for every step that leaves output_schema at
+            # its {} default - which is every built-in template today.
+            if step.output_schema:
+                violations = step.validate_output(result)
+                if violations:
+                    instance.error = (
+                        f"Step '{step.name}' cannot be completed: output failed "
+                        f"its declared schema - {'; '.join(violations)}"
+                    )
+                    self.save()
+                    return False
 
         instance.step_results[step_id] = result
         instance.step_status[step_id] = (
