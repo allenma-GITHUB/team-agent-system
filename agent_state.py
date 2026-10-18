@@ -5,7 +5,7 @@ Enables autonomous decision-making based on past experience and capabilities.
 import json
 import threading
 from dataclasses import dataclass, asdict, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -256,6 +256,36 @@ class AgentRegistry:
     def get(self, agent_id: str) -> Optional[AgentState]:
         """Retrieve agent state."""
         return self.agents.get(agent_id)
+
+    def collaboration_summary(self) -> List[Dict[str, Any]]:
+        """Every recorded trust relationship across all registered agents.
+
+        update_trust_with_agent() has written RelationshipScore.collaboration_count
+        and last_collaboration on every real delegation since trust feedback went
+        live (checkpoint 61) - but nothing has ever read either field back:
+        grep for both outside their own declaration/write site turns up only
+        test assertions, no report, no dashboard, no decision path. Confirmed
+        live before this method existed: ten real delegations between two
+        agents drove trust_score to 1.0 and collaboration_count to 10, and
+        generate_report()'s output was unchanged either way.
+
+        Relationships are directional, not a symmetric pair - update_trust_with_agent()
+        is only ever called on the delegator's own AgentState, recording that
+        agent's view of the delegate (task_executor_v2.py never calls the
+        reverse). So each entry here is one agent's recorded history with
+        another, not a deduplicated two-agent pair.
+        """
+        summary = []
+        for agent_id, state in self.agents.items():
+            for other_id, rel in state.relationships.items():
+                summary.append({
+                    "from_agent": agent_id,
+                    "to_agent": other_id,
+                    "trust_score": rel.trust_score,
+                    "collaboration_count": rel.collaboration_count,
+                    "last_collaboration": rel.last_collaboration,
+                })
+        return summary
 
     def all(self) -> Dict[str, AgentState]:
         """Get all agents."""

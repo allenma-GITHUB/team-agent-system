@@ -134,6 +134,7 @@ def build_report_payload() -> dict:
         "recommendations": analytics.get_recommendations(),
         "resources": analytics.get_resource_summary(budgets=budget_manager, capacity=capacity_manager),
         "capacity_recommendations": capacity_manager.recommend_actions(),
+        "collaboration": analytics.get_collaboration_summary(),
     }
 
 

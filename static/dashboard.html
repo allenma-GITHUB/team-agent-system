@@ -188,6 +188,11 @@
     <div id="resource-breakdown"></div>
   </div>
 
+  <div class="panel" id="collaboration-panel" hidden>
+    <h2>Agent Trust &amp; Collaboration</h2>
+    <div id="collaboration-list"></div>
+  </div>
+
   <div class="panel" id="strategy-panel" hidden>
     <h2>Strategic Reallocation</h2>
     <div id="strategy-list"></div>
@@ -541,6 +546,24 @@ async function loadReport() {
                          breakdown[c] >= 1 ? money(breakdown[c]) : moneyPrecise(breakdown[c])))
           .join("")
       : "";
+  }
+
+  // report.collaboration - every recorded RelationshipScore across all
+  // agents (update_trust_with_agent()'s trust_score/collaboration_count/
+  // last_collaboration), surfaced for the first time anywhere: not the CLI
+  // report, not this dashboard, not even a decision path - only test
+  // assertions ever read these fields before get_collaboration_summary()
+  // shipped. Same "hidden entirely when there's nothing to show" convention
+  // as the Resource Overview panel above; a fresh system with zero real
+  // delegations shows nothing here rather than an empty list.
+  const collaboration = report.collaboration || [];
+  const collabPanel = $("#collaboration-panel");
+  collabPanel.hidden = collaboration.length === 0;
+  if (!collabPanel.hidden) {
+    $("#collaboration-list").innerHTML = collaboration.map(rel =>
+      bar(`${escapeHtml(rel.from_agent)} &rarr; ${escapeHtml(rel.to_agent)}`, rel.trust_score,
+          `${rel.trust_score.toFixed(2)} trust (${rel.collaboration_count} collaboration${rel.collaboration_count !== 1 ? "s" : ""})`)
+    ).join("");
   }
 }
 

@@ -9,6 +9,7 @@ from pathlib import Path
 import json
 import statistics
 
+from agent_state import agent_registry as _default_agent_registry
 from budgets import budget_manager as _default_budget_manager, capacity_manager as _default_capacity_manager
 from visualization import bar_chart
 
@@ -310,6 +311,19 @@ class PerformanceAnalytics:
 
         return recommendations
 
+    def get_collaboration_summary(self, registry=None) -> List[Dict[str, Any]]:
+        """Trust/collaboration history across all agents, ranked by how much
+        of it there is - AgentRegistry.collaboration_summary() has recorded
+        this since checkpoint 61 but nothing has ever read it back (see that
+        method's own docstring). Defaults to the shared global agent_registry,
+        same injection shape as get_resource_summary()'s budgets/capacity."""
+        registry = registry or _default_agent_registry
+        return sorted(
+            registry.collaboration_summary(),
+            key=lambda rel: rel["collaboration_count"],
+            reverse=True
+        )
+
     def get_resource_summary(self, budgets=None, capacity=None) -> Dict[str, Any]:
         """Budget and capacity snapshot to sit alongside quality/cost metrics.
 
@@ -327,7 +341,7 @@ class PerformanceAnalytics:
             "capacity_recommendations": capacity.recommend_actions(),
         }
 
-    def generate_report(self, budgets=None, capacity=None) -> str:
+    def generate_report(self, budgets=None, capacity=None, registry=None) -> str:
         """Generate text report of all metrics."""
         report = []
         report.append("\n" + "="*60)
@@ -383,6 +397,18 @@ class PerformanceAnalytics:
             report.append(f"\nRecommendations:")
             for rec in recs:
                 report.append(f"  - {rec['agent']}: {rec['action']}")
+
+        # Trust & collaboration - only shown once a real delegation has
+        # happened (collaboration_summary() returns [] otherwise), so a
+        # fresh system's report stays clean the same way the sections below it do.
+        collaboration = self.get_collaboration_summary(registry=registry)
+        if collaboration:
+            report.append(f"\nAgent Trust & Collaboration:")
+            report.append(bar_chart([
+                (f"{rel['from_agent']} -> {rel['to_agent']}", rel["trust_score"],
+                 f"{rel['trust_score']:.2f} trust ({rel['collaboration_count']} collaboration{'s' if rel['collaboration_count'] != 1 else ''})")
+                for rel in collaboration
+            ]))
 
         # Resource overview (budget + capacity) - only shown once something's
         # actually been allocated, so a fresh system's report stays clean.

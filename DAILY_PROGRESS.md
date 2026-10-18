@@ -1,3 +1,63 @@
+# Daily Progress Report - October 18, 2026
+
+## 🤝 CHECKPOINT 70: COLLABORATION_COUNT AND LAST_COLLABORATION WERE WRITTEN ON EVERY REAL DELEGATION, READ BY NOTHING
+
+**Session opened with the same git-state quirk flagged for the sixteenth session running (checkpoints 53-69)** - `git status` showed a clean tree, but `HEAD` was detached one commit ahead of the local `main` ref (checkpoint 69's own commit, `59a9331`). `git fetch origin main` confirmed `origin/main` already matched `HEAD` exactly - checkpoint 69's commit had reached the remote; only the local `main` ref and cached `remotes/origin/main` were stale. Recovered the same way as every prior occurrence: `git checkout main && git merge --ff-only origin/main` - a clean fast-forward. Sixteenth occurrence in a row - still worth someone with container-level access looking into.
+
+### Looked for a new gap the way checkpoints 45-69 each did
+
+Checkpoint 69's own Next Steps repeated the same six policy questions this project has carried since checkpoints 42-68 (the token-cost placeholder, `core.py`'s dead registries, `product_head`/`finance_head` placeholders, `OrganizationDecisionMaker`, `create_department()`/`list_departments()`, `WorkflowStep`'s unused retry fields, a real weekly-hours accumulator) plus `input_schema`'s own data-flow design question - none a unilateral call for an unattended run, per this project's "leave policy questions to the owner" rule.
+
+Swept every dataclass field across `agent_state.py`, `agent_decisions.py`, `budgets.py`, `performance.py`, `workflows.py`, `tools.py`, `strategy.py`, and `core.py` for this project's signature shape - a real, computed value with zero production readers - the same sweep checkpoint 66 ran, repeated because checkpoint 68's `expense_breakdown()` fix proved a prior "all clean" sweep can still miss one. `RelationshipScore.collaboration_count`/`last_collaboration` (`agent_state.py:85-86`) is where it turned up this time: both fields are written unconditionally inside `update_trust_with_agent()` right alongside `trust_score`, but `grep -rn "collaboration_count\|last_collaboration" --include=*.py .` outside that one write site and their own declaration turns up only `tests/test_delegation_trust_feedback.py` reading `collaboration_count` in an assertion - no report, no dashboard, no decision path. `trust_score` itself is fully wired (checkpoint 61 made `find_best_delegate()`'s `rank_candidate()` actually read it) - but the two fields sitting right next to it in the same dataclass, populated by the same method call, never got a consumer of their own.
+
+### 🐛 Proven live before touching anything
+
+Built two agents and ran ten real delegations' worth of trust feedback between them:
+
+```
+trust_score: 1
+collaboration_count: 10
+last_collaboration: 2026-10-18T14:04:31.996030
+mentions collaboration/trust in report: False
+```
+
+Ten real, recorded collaborations - and `generate_report()`'s output was byte-identical to what a system with zero delegations ever having happened would produce. `grep -rn "relationships" --include=*.py .` outside `agent_state.py`/`agent_decisions.py`/`task_executor_v2.py` and their tests confirmed it: nothing in `performance.py`, `web_server.py`, or `static/dashboard.html` ever looked at an `AgentState.relationships` dict at all.
+
+### ✅ Fix
+
+1. **`agent_state.py` gains `AgentRegistry.collaboration_summary() -> List[Dict[str, Any]]`**: flattens every agent's `relationships` dict into one list of `{from_agent, to_agent, trust_score, collaboration_count, last_collaboration}` records - no new computation, just reading data this system has recorded since delegation feedback (checkpoint 61) existed. Kept directional rather than deduplicated into pairs: `update_trust_with_agent()` is only ever called on the delegator's own `AgentState` (`task_executor_v2.py:350`), never the reverse, so an A→B entry and a B→A entry are two different agents' independent histories, not two halves of one relationship.
+2. **`performance.py` gains `PerformanceAnalytics.get_collaboration_summary(registry=None)`**: same registry-injection shape `get_resource_summary()` already uses for `budgets`/`capacity` (defaults to the shared global `agent_registry` singleton, the same one `task_executor_v2.py`/`budgets.py`/`workflows.py` all draw from). Sorts by `collaboration_count` descending - the pairs with the most real history lead, not registration order.
+3. **`generate_report()`** prints a new `Agent Trust & Collaboration:` bar-chart section, same treatment as `Spend By Category` right above it in the function, only when at least one relationship exists - a fresh system shows nothing here, same convention as every other optional section in this report.
+4. **`web_server.py`'s `build_report_payload()`** adds a `"collaboration"` key carrying the same list to `/api/report`, and **`static/dashboard.html`** gains a matching `Agent Trust & Collaboration` panel (hidden entirely with zero relationships, same as the Resource Overview/Workflows/Strategy panels), reading `report.collaboration` and rendering each entry as a trust-score bar - agent ids run through `escapeHtml()` per this file's "every dynamic field gets escaped" rule.
+5. **Singular/plural caught before it shipped**: `"1 collaborations"` is the kind of small wrongness this project's reports have shipped before (and been called out for) - added the same `'s' if count != 1 else ''` guard both in `performance.py`'s Python f-string and the dashboard's JS template, and pinned both with a dedicated test rather than assuming the obvious string worked.
+
+### 🧪 Validation
+
+New `tests/test_collaboration_summary.py` (8 tests): `collaboration_summary()` returns `[]` with no relationships, reads back a real `update_trust_with_agent()` history correctly (10 calls → `collaboration_count == 10`, `trust_score` matching the live object, `last_collaboration` set), confirms directionality (A→B and B→A are two separate entries, not a deduplicated pair), `get_collaboration_summary()` ranks by `collaboration_count` descending, `generate_report()` prints the new section with real numbers and omits it with zero relationships, the singular/plural guard (`"1 collaboration)"` never `"1 collaborations)"`), and both `performance.py`/`web_server.py`/`dashboard.html` contain the new wiring (escaped, keyed correctly).
+
+Ran the new file twice back-to-back - byte-identical output except for one `set` iteration-order line in the directionality test (`{('a','b'), ('b','a')}` printed in different order between runs, a Python set-ordering artifact, not a behavior difference - the test's actual assertion compares the pair *set*, not its print order, so this doesn't affect pass/fail). Full 63-file suite (62 existing + 1 new) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. Also drove the real CLI end-to-end in an isolated temp directory with a copy of `config.json`: `submit "Delegate a tricky deployment bug" --hours 3 --department engineering` → `process --sequential` → `report` - the task executed directly with no delegation in this run, so (correctly) no `Agent Trust & Collaboration` section appeared, confirming the fix stays silent exactly when it should; separately confirmed via a direct `build_report_payload()` call against an isolated registry seeded with one real `update_trust_with_agent()` call that `/api/report`'s `collaboration` key carries the record end-to-end. The underlying production write path itself (a real delegation really calling `update_trust_with_agent()`) is the exact scenario `tests/test_delegation_trust_feedback.py` (checkpoint 61) already exercises end-to-end through `task_executor_v2.py` - this checkpoint only adds a read path on top of writes already proven real.
+
+### ⚠️ Not a behavior change
+
+No delegation, trust update, or ranking decision changes - `update_trust_with_agent()`, `find_best_delegate()`'s `rank_candidate()`, and every caller of either are untouched. This is purely additive: a new read path over `AgentState.relationships`, surfaced in the two reports that already exist, invisible until a real relationship exists to show.
+
+### 📝 Next Steps
+
+- **`WorkflowStep.input_schema` has zero production consumers and no existing subject to check it against** - unchanged, still open, per checkpoint 69. Policy question for the owner.
+- **`AgentProfile.capabilities` has zero production consumers** - unchanged, still open, per checkpoint 68. Policy question for the owner.
+- **`ceo`'s `must_approve_over_100k` constraint has no implementation attempt at all** - unchanged, still open, per checkpoint 68. Design question (what signal represents cost) for the owner.
+- **`core.py`'s `agent_registry`/`skill_registry`** - unchanged, still open, per checkpoint 66. Policy question for the owner.
+- **A real per-provider token-cost rate** - unchanged, still open, per checkpoints 42-69. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-69. Policy question for the owner.
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - unchanged, still open, per checkpoint 61.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58. Policy question for the owner.
+- **`WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`** - unchanged, still open, per checkpoints 62-64.
+- **A real weekly-hours accumulator** - unchanged, still open, per checkpoint 65.
+- **The repeated git-state quirk at session start** - sixteenth session in a row - still worth someone with container-level access looking into.
+- The next session should either get an owner decision on one of the policy questions above, or look for a new gap the way checkpoints 45-70 each did - no single most-promising lead is on file this time (unlike checkpoints 68/69), so the next sweep starts cold, the same way checkpoint 66's did.
+
+---
+
 # Daily Progress Report - October 17, 2026
 
 ## 📐 CHECKPOINT 69: A STEP'S OUTPUT_SCHEMA WAS DECLARED SINCE COMMIT ONE, NEVER CHECKED AGAINST A REAL RESULT
