@@ -493,6 +493,15 @@ def run_agent(question: str, max_iterations: int = 5):
             mark = "✓" if call.ok else "✗"
             detail = "" if call.ok else f" ({call.error})"
             print(f"     {mark} {call.name}({_format_args(call.arguments)}){detail}")
+            if call.ok:
+                # The model answered from this result; a human reading the
+                # transcript deserves to see the same data, not just a
+                # checkmark saying the call didn't fail. Collapsed to one
+                # line - result_preview is pretty-printed JSON for some
+                # tools, and a human scanning a list of calls needs a scan,
+                # not a reformatted document.
+                preview = " ".join(call.result_preview.split())
+                print(f"       -> {preview}")
     else:
         print("   Tool calls: none - answered without looking anything up")
 

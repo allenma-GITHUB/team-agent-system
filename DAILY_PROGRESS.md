@@ -1,3 +1,80 @@
+# Daily Progress Report - October 19, 2026
+
+## 🔍 CHECKPOINT 71: A SUCCESSFUL TOOL CALL'S REAL RESULT NEVER REACHED A HUMAN READING `AGENT-RUN`
+
+**Session opened with the same git-state quirk flagged for the seventeenth session running (checkpoints 53-70)** - `git status` showed a clean tree, but `HEAD` was detached, this time two commits ahead of the local `main` ref (checkpoints 69 and 70's own commits). `git fetch origin main` confirmed `origin/main` already matched `HEAD` exactly - both prior checkpoints' commits had reached the remote; only the local `main` ref and cached `remotes/origin/main` were stale. Recovered with `git checkout -B main origin/main` (equivalent fast-forward, since `HEAD` was already `origin/main`'s commit). Seventeenth occurrence in a row - still worth someone with container-level access looking into.
+
+### Looked for a new gap the way checkpoints 45-70 each did
+
+Checkpoint 70's own Next Steps repeated the same backlog of policy questions this project has carried since checkpoints 42-70 - none a unilateral call for an unattended run - and noted "no single most-promising lead is on file this time," so this sweep started cold, the same way checkpoint 66's did.
+
+Rather than re-running checkpoint 70's exact sweep (dataclass fields across `agent_state.py`, `agent_decisions.py`, `budgets.py`, `performance.py`, `workflows.py`, `tools.py`, `strategy.py`, `core.py` - already swept clean twice), this pass widened the net to `agent_loop.py` - the multi-turn tool-calling loop added recently and not named in any prior sweep's file list - and its one consumer, `main_v2.py`'s `run_agent()` (the `agent-run` CLI command). `grep -rn "result_preview"` turned up exactly two lines in the whole tree: the field's declaration on `ToolCallRecord` (`agent_loop.py:41`) and its one write site (`agent_loop.py:126`) - no reader anywhere, not in `main_v2.py`, not in `task_executor_v2.py`, not in any test. The field's own docstring states its purpose directly: "this is only for humans reading a summary, where a 20KB JSON blob per call is noise" - built for a reader that never got wired up.
+
+### 🐛 Proven live before touching anything
+
+Ran the real CLI end-to-end in an isolated temp directory with a copy of `config.json`:
+
+```
+$ python3 main_v2.py agent-run "What is the engineering department's budget status?"
+🤖 Agent (MOCK (available: mock))
+   Tools available: get_department_budget, get_department_capacity, list_departments, list_tasks
+   Question: What is the engineering department's budget status?
+
+   Tool calls:
+     ✓ get_department_budget(department='engineering')
+
+MOCK: answered using get_department_budget
+
+   [2 iteration(s), 1/1 tool calls ok, ~30 tokens]
+```
+
+A checkmark and the call's arguments - nothing about what the tool actually returned. Confirmed the real value was there all along, just never printed, with a direct call into the loop:
+
+```
+>>> result = run_agent_loop("What is the engineering department's budget status?", provider, registry)
+>>> result.tool_calls[0].result_preview
+'{\n  "department": "engineering",\n  "allocated": null,\n  "note": "No budget has been allocated for this department yet."\n}'
+```
+
+The model used that JSON to answer; a human watching the same transcript had no way to know whether a budget existed at all, let alone its number - for every tool, on every `agent-run` call, since the loop shipped.
+
+### 🔧 Fix
+
+`main_v2.py`'s `run_agent()` per-call print loop (`run_agent`, ~line 490) now prints `result_preview` on a second line under each *successful* call, collapsed to one line with `" ".join(call.result_preview.split())` - `result_preview` is pretty-printed JSON for some tools, and a human scanning a list of calls needs a scan, not a reformatted document dropped into the middle of it. Failed calls are untouched: their `error` code already prints in the same line as before, and their `content` is the same descriptive text duplicated, so a second preview line there would just be noise.
+
+```
+     ✓ get_department_budget(department='engineering')
+       -> { "department": "engineering", "allocated": null, "note": "No budget has been allocated for this department yet." }
+```
+
+### 🧪 Validation
+
+New `tests/test_agent_run_tool_result_visibility.py` (3 tests, run through the real `main_v2.run_agent()` CLI function with stdout captured, same `IsolatedCwd` pattern as `tests/test_main_cli_core.py`): a successful call's real result reaches the printed output; a multi-line JSON preview collapses to exactly one `->` line with no embedded newline; a second, different tool (`list_departments`) also gets its real result shown, proving the fix is general rather than special-cased to the budget tool. The first test asserts on the response's JSON *keys* (`"department"`, `"allocated"`) rather than their values - a first pass asserting the literal "no budget allocated" message passed alone but failed when run second in the full suite, because `main_v2.run_agent()` binds the shared `budgets.budget_manager` singleton with no injection point, and that singleton loads at import time from whatever `data/budgets.json` happens to exist in the repo root at that moment - including the real file this project's own `CLAUDE.md` documents the suite leaving behind. Rewrote to assert the shape the tool always returns instead of one branch's content, then confirmed both branches pass: ran the file fresh (no budget file present) and again after allocating a real `engineering` budget in the repo root first (simulating exactly the suite-pollution scenario that broke the first version).
+
+Ran the new file twice back-to-back with zero failures. Full 64-file suite (63 existing + 1 new) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. `data/agent_states.json`/`data/performance_metrics.json` restored and `data/budgets.json`/`data/workflows.json` removed after every run, per this project's own documented suite-pollution caveat - the same caveat this checkpoint's test had to be rewritten around.
+
+### ⚠️ Not a behavior change
+
+No decision, delegation, budget, or workflow logic changed - `get_department_budget`, `get_department_capacity`, `list_departments`, `list_tasks`, and `run_agent_loop()` itself are untouched. This is purely additive CLI output: two new lines per successful tool call in `agent-run`'s transcript, printed only when `agent-run` is actually invoked. No other command's output changes.
+
+### 📝 Next Steps
+
+- **`WorkflowStep.input_schema` has zero production consumers and no existing subject to check it against** - unchanged, still open, per checkpoint 69. Policy question for the owner.
+- **`AgentProfile.capabilities` has zero production consumers** - unchanged, still open, per checkpoint 68. Policy question for the owner.
+- **`ceo`'s `must_approve_over_100k` constraint has no implementation attempt at all** - unchanged, still open, per checkpoint 68. Design question (what signal represents cost) for the owner.
+- **`core.py`'s `agent_registry`/`skill_registry`** - unchanged, still open, per checkpoint 66. Policy question for the owner.
+- **A real per-provider token-cost rate** - unchanged, still open, per checkpoints 42-70. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-70. Policy question for the owner.
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - unchanged, still open, per checkpoint 61.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58. Policy question for the owner.
+- **`WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`** - unchanged, still open, per checkpoints 62-64.
+- **A real weekly-hours accumulator** - unchanged, still open, per checkpoint 65.
+- **The repeated git-state quirk at session start** - seventeenth session in a row - still worth someone with container-level access looking into.
+- **`main_v2.run_agent()` has no injection point for its budget/capacity managers or tasks file**, unlike `build_readonly_registry()` which accepts them - the global-singleton coupling this checkpoint's own test had to work around. Not fixed here (would mean threading parameters through the CLI dispatch, out of scope for today's one-increment rule) - worth a session of its own if `agent-run` grows more tests that need isolated state.
+- The next session should either get an owner decision on one of the policy questions above, or look for a new gap the way checkpoints 45-71 each did.
+
+---
+
 # Daily Progress Report - October 18, 2026
 
 ## 🤝 CHECKPOINT 70: COLLABORATION_COUNT AND LAST_COLLABORATION WERE WRITTEN ON EVERY REAL DELEGATION, READ BY NOTHING
