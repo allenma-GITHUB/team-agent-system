@@ -229,6 +229,11 @@ def show_task(task_id: str):
                   f"(${result.get('token_cost', 0):.5f}){charge_note}")
         if result.get('quality_score'):
             print(f"  Quality Score: {result['quality_score']}")
+        if result.get('metrics'):
+            m = result['metrics']
+            print(f"  Agent Metrics: avg_quality={m.get('avg_quality', 0):.2f}, "
+                  f"tasks_completed={m.get('tasks_completed', 0)}, "
+                  f"error_rate={m.get('error_rate', 0):.1%}")
         if result.get('used_tools'):
             print(f"  Tool Calls: {result.get('tool_calls', 0)} "
                   f"({result.get('tool_calls_failed', 0)} failed)")

@@ -1,3 +1,67 @@
+# Daily Progress Report - October 20, 2026
+
+## 📈 CHECKPOINT 72: A TASK'S OWN AGENT METRICS WERE PERSISTED TO DISK AND NEVER SHOWN TO A HUMAN
+
+**Session opened with a clean `git status` and `HEAD` exactly matching `origin/main`** - no detached-HEAD/stale-local-ref quirk this time, breaking the seventeen-session-long streak (checkpoints 53-71) of that same recovery. Nothing to fix here; noted in case it resurfaces.
+
+### Swept files no prior sweep had named
+
+Checkpoint 71's Next Steps repeated the same backlog of policy/design questions this project has carried since checkpoints 42-71, plus one scoping note (`main_v2.run_agent()`'s missing injection point) explicitly called out of scope for a single increment - none a unilateral call for an unattended run, per this project's "leave policy questions to the owner" rule. Rather than re-running the dataclass-field sweep already done twice over `agent_state.py`, `agent_decisions.py`, `budgets.py`, `performance.py`, `workflows.py`, `tools.py`, `strategy.py`, `core.py`, and (checkpoint 71) `agent_loop.py`, this pass widened the net to files no prior checkpoint had named for that sweep: `llm_provider.py`, `task_executor_v2.py`, `web_server.py`, `main_v2.py`, `visualization.py`, `departments.py`, and `static/dashboard.html`.
+
+`DepartmentHeadAgent.run()`'s `"completed"` return (`task_executor_v2.py:770-774`) builds a real `metrics` dict - `avg_quality` (the agent's running average quality score), `tasks_completed`, and `error_rate` - straight off `self.agent_state.metrics`, not a placeholder. `grep -rn '"metrics"\|\.get(.metrics' --include=*.py .` across the whole tree turns up exactly two other hits outside that declaration: `agent_state.py:206` (an unrelated, differently-shaped `agent_data["metrics"]` key on disk) and `tests/test_executor_result_fields.py:109`, which only asserts `isinstance(result.get("metrics"), dict) and "avg_quality" in result["metrics"]` - a "was it set" check, not a consumer. `main_v2.show_task()` and `static/dashboard.html`'s task-detail renderer both print `Summary`/`Analysis`/`LLM Provider`/`Tokens Used`/`Quality Score`/`Tool Calls`/`Delegation Chain`/`Staff Contributions` from the same `result` object - and both silently skip `metrics`, sitting right next to `quality_score` in the dict the whole time.
+
+### 🐛 Proven live before touching anything
+
+```
+$ python3 main_v2.py submit "Quick typo fix in docs" --hours 1
+$ python3 main_v2.py process --sequential
+$ python3 -c "import json; t=json.loads(open('data/tasks.json').read())[0]; print(t['result']['metrics'])"
+{'avg_quality': 4.0, 'tasks_completed': 1, 'error_rate': 0.0}
+$ python3 main_v2.py show 0001
+...
+  LLM Provider: mock
+  Tokens Used: 122 ($0.00122)
+  Quality Score: 4.0
+  Tool Calls: 1 (0 failed)
+  Staff Contributions: ...
+```
+
+A real, non-zero, already-persisted `metrics` dict - and no "Metrics" line anywhere in the CLI's own `show` output. `grep -n "result\." static/dashboard.html` confirmed the dashboard's JS renderer mirrors the exact same gap field-for-field.
+
+### 🔧 Fix
+
+1. **`main_v2.py`'s `show_task()`** (~line 232) prints one new line, `Agent Metrics: avg_quality=X.XX, tasks_completed=N, error_rate=X.X%`, right after `Quality Score` - same `result.get('metrics')` guard every other optional field in this function already uses, so a never-executed task (queued, or escalated before execution) shows nothing new.
+2. **`static/dashboard.html`'s task-detail renderer** gets the matching `if (result.metrics)` block in the same position, formatting `avg_quality` to two decimals and `error_rate` as a percentage in plain text (no user-controlled strings here, so no `escapeHtml()` call is needed - unlike the adjacent tool-error and delegation fields, every value in this block is a number the system itself computed).
+3. **`web_server.py`'s `GET /api/tasks/<id>`** needed no change - it already returns the task dict unmodified (no field allowlist), so API consumers have had `metrics` since that route shipped. Confirmed this explicitly rather than assuming it, since `/api/tasks` (the list view, via `_task_summary()`) *does* allowlist fields and would have been the wrong place to add this.
+
+### 🧪 Validation
+
+New `tests/test_task_metrics_visibility.py` (4 tests): a real processed task's `show_task()` output contains the exact `avg_quality`/`tasks_completed`/`error_rate` values read back from `data/tasks.json` (not just the string "Agent Metrics"); a queued, never-run task's output has no such line; `static/dashboard.html`'s source contains the matching `result.metrics` guard and label; and a live `GET /api/tasks/<id>` against the real `ThreadingHTTPServer` (same pattern as `tests/test_web_server.py`) returns the task with `result.metrics` intact, pinning the one place this checkpoint found already correct so a future field-allowlist refactor there doesn't quietly reintroduce the same gap.
+
+Ran the new file twice back-to-back with zero failures. Full 65-file suite (64 existing + 1 new) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. `data/agent_states.json`/`data/performance_metrics.json` restored and `data/budgets.json`/`data/workflows.json` removed after every run, per this project's documented suite-pollution caveat.
+
+### ⚠️ Not a behavior change
+
+No decision, delegation, budget, or workflow logic changed - `DepartmentHeadAgent.run()`, `TaskExecutor.execute()`, and `PerformanceMetrics` are untouched. This is purely additive presentation: one new line in the CLI's `show` output and one new block in the dashboard's task-detail view, both shown only when a task actually ran and already had this data computed. No other command's output, and no API response shape, changes.
+
+### 📝 Next Steps
+
+- **`WorkflowStep.input_schema` has zero production consumers and no existing subject to check it against** - unchanged, still open, per checkpoint 69. Policy question for the owner.
+- **`AgentProfile.capabilities` has zero production consumers** - unchanged, still open, per checkpoint 68. Policy question for the owner.
+- **`ceo`'s `must_approve_over_100k` constraint has no implementation attempt at all** - unchanged, still open, per checkpoint 68. Design question (what signal represents cost) for the owner.
+- **`core.py`'s `agent_registry`/`skill_registry`** - unchanged, still open, per checkpoint 66. Policy question for the owner.
+- **A real per-provider token-cost rate** - unchanged, still open, per checkpoints 42-71. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-71. Policy question for the owner.
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - unchanged, still open, per checkpoint 61.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58. Policy question for the owner.
+- **`WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`** - unchanged, still open, per checkpoints 62-64.
+- **A real weekly-hours accumulator** - unchanged, still open, per checkpoint 65.
+- **`result["delegated_from"]`/`result["delegation_reasoning"]` (`task_executor_v2.py:361,363`) have zero production readers**, same shape as this checkpoint's own fix - found as a runner-up candidate this session and ruled out only because the closely related `delegation_chain` field is *already* surfaced in both `main_v2.py` and the dashboard, so fixing this one well means deciding how much delegation detail those views should carry (a presentation call, not a pure wiring fix). Worth a session of its own.
+- **`main_v2.run_agent()` has no injection point for its budget/capacity managers or tasks file**, unlike `build_readonly_registry()` which accepts them - unchanged, still open, per checkpoint 71.
+- The next session should either get an owner decision on one of the policy questions above, or take the `delegated_from`/`delegation_reasoning` lead this session left on file, or look for a new gap the way checkpoints 45-72 each did.
+
+---
+
 # Daily Progress Report - October 19, 2026
 
 ## 🔍 CHECKPOINT 71: A SUCCESSFUL TOOL CALL'S REAL RESULT NEVER REACHED A HUMAN READING `AGENT-RUN`

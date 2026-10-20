@@ -388,6 +388,12 @@ function renderTaskDetail(task) {
     if (result.quality_score) {
       extra.push(`<dt>Quality Score</dt><dd>${escapeHtml(result.quality_score)}</dd>`);
     }
+    if (result.metrics) {
+      const m = result.metrics;
+      const avgQuality = Number(m.avg_quality || 0).toFixed(2);
+      const errorRate = (Number(m.error_rate || 0) * 100).toFixed(1);
+      extra.push(`<dt>Agent Metrics</dt><dd>avg_quality=${avgQuality}, tasks_completed=${m.tasks_completed || 0}, error_rate=${errorRate}%</dd>`);
+    }
     if (result.used_tools) {
       extra.push(`<dt>Tool Calls</dt><dd>${result.tool_calls || 0} (${result.tool_calls_failed || 0} failed)</dd>`);
       if (result.tool_call_errors && result.tool_call_errors.length) {
