@@ -405,6 +405,12 @@ function renderTaskDetail(task) {
     if (result.delegation_chain) {
       extra.push(`<dt>Delegation Chain</dt><dd>${result.delegation_chain.map(escapeHtml).join(" → ")}</dd>`);
     }
+    if (result.delegated_from) {
+      extra.push(`<dt>Delegated From</dt><dd>${escapeHtml(result.delegated_from)}</dd>`);
+    }
+    if (result.delegation_reasoning) {
+      extra.push(`<dt>Delegation Reasoning</dt><dd>${escapeHtml(result.delegation_reasoning)}</dd>`);
+    }
     if (result.delegation_declined) {
       extra.push(`<dt>Delegation Declined</dt><dd>${escapeHtml(result.delegation_declined)} (intended: ${escapeHtml(result.intended_delegate || "unknown")})</dd>`);
     }

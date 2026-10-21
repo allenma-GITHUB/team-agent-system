@@ -241,6 +241,10 @@ def show_task(task_id: str):
                 print(f"    ✗ {err['tool']}: {err['error']}")
         if result.get('delegation_chain'):
             print(f"  Delegation Chain: {' -> '.join(result['delegation_chain'])}")
+        if result.get('delegated_from'):
+            print(f"  Delegated From: {result['delegated_from']}")
+        if result.get('delegation_reasoning'):
+            print(f"  Delegation Reasoning: {result['delegation_reasoning']}")
         if result.get('delegation_declined'):
             print(f"  Delegation Declined: {result['delegation_declined']} "
                   f"(intended: {result.get('intended_delegate', 'unknown')})")

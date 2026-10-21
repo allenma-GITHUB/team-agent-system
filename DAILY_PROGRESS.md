@@ -1,3 +1,65 @@
+# Daily Progress Report - October 21, 2026
+
+## 🤝 CHECKPOINT 73: A DELEGATION'S OWN REASONING NEVER REACHED A HUMAN READING THE RESULT
+
+**Session opened with a clean `git status` and `HEAD` exactly matching `origin/main`** - second session running with no detached-HEAD/stale-local-ref quirk, after seventeen straight occurrences at checkpoints 53-71 and the first clean session at checkpoint 72. Nothing to fix here; noted in case it resurfaces.
+
+### Took the lead checkpoint 72 left on file
+
+Checkpoint 72's own Next Steps repeated the same backlog of policy/design questions this project has carried since checkpoints 42-72, plus one concrete, non-policy lead found as a "runner-up candidate" during that session's sweep but deliberately left for a session of its own: `result["delegated_from"]`/`result["delegation_reasoning"]` (`task_executor_v2.py:361,363`) have zero production readers, the same shape of gap checkpoint 72 had just fixed for `result["metrics"]`. `grep -rn "delegated_from\|delegation_reasoning"` confirmed this was still exactly true - both fields appear only at their declaration (`task_executor_v2.py:361,363`) and inside `tests/test_delegation.py`/`tests/test_delegate_to_tool.py`'s own "was it set on the result dict" assertions. Neither `main_v2.py` nor `static/dashboard.html` reads either field, even though both already print the closely related `delegation_chain` (the full hand-off path) from the very same result dict, one key away.
+
+### 🐛 Proven live before touching anything
+
+Ran a real, two-department delegation through the actual production code path - `DepartmentHeadAgent.run()` -> `AgentDecisionEngine.find_best_delegate()` -> `DepartmentHeadAgent.delegate_task()` - using the same isolated-registry pattern `tests/test_delegation.py` already uses (engineering strongly dislikes its own work, design is the better candidate):
+
+```
+agent_id (executed by): design_head
+delegated_from: engineering_head
+delegation_chain: ['engineering_head']
+delegation_reasoning: Delegating to Design Head who has higher affinity (0.9 difference)
+```
+
+Fed that exact result into a real `data/tasks.json` and called `main_v2.show_task()` with stdout captured:
+
+```
+  Delegation Chain: engineering_head
+```
+
+No `Delegated From` line, and critically, no trace of the reasoning sentence anywhere in the output - the one piece of this that explains *why* the hand-off happened had no surface at all, CLI or dashboard. (For this single-hop case, `delegation_chain`'s one entry happens to be the same string as `delegated_from` - that's a coincidence of a one-hop chain, not the field being surfaced; a longer chain's `delegated_from` is the *immediate* delegator, not necessarily the chain's only or final entry, and the reasoning text was never printed regardless of chain length.)
+
+### 🔧 Fix
+
+1. **`main_v2.py`'s `show_task()`** (~line 242) gains two new `.get()`-guarded lines, `Delegated From` and `Delegation Reasoning`, placed directly after the existing `Delegation Chain` line - same convention every other optional field in this function already follows.
+2. **`static/dashboard.html`'s task-detail renderer** gets the matching two `if (result.x)` blocks in the same position, each passed through `escapeHtml()` - unlike checkpoint 72's `metrics` fields (plain numbers the system itself computed), `delegation_reasoning` is a free-text sentence built from a department's config-declared display name, so it gets the same escaping every other text field (tool errors, `delegation_declined`) already uses.
+3. **`web_server.py`'s `GET /api/tasks/<id>`** needed no change - confirmed again (same as checkpoint 72 found for `metrics`) that this route returns the task dict unmodified with no field allowlist, so both fields were already reaching any API consumer.
+
+### 🧪 Validation
+
+New `tests/test_delegation_detail_visibility.py` (4 tests): a real delegation's `show_task()` output contains both the exact delegating agent's id and the exact reasoning sentence (not just the string "Delegated From"); a task that actually ran through `main_v2.submit_task()`/`process_tasks()` without delegating has neither line, with an explicit assertion that the result truly carries no `delegated_from` key so the negative check isn't vacuous; `static/dashboard.html`'s source contains both guards, both labels, and both `escapeHtml()` calls; and a live `GET /api/tasks/<id>` against the real `ThreadingHTTPServer` returns both fields intact, pinning the one place this checkpoint found already correct.
+
+Ran the new file twice back-to-back with zero failures. Full 66-file suite (65 existing + 1 new) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. `data/agent_states.json`/`data/performance_metrics.json` restored and `data/budgets.json`/`data/workflows.json` removed after every run, per this project's documented suite-pollution caveat.
+
+### ⚠️ Not a behavior change
+
+No decision, delegation, budget, or workflow logic changed - `AgentDecisionEngine.find_best_delegate()`, `DepartmentHeadAgent.delegate_task()`, and `TaskExecutor.execute()` are untouched. This is purely additive presentation: two new lines in the CLI's `show` output and two new entries in the dashboard's task-detail view, both shown only when a task was actually delegated and already had this data computed. No other command's output, and no API response shape, changes.
+
+### 📝 Next Steps
+
+- **`WorkflowStep.input_schema` has zero production consumers and no existing subject to check it against** - unchanged, still open, per checkpoint 69. Policy question for the owner.
+- **`AgentProfile.capabilities` has zero production consumers** - unchanged, still open, per checkpoint 68. Policy question for the owner.
+- **`ceo`'s `must_approve_over_100k` constraint has no implementation attempt at all** - unchanged, still open, per checkpoint 68. Design question (what signal represents cost) for the owner.
+- **`core.py`'s `agent_registry`/`skill_registry`** - unchanged, still open, per checkpoint 66. Policy question for the owner.
+- **A real per-provider token-cost rate** - unchanged, still open, per checkpoints 42-72. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-72. Policy question for the owner.
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - unchanged, still open, per checkpoint 61.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58. Policy question for the owner.
+- **`WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`** - unchanged, still open, per checkpoints 62-64.
+- **A real weekly-hours accumulator** - unchanged, still open, per checkpoint 65.
+- **`main_v2.run_agent()` has no injection point for its budget/capacity managers or tasks file**, unlike `build_readonly_registry()` which accepts them - unchanged, still open, per checkpoint 71. The same is true of `main_v2.process_tasks()` itself (confirmed again this session, working around it the same way checkpoint 71 did: isolating the delegation scenario's own executor explicitly, then injecting its real result into an isolated `tasks.json` rather than routing through `process_tasks()`'s shared global singletons).
+- The next session should either get an owner decision on one of the policy questions above, or look for a new gap the way checkpoints 45-73 each did.
+
+---
+
 # Daily Progress Report - October 20, 2026
 
 ## 📈 CHECKPOINT 72: A TASK'S OWN AGENT METRICS WERE PERSISTED TO DISK AND NEVER SHOWN TO A HUMAN
