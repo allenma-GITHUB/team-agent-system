@@ -1,3 +1,57 @@
+# Daily Progress Report - October 22, 2026
+
+## ✂️ CHECKPOINT 74: A TRUNCATED TOOL RESULT READ AS A COMPLETE ONE, WITH NO SIGN ANYTHING WAS MISSING
+
+**Session opened with `HEAD` detached one commit ahead of `main`/`origin/main`** - checkpoint 73's own commit (`0dc929b`) existed on disk but neither the local `main` branch nor (so a stale local ref suggested) `origin/main` pointed at it. Before touching anything else: `git checkout main && git merge --ff-only 0dc929b` fast-forwarded the local branch, and `git push origin main` reported "Everything up-to-date" - a fresh `git fetch origin main` then showed `origin/main` was already at `0dc929b` all along, so nothing was actually at risk; the detached `HEAD` was only a stale local ref, the same recovery checkpoints 53-71 hit repeatedly (and checkpoint 72's own note flagged as "in case it resurfaces"). Recorded here since it did resurface, not because anything needed saving this time.
+
+### Swept files the gap-sweep hadn't named together before
+
+Checkpoint 73's Next Steps repeated the same policy-question backlog carried since checkpoints 42-73, with no new non-policy lead. This session widened the sweep to `agent_loop.py` crossed against its one real caller, `task_executor_v2.py`, and its one direct human-facing consumer, `main_v2.py`'s `run_agent()` (the `agent-run` CLI command) - rather than re-running the dataclass-field sweep over files already covered twice. `AgentRunResult.messages` (`agent_loop.py:55`) is built on every run (populated at lines 114 and 147) and is the full conversation transcript: the original prompt, every assistant turn, and - critically - every tool's complete, untruncated result content fed back to the model. `grep -rn "\.messages\b" --include=*.py --include=*.html web_server.py static/dashboard.html main_v2.py task_executor_v2.py` and the same grep over `tests/*.py` both came back empty - the only field on `AgentRunResult` with zero references anywhere outside its own construction, not even a "was it set" test assertion.
+
+### 🐛 Proven live before touching anything
+
+`ToolCallRecord.result_preview` (same file, used by `main_v2.run_agent()` since checkpoint-era fix in `tests/test_agent_run_tool_result_visibility.py`) is sliced to `RESULT_PREVIEW_CHARS` (200) at the moment it's built - the rest of the string is gone by the time it reaches the CLI's print loop, and nothing in that loop ever said so. Seeded 8 tasks with long descriptions into a real `data/tasks.json` and ran the actual `agent-run` path:
+
+```
+$ python3 main_v2.py agent-run "What tasks has engineering worked on recently?"
+     ✓ list_tasks()
+       -> { "total_matching": 8, "showing": 8, "tasks": [ { "id": "0001", "description": "Task number 0: a reasonably long description so the JSON blob grows past two hundred characters wh
+```
+
+That line ends mid-word, with no closing brace and no ellipsis - indistinguishable, to a human reading it, from a tool that returned malformed JSON. The model that answered the question saw the complete 8-task list (confirmed via `result.messages`' matching "tool"-role entry); the human watching the same transcript saw strictly less than the model did, with no indication anything had been cut.
+
+### 🔧 Fix
+
+1. **`main_v2.py`'s `run_agent()`** now pulls the matching `"tool"`-role entry from `result.messages` for each `ToolCallRecord` (built in the same loop, same order, one per call including failed ones, so a plain `zip()` lines them up correctly) and, when that full content is longer than `RESULT_PREVIEW_CHARS`, prints `(truncated - re-run with --full-output to see all of it)` under the existing collapsed preview - the preview itself is unchanged for the common case where nothing was cut.
+2. **New `--full-output` flag** on the `agent-run` command (`main_v2.py`'s argument parsing and usage/help text) passes `full_output=True` into `run_agent()`, which then prints the real, complete tool content instead of the truncated preview.
+3. No change to `agent_loop.py`, `task_executor_v2.py`, `tools.py`, or any decision/budget/workflow logic - this is purely a CLI-output fix, reading a field the loop already produced.
+
+### 🧪 Validation
+
+New `tests/test_agent_run_full_output.py` (4 tests): a result seeded past 200 chars is marked truncated in the default view; `--full-output` (called directly and through `main_v2.main()`'s real `sys.argv` parsing) prints the complete content, provably including a task description that only appears past character 200 of the raw JSON, and never also claims to be truncated; a genuinely short result (`list_departments`) is never falsely marked truncated. Ran the new file twice back-to-back with zero failures. Full 74-file suite (73 existing + 1 new) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. `data/agent_states.json`/`data/performance_metrics.json` restored and `data/budgets.json`/`data/workflows.json` removed after every run, per this project's documented suite-pollution caveat.
+
+### ⚠️ Not a behavior change
+
+No decision, delegation, budget, or workflow logic changed, and the default `agent-run` output is unchanged except for the new truncation marker appearing only when content was actually cut (verified it never appears for a short result). `--full-output` is strictly opt-in. No other command's output, and no API response shape, changes.
+
+### 📝 Next Steps
+
+- **`WorkflowStep.input_schema` has zero production consumers and no existing subject to check it against** - unchanged, still open, per checkpoint 69. Policy question for the owner.
+- **`AgentProfile.capabilities` has zero production consumers** - unchanged, still open, per checkpoint 68. Policy question for the owner.
+- **`ceo`'s `must_approve_over_100k` constraint has no implementation attempt at all** - unchanged, still open, per checkpoint 68. Design question (what signal represents cost) for the owner.
+- **`core.py`'s `agent_registry`/`skill_registry`** - unchanged, still open, per checkpoint 66. Policy question for the owner.
+- **A real per-provider token-cost rate** - unchanged, still open, per checkpoints 42-72. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-72. Policy question for the owner.
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - unchanged, still open, per checkpoint 61.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58. Policy question for the owner.
+- **`WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`** - unchanged, still open, per checkpoints 62-64.
+- **A real weekly-hours accumulator** - unchanged, still open, per checkpoint 65.
+- **`main_v2.run_agent()` has no injection point for its budget/capacity managers or tasks file**, unlike `build_readonly_registry()` which accepts them - unchanged, still open, per checkpoint 71.
+- **`core.py`'s `EventBus.subscribe()`/callback dispatch has zero registered subscribers anywhere in the codebase** - found as a runner-up candidate this session and deliberately left for a session of its own: `emit()`'s callback loop (core.py:54-58) is permanently a no-op, distinct from the trace-file logging `emit()` also does (which main_v2.py's `print_trace()` does consume). Needs an owner call on whether to wire a real live listener (e.g. a budget-threshold callback) or delete the dead mechanism - not a unilateral call for an unattended run.
+- The next session should either get an owner decision on one of the policy questions above, or look for a new gap the way checkpoints 45-74 each did.
+
+---
+
 # Daily Progress Report - October 21, 2026
 
 ## 🤝 CHECKPOINT 73: A DELEGATION'S OWN REASONING NEVER REACHED A HUMAN READING THE RESULT

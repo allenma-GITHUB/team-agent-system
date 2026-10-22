@@ -17,7 +17,7 @@ from workflows import workflow_engine, create_feature_request_workflow, create_b
 from strategy import strategic_planner
 from visualization import render_bar
 from tools import build_readonly_registry
-from agent_loop import run_agent_loop
+from agent_loop import run_agent_loop, RESULT_PREVIEW_CHARS
 from llm_provider import ToolsUnsupportedError, ToolCallFailedError
 
 WORKFLOW_TEMPLATES = {
@@ -470,7 +470,7 @@ def show_strategy(apply: bool):
         print("\n(Dry run - re-run with --apply to actually move the budget.)")
 
 
-def run_agent(question: str, max_iterations: int = 5):
+def run_agent(question: str, max_iterations: int = 5, full_output: bool = False):
     """Ask an agent a question it must answer from real system state.
 
     Unlike `submit`/`process`, which produce prose about a task, this runs
@@ -498,19 +498,37 @@ def run_agent(question: str, max_iterations: int = 5):
 
     if result.tool_calls:
         print("   Tool calls:")
-        for call in result.tool_calls:
+        # ToolCallRecord.result_preview is sliced to RESULT_PREVIEW_CHARS at
+        # the point it's built (agent_loop.py), so it is gone by the time it
+        # reaches here - there is no way to recover the rest of it from the
+        # record itself. The full, untruncated content the model actually
+        # saw still exists, in result.messages' "tool"-role entries, built
+        # in the same loop and in the same order as tool_calls, one per
+        # call (including failed ones, since ToolRegistry.execute never
+        # raises) - so zipping the two together lines them up correctly.
+        full_contents = [m.get("content", "") for m in result.messages if m.get("role") == "tool"]
+        for call, full_content in zip(result.tool_calls, full_contents):
             mark = "✓" if call.ok else "✗"
             detail = "" if call.ok else f" ({call.error})"
             print(f"     {mark} {call.name}({_format_args(call.arguments)}){detail}")
             if call.ok:
-                # The model answered from this result; a human reading the
-                # transcript deserves to see the same data, not just a
-                # checkmark saying the call didn't fail. Collapsed to one
-                # line - result_preview is pretty-printed JSON for some
-                # tools, and a human scanning a list of calls needs a scan,
-                # not a reformatted document.
-                preview = " ".join(call.result_preview.split())
-                print(f"       -> {preview}")
+                if full_output:
+                    print(f"       -> {full_content}")
+                else:
+                    # The model answered from this result; a human reading
+                    # the transcript deserves to see the same data, not just
+                    # a checkmark saying the call didn't fail. Collapsed to
+                    # one line - result_preview is pretty-printed JSON for
+                    # some tools, and a human scanning a list of calls needs
+                    # a scan, not a reformatted document. When the real
+                    # result was longer than the preview, say so explicitly
+                    # rather than letting a silently-cut-off JSON fragment
+                    # (no closing brace, a word sliced in half) read as if
+                    # it were the whole answer.
+                    preview = " ".join(call.result_preview.split())
+                    print(f"       -> {preview}")
+                    if len(full_content) > RESULT_PREVIEW_CHARS:
+                        print("          (truncated - re-run with --full-output to see all of it)")
     else:
         print("   Tool calls: none - answered without looking anything up")
 
@@ -551,7 +569,7 @@ def main():
         print("  python main_v2.py workflow retry <instance_id>")
         print("  python main_v2.py workflow status <instance_id>")
         print("  python main_v2.py strategy [--apply]")
-        print("  python main_v2.py agent-run <question> [--max-iterations N]")
+        print("  python main_v2.py agent-run <question> [--max-iterations N] [--full-output]")
         print("  python main_v2.py serve [--port N]")
         print("\nExample:")
         print("  python main_v2.py submit 'Fix login bug'")
@@ -666,7 +684,7 @@ def main():
 
     elif command == "agent-run":
         if len(sys.argv) < 3:
-            print("Usage: python main_v2.py agent-run <question> [--max-iterations N]")
+            print("Usage: python main_v2.py agent-run <question> [--max-iterations N] [--full-output]")
             return
         max_iterations = 5
         if "--max-iterations" in sys.argv:
@@ -681,7 +699,8 @@ def main():
             if max_iterations < 1:
                 print(f"✗ --max-iterations must be at least 1, got {max_iterations}")
                 return
-        run_agent(sys.argv[2], max_iterations=max_iterations)
+        full_output = "--full-output" in sys.argv
+        run_agent(sys.argv[2], max_iterations=max_iterations, full_output=full_output)
 
     elif command == "serve":
         port = 8765
