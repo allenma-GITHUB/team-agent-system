@@ -253,6 +253,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._handle_submit(body)
         elif path == "/api/process":
             self._handle_process(body)
+        elif path == "/api/agent-run":
+            self._handle_agent_run(body)
         else:
             self._send_json({"error": f"no such route: POST {path}"}, status=404)
 
@@ -287,6 +289,42 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         sequential = bool(body.get("sequential", False))
         _, log = _run_capturing_stdout(main_v2.process_tasks, parallel=not sequential)
         self._send_json({"tasks": [_task_summary(t) for t in _tasks()], "log": log})
+
+    def _handle_agent_run(self, body: dict):
+        """main_v2.py's `agent-run` command - the read-only tool-calling Q&A
+        loop (agent_loop.py) - has had zero web consumers since it shipped:
+        a human on the dashboard could submit/process tasks but had no way
+        to ask the same question the CLI already answers by looking up real
+        budgets/capacity/departments/tasks. Mirrors _handle_submit/
+        _handle_process: calls straight into main_v2.run_agent() under the
+        same stdout-capturing lock so the dashboard shows the exact trace
+        (tool calls, answer, any "stopped at iteration limit" warning) the
+        CLI would print, rather than a reimplemented summary that could
+        drift from it. Nothing here mutates data/*.json - the tools
+        run_agent() can call are the same read-only registry build_readonly_
+        registry() always builds - so this needs no _write_lock exemption
+        and no new state for loadTasks()/loadStatus() to pick up."""
+        question = (body.get("question") or "").strip()
+        if not question:
+            self._send_json({"error": "question is required"}, status=400)
+            return
+
+        max_iterations = body.get("max_iterations", 5)
+        try:
+            max_iterations = int(max_iterations)
+        except (TypeError, ValueError):
+            self._send_json({"error": f"max_iterations must be a whole number, got {max_iterations!r}"},
+                             status=400)
+            return
+        if max_iterations < 1:
+            self._send_json({"error": f"max_iterations must be at least 1, got {max_iterations}"}, status=400)
+            return
+
+        full_output = bool(body.get("full_output", False))
+
+        _, log = _run_capturing_stdout(
+            main_v2.run_agent, question, max_iterations=max_iterations, full_output=full_output)
+        self._send_json({"log": log})
 
 
 def run(port: int = 8765, bind: str = "127.0.0.1"):

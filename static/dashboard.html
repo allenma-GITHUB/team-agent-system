@@ -84,7 +84,7 @@
   button { background: var(--accent); color: #fff; border: none; cursor: pointer; font-weight: 600; }
   button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
   button:disabled { opacity: .55; cursor: default; }
-  #log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap;
+  #log, #agent-log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap;
     background: var(--track); border-radius: 6px; padding: 10px; max-height: 160px; overflow-y: auto; }
   .empty { color: var(--muted); font-style: italic; padding: 6px 0; }
   .recs li { margin-bottom: 4px; }
@@ -141,6 +141,26 @@
         <button id="submit-btn" type="button">Submit Task</button>
       </div>
     </div>
+  </div>
+
+  <div class="panel">
+    <h2>Ask an Agent</h2>
+    <div class="row">
+      <div class="field" style="flex: 1 1 100%;">
+        <label for="f-question">Question — answered by looking up real budgets, capacity, departments and task history, not invented</label>
+        <textarea id="f-question" placeholder="e.g. Can engineering afford a 20-hour task?"></textarea>
+      </div>
+    </div>
+    <div class="row" style="margin-top: 8px;">
+      <div class="field">
+        <label for="f-max-iterations">Max iterations</label>
+        <input id="f-max-iterations" type="number" min="1" step="1" value="5">
+      </div>
+      <div class="field" style="flex: 0 0 auto;">
+        <button id="agent-run-btn" type="button">Ask</button>
+      </div>
+    </div>
+    <div id="agent-log" hidden></div>
   </div>
 
   <div class="panel">
@@ -684,6 +704,33 @@ $("#process-btn").addEventListener("click", async () => {
     await refreshAll();
   } catch (err) {
     showLog("Error: " + err.message);
+  }
+});
+
+function showAgentLog(text) {
+  const log = $("#agent-log");
+  if (!text) { log.hidden = true; return; }
+  log.hidden = false;
+  log.textContent = text;
+}
+
+$("#agent-run-btn").addEventListener("click", async () => {
+  const question = $("#f-question").value.trim();
+  if (!question) { $("#f-question").focus(); return; }
+  const max_iterations = Number($("#f-max-iterations").value) || 5;
+
+  $("#agent-run-btn").disabled = true;
+  try {
+    const result = await api("/api/agent-run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, max_iterations }),
+    });
+    showAgentLog(result.log);
+  } catch (err) {
+    showAgentLog("Error: " + err.message);
+  } finally {
+    $("#agent-run-btn").disabled = false;
   }
 });
 

@@ -739,6 +739,83 @@ def test_dashboard_html_wires_up_the_workflow_panel():
         assert "escapeHtml(w.error)" in script_section
 
 
+def test_agent_run_endpoint_answers_a_real_question():
+    """main_v2.py's `agent-run` command - the read-only tool-calling loop
+    (agent_loop.py) that lets an agent look up real budgets/capacity/
+    departments/task history instead of inventing an answer - has had zero
+    web consumers since it shipped: a human on the dashboard could submit
+    or process a task but had no way to ask the same question the CLI
+    already answers. Confirms /api/agent-run calls the real run_agent(),
+    not a placeholder: the mock provider (always available with no API
+    key, see llm_provider.py) deterministically calls
+    get_department_budget for a budget question, and the captured log -
+    the same text the CLI prints - carries that real tool call and its
+    real result, not a canned string."""
+    print_section("21. POST /api/agent-run Answers A Real Question")
+
+    with RunningServer() as server:
+        status, body = server.post("/api/agent-run", {"question": "What is engineering's budget?"})
+        print(f"  status={status} log={body.get('log')!r}")
+        assert status == 200
+        assert "get_department_budget(department='engineering')" in body["log"]
+        assert "MOCK: answered using get_department_budget" in body["log"]
+        assert "iteration(s)" in body["log"]
+
+
+def test_agent_run_endpoint_validates_input():
+    """Mirrors the CLI's own `agent-run` validation (main_v2.py's argument
+    parsing for --max-iterations) rather than letting bad input reach
+    run_agent_loop()'s own ValueError as an unhandled 500."""
+    print_section("22. POST /api/agent-run Validates Its Input")
+
+    with RunningServer() as server:
+        status, body = server.post("/api/agent-run", {"question": "   "})
+        print(f"  empty question -> status={status} body={body}")
+        assert status == 400
+        assert "question" in body["error"]
+
+        status, body = server.post("/api/agent-run", {"question": "hi", "max_iterations": "not a number"})
+        print(f"  non-numeric max_iterations -> status={status} body={body}")
+        assert status == 400
+        assert "max_iterations" in body["error"]
+
+        status, body = server.post("/api/agent-run", {"question": "hi", "max_iterations": 0})
+        print(f"  max_iterations=0 -> status={status} body={body}")
+        assert status == 400
+        assert "max_iterations" in body["error"]
+
+
+def test_dashboard_html_wires_up_the_agent_run_panel():
+    """Pins the frontend wiring that closes the gap the two tests above
+    prove at the API layer: the panel, its question/max-iterations inputs
+    and its log container exist, the click handler posts to
+    /api/agent-run, and the response is rendered via textContent (same as
+    the existing #log for submit/process) rather than innerHTML - this
+    text is a transcript that can embed arbitrary tool-result content
+    (e.g. a task description a user once typed), so it must never be
+    interpreted as markup."""
+    print_section("23. Dashboard HTML Wires Up The Ask-An-Agent Panel")
+
+    with RunningServer() as server:
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=10) as resp:
+            body = resp.read().decode("utf-8")
+
+        assert 'id="f-question"' in body
+        assert 'id="f-max-iterations"' in body
+        assert 'id="agent-run-btn"' in body
+        assert 'id="agent-log" hidden' in body
+        assert "/api/agent-run" in body
+
+        click_handler = body.split('$("#agent-run-btn").addEventListener')[-1].split("refreshAll();")[0]
+        assert "/api/agent-run" in click_handler
+        assert "result.log" in click_handler
+
+        show_agent_log = body.split("function showAgentLog")[-1].split("\n}")[0]
+        assert '$("#agent-log")' in show_agent_log
+        assert "textContent = text" in show_agent_log
+        assert "innerHTML" not in show_agent_log
+
+
 def main():
     print("\n" + "=" * 60)
     print("  WEB DASHBOARD (web_server.py) REGRESSION TESTS")
@@ -766,6 +843,9 @@ def main():
         test_dashboard_html_wires_up_the_strategy_panel()
         test_workflows_endpoint_exposes_a_real_running_instance()
         test_dashboard_html_wires_up_the_workflow_panel()
+        test_agent_run_endpoint_answers_a_real_question()
+        test_agent_run_endpoint_validates_input()
+        test_dashboard_html_wires_up_the_agent_run_panel()
 
     print("\n" + "=" * 60)
     print("  [OK] All web dashboard tests passed!")

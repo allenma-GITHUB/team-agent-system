@@ -1,3 +1,75 @@
+# Daily Progress Report - October 23, 2026
+
+## 🤖 CHECKPOINT 75: THE AGENT Q&A LOOP HAD A WORKING CLI AND NO WEB ROUTE AT ALL
+
+**Session opened with a clean `git status` and `HEAD` exactly matching `origin/main`** (`a0c2453`) - no detached-HEAD/stale-local-ref quirk this time.
+
+### Swept for the gap shape that has paid off before: a CLI feature with zero web consumers
+
+Checkpoint 74's Next Steps repeated the same policy-question backlog carried since checkpoints 42-74, plus one concrete non-policy lead explicitly scoped out ("not a unilateral call for an unattended run"): `core.py`'s `EventBus.subscribe()` callback dispatch, left for the owner to decide whether to wire or delete. Rather than touch that, this session re-ran the "CLI command, zero web route" sweep that already paid off for `workflows.py` (checkpoint 56-era) and `strategy.py` (checkpoint 8158a61) - `grep -n "add_parser\|^def " main_v2.py` against `web_server.py`'s `do_GET`/`do_POST` routing table. Every CLI command has a web counterpart except one: `main_v2.py`'s `agent-run` (the tool-calling Q&A loop built in `agent_loop.py` - a model that can call `get_department_budget`/`get_department_capacity`/`list_departments`/`list_tasks` mid-reasoning instead of inventing an answer) has existed with zero API route since the dashboard was built. `grep -n "agent-run\|agent_run\|run_agent" web_server.py static/dashboard.html` returned nothing.
+
+### 🐛 Proven live before touching anything
+
+```
+$ python3 main_v2.py agent-run "What is engineering's budget?"
+🤖 Agent (MOCK (available: mock))
+   Tools available: get_department_budget, get_department_capacity, list_departments, list_tasks
+   ...
+     ✓ get_department_budget(department='engineering')
+       -> { "department": "engineering", "allocated": null, ... }
+MOCK: answered using get_department_budget
+```
+
+Then started the real dashboard server and hit the route a browser's "Ask an Agent" button would have to use:
+
+```
+$ curl -s -X POST http://127.0.0.1:18765/api/agent-run -d '{"question":"What is engineering budget?"}'
+{"error": "no such route: POST /api/agent-run"}
+$ curl -s -X POST http://127.0.0.1:18765/api/submit -d '{"description":"temp probe task","estimated_hours":1}'
+{"task": {...}, "log": "..."}
+```
+
+Same server, same request shape - one route exists, the other doesn't. (The probe's task got written into the real `data/tasks.json`; reverted with `git checkout -- data/tasks.json` before any other work, per this project's "investigate before deleting/overwriting" rule for anything touching tracked files.)
+
+### 🔧 Fix
+
+1. **`web_server.py`** gains `_handle_agent_run()` and a new `POST /api/agent-run` route, built on the exact same pattern as `_handle_submit`/`_handle_process`: validate (`question` required and non-empty; `max_iterations` must parse as an int >= 1, same messages the CLI's own `--max-iterations` parsing already gives), then call `main_v2.run_agent()` through the existing `_run_capturing_stdout()`/`_write_lock` helper so the dashboard shows the identical trace the CLI prints - tool calls, the real result, any "stopped at iteration limit" warning - rather than a reimplemented summary that could drift from it. Nothing here mutates `data/*.json`: `run_agent()`'s tools are the same read-only registry `build_readonly_registry()` always builds, so no new write-lock exemption or state was needed.
+2. **`static/dashboard.html`** gets a new "Ask an Agent" panel (question textarea, max-iterations field, button) between "Submit a Task" and "Tasks", plus `showAgentLog()`/the button's click handler. The response renders via `textContent` (`#agent-log`), same as the existing `#log` for submit/process - this text is a transcript that can embed arbitrary prior tool-result content, so it is never treated as markup.
+
+### 🧪 Validation
+
+`tests/test_web_server.py` gains 3 tests (sections 21-23, now 23 total in that file): a real question against the mock provider reaches `/api/agent-run` and the response log provably contains the actual tool call and its actual result (`get_department_budget(department='engineering')` / `MOCK: answered using get_department_budget`), not a placeholder; empty question, non-numeric `max_iterations`, and `max_iterations=0` each return a clean 400 with the CLI's own wording rather than a 500; and the dashboard HTML wiring test pins the panel's element IDs, the fetch call, and that `showAgentLog()` uses `textContent`, never `innerHTML`.
+
+Ran the file twice back-to-back with zero failures. Full 75-file suite (74 existing + 0 new files, since this extended `test_web_server.py` rather than adding a new one, matching that file's own convention of one test-per-endpoint rather than one-file-per-endpoint) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. `data/agent_states.json`/`data/performance_metrics.json` restored and `data/budgets.json`/`data/workflows.json` removed after every run.
+
+### ⚠️ Not a behavior change
+
+No decision, delegation, budget, or workflow logic changed, and no existing route's shape changed. `run_agent_loop()`, `run_agent()`, and `build_readonly_registry()` are untouched - this is purely a new, additive route plus a new, additive dashboard panel. The CLI's `agent-run` command is unaffected.
+
+### 🔍 Found, not fixed (left for an owner call, per this project's "leave policy questions to the owner" rule)
+
+- **`agent_state.py`'s `PerformanceMetrics.customer_satisfaction`** (declared since the first commit, default `0.0`) has no producer anywhere in the codebase and no realistic one to build from this simulation's current inputs - there is no customer-facing concept here at all; tasks come from a CLI/API submitter, not an external customer who could rate anything. Unlike `quality_score` (an honest, if limited, proxy computed from real execution signals - documented in `CLAUDE.md`), this field has *no* signal to compute from, so wiring it up now would mean fabricating a number, exactly the "convenient fiction" this project's conventions warn against. It is currently harmless only because nothing reads it either. Needs an owner decision: invent a proxy signal (and document what it actually measures), or formally retire the field.
+- **`core.py`'s `BaseAgent.supports_managed_tool_fallback`** (class attribute, default `False`, present since the first commit) is never read anywhere, never overridden by `DepartmentHeadAgent` (the only real subclass), and doesn't correspond to any mechanism in `llm_provider.py` or `agent_loop.py` today - no "managed tool fallback" concept exists elsewhere in the code for it to gate. Looks like scaffolding for a feature that was never built rather than a wired flag with a missing reader. Needs an owner call: build the fallback it implies, or delete the attribute.
+
+### 📝 Next Steps
+
+- The two findings directly above are new leads for a future session - neither is a unilateral call for an unattended run.
+- **`WorkflowStep.input_schema` has zero production consumers and no existing subject to check it against** - unchanged, still open, per checkpoint 69. Policy question for the owner.
+- **`AgentProfile.capabilities` has zero production consumers** - unchanged, still open, per checkpoint 68. Policy question for the owner.
+- **`ceo`'s `must_approve_over_100k` constraint has no implementation attempt at all** - unchanged, still open, per checkpoint 68. Design question (what signal represents cost) for the owner.
+- **`core.py`'s `agent_registry`/`skill_registry`** - unchanged, still open, per checkpoint 66. Policy question for the owner.
+- **A real per-provider token-cost rate** - unchanged, still open, per checkpoints 42-72. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`** and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-72. Policy question for the owner.
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - unchanged, still open, per checkpoint 61.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58. Policy question for the owner.
+- **`WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`** - unchanged, still open, per checkpoints 62-64.
+- **A real weekly-hours accumulator** - unchanged, still open, per checkpoint 65.
+- **`main_v2.run_agent()` has no injection point for its budget/capacity managers or tasks file**, unlike `build_readonly_registry()` which accepts them - unchanged, still open, per checkpoint 71.
+- **`core.py`'s `EventBus.subscribe()`/callback dispatch has zero registered subscribers anywhere in the codebase** - unchanged, still open, per checkpoint 74.
+- The next session should either get an owner decision on one of the policy questions above, or look for a new gap the way checkpoints 45-75 each did.
+
+---
+
 # Daily Progress Report - October 22, 2026
 
 ## ✂️ CHECKPOINT 74: A TRUNCATED TOOL RESULT READ AS A COMPLETE ONE, WITH NO SIGN ANYTHING WAS MISSING
