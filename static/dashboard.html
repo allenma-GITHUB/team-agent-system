@@ -196,8 +196,23 @@
     <ul class="recs" id="recs-list"></ul>
   </div>
 
-  <div class="panel" id="workflow-panel" hidden>
+  <div class="panel" id="workflow-panel">
     <h2>Workflows</h2>
+    <div class="row">
+      <div class="field">
+        <label for="wf-template">Template</label>
+        <select id="wf-template"></select>
+      </div>
+      <div class="field">
+        <label for="wf-input">Input (key=value, comma-separated)</label>
+        <input id="wf-input" type="text" placeholder="title=Dark mode, priority=high">
+      </div>
+      <div class="field" style="flex: 0 0 auto;">
+        <button id="wf-start-btn" type="button">Start</button>
+      </div>
+    </div>
+    <div id="wf-start-log" hidden></div>
+    <div id="workflow-empty" class="empty">No workflow instances yet — start one above.</div>
     <div id="workflow-list"></div>
   </div>
 
@@ -606,28 +621,129 @@ async function loadReport() {
 // progress, current_step, step_statuses, error) is exactly what the CLI's
 // `workflow status <id>` command already prints; this lists every instance
 // instead of requiring the caller to already know an instance_id, which
-// the CLI itself has never had a way to do either. Hidden entirely when no
-// instance exists, same convention as the Resource Overview panel.
+// the CLI itself has never had a way to do either. The instance list itself
+// (not the whole panel, which also hosts the Start-a-workflow form below)
+// is hidden when none exists, in favor of the #workflow-empty placeholder.
+// Templates are registered once, in memory, at server startup
+// (main_v2.init_workflows()) - they never change at runtime, so this loads
+// once rather than on every refreshAll() poll.
+async function loadWorkflowTemplates() {
+  const templates = await api("/api/workflow-templates");
+  $("#wf-template").innerHTML = templates.map(t =>
+    `<option value="${escapeHtml(t.template_id)}">${escapeHtml(t.name)} (${t.steps} steps)</option>`
+  ).join("");
+}
+
+// Each card's own action log, keyed by instance_id - kept here rather than
+// left inside the DOM, because loadWorkflows() rebuilds #workflow-list's
+// innerHTML from scratch on every call (including the one each action
+// below triggers right after it runs), which would otherwise wipe out the
+// very log line that action just produced before a human ever saw it.
+const wfLogs = {};
+
 async function loadWorkflows() {
   const workflows = await api("/api/workflows");
-  const panel = $("#workflow-panel");
-  panel.hidden = workflows.length === 0;
-  if (panel.hidden) return;
+  $("#workflow-empty").hidden = workflows.length > 0;
 
   $("#workflow-list").innerHTML = workflows.map(w => {
     const steps = Object.entries(w.step_statuses)
       .map(([stepId, status]) => `${escapeHtml(stepId)}: ${escapeHtml(status)}`)
       .join(" · ");
     const errorLine = w.error ? `<div class="alert">⚠ ${escapeHtml(w.error)}</div>` : "";
-    return `<div class="workflow-card">
+    return `<div class="workflow-card" data-instance="${escapeHtml(w.instance_id)}">
       <h3><span>${escapeHtml(w.workflow_name)}</span><span class="badge ${escapeHtml(w.status)}">${escapeHtml(w.status)}</span></h3>
       <div class="muted" style="font-size:12px;">${escapeHtml(w.instance_id)}${w.current_step ? " · current: " + escapeHtml(w.current_step) : ""}</div>
       ${bar("Progress", w.progress, `${(w.progress * 100).toFixed(0)}%`)}
       <div class="muted" style="font-size:12px;margin-top:6px;">${steps}</div>
       ${errorLine}
+      <div class="row" style="margin-top:8px; flex-wrap: wrap;">
+        <button class="secondary wf-next" type="button">Next Step</button>
+        <button class="secondary wf-retry" type="button">Retry</button>
+        <input class="wf-step-id" type="text" placeholder="step_id" style="width:100px;">
+        <button class="secondary wf-complete" type="button">Complete Step</button>
+        <input class="wf-approver" type="text" placeholder="approver_id" style="width:110px;">
+        <button class="secondary wf-approve" type="button">Approve</button>
+        <button class="secondary wf-reject" type="button">Reject</button>
+      </div>
+      <div class="wf-log muted" style="font-size:12px;margin-top:6px;white-space:pre-wrap;">${escapeHtml(wfLogs[w.instance_id] || "")}</div>
     </div>`;
   }).join("");
+
+  wireWorkflowCardActions();
 }
+
+async function postWorkflow(path, body) {
+  return api(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// Every button inside a .workflow-card acts on that card's own instance_id
+// (and, for complete/approve/reject, the step_id/approver_id typed into
+// that same card) - re-wired after every loadWorkflows() re-render since
+// innerHTML replacement above drops any previously attached listeners.
+function wireWorkflowCardActions() {
+  document.querySelectorAll(".workflow-card").forEach(card => {
+    const instanceId = card.dataset.instance;
+    const run = async (fn) => {
+      try {
+        const result = await fn();
+        wfLogs[instanceId] = result.log || "";
+      } catch (err) {
+        wfLogs[instanceId] = "Error: " + err.message;
+      }
+      await loadWorkflows();
+    };
+
+    card.querySelector(".wf-next").addEventListener("click", () =>
+      run(() => postWorkflow("/api/workflow/next", { instance_id: instanceId })));
+
+    card.querySelector(".wf-retry").addEventListener("click", () =>
+      run(() => postWorkflow("/api/workflow/retry", { instance_id: instanceId })));
+
+    card.querySelector(".wf-complete").addEventListener("click", () => {
+      const step_id = card.querySelector(".wf-step-id").value.trim();
+      if (!step_id) return;
+      run(() => postWorkflow("/api/workflow/complete", { instance_id: instanceId, step_id }));
+    });
+
+    const approveOrReject = (approved) => {
+      const step_id = card.querySelector(".wf-step-id").value.trim();
+      const approver_id = card.querySelector(".wf-approver").value.trim();
+      if (!step_id || !approver_id) return;
+      run(() => postWorkflow("/api/workflow/approve", { instance_id: instanceId, step_id, approver_id, approved }));
+    };
+    card.querySelector(".wf-approve").addEventListener("click", () => approveOrReject(true));
+    card.querySelector(".wf-reject").addEventListener("click", () => approveOrReject(false));
+  });
+}
+
+$("#wf-start-btn").addEventListener("click", async () => {
+  const template_id = $("#wf-template").value;
+  if (!template_id) return;
+
+  const input = {};
+  $("#wf-input").value.trim().split(",").forEach(pair => {
+    const idx = pair.indexOf("=");
+    if (idx > -1) input[pair.slice(0, idx).trim()] = pair.slice(idx + 1).trim();
+  });
+
+  $("#wf-start-btn").disabled = true;
+  try {
+    const result = await postWorkflow("/api/workflow/start", { template_id, input });
+    $("#wf-start-log").hidden = false;
+    $("#wf-start-log").textContent = result.log;
+    $("#wf-input").value = "";
+    await loadWorkflows();
+  } catch (err) {
+    $("#wf-start-log").hidden = false;
+    $("#wf-start-log").textContent = "Error: " + err.message;
+  } finally {
+    $("#wf-start-btn").disabled = false;
+  }
+});
 
 // strategy.py's StrategicPlanner has computed real donor->recipient budget
 // moves (an underspending department's idle allocation, toward one running
@@ -734,6 +850,7 @@ $("#agent-run-btn").addEventListener("click", async () => {
   }
 });
 
+loadWorkflowTemplates();
 refreshAll();
 setInterval(refreshAll, 8000);
 </script>

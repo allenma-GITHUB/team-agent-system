@@ -29,6 +29,7 @@ import urllib.request
 
 import main_v2
 import web_server
+from agent_state import agent_registry, AgentProfile
 from budgets import budget_manager
 from http.server import ThreadingHTTPServer
 from workflows import workflow_engine
@@ -716,15 +717,22 @@ def test_dashboard_html_wires_up_the_workflow_panel():
     layer: the panel and its containers exist, loadWorkflows() reads
     /api/workflows into them, every dynamic string (workflow_name,
     instance_id, current_step, step id/status, error) goes through
-    escapeHtml() like every other value on this page, and the panel stays
-    hidden until a workflow instance actually exists."""
+    escapeHtml() like every other value on this page.
+
+    The panel itself is no longer hidden until an instance exists (see
+    checkpoint that added the Start/Next/Complete/Approve/Retry controls
+    below) - a human needs to see the "start a workflow" form before any
+    instance exists, not just after one shows up. Only the now-separate
+    #workflow-empty placeholder is conditionally hidden instead."""
     print_section("20. Dashboard HTML Wires Up The Workflow Panel")
 
     with RunningServer() as server:
         with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=10) as resp:
             body = resp.read().decode("utf-8")
 
-        assert 'id="workflow-panel" hidden' in body
+        assert 'id="workflow-panel"' in body
+        assert 'id="workflow-panel" hidden' not in body
+        assert 'id="workflow-empty"' in body
         assert 'id="workflow-list"' in body
         assert "/api/workflows" in body
 
@@ -739,6 +747,241 @@ def test_dashboard_html_wires_up_the_workflow_panel():
         assert "escapeHtml(w.error)" in script_section
 
 
+def test_workflow_templates_endpoint_lists_the_real_registered_templates():
+    """main_v2.py's `workflow start <template_id>` has always required
+    already knowing a valid template_id - `workflow list` prints the two
+    real ones (feature_request, bug_fix), but had zero web consumers, the
+    same gap shape /api/workflows itself had before checkpoint 19/20 above.
+    Confirms the route reflects main_v2.WORKFLOW_TEMPLATES itself, not a
+    hand-typed copy that could drift from it."""
+    print_section("21. GET /api/workflow-templates Lists The Real Templates")
+
+    with RunningServer() as server:
+        status, templates = server.get("/api/workflow-templates")
+        print(f"  status={status} templates={templates}")
+        assert status == 200
+        ids = {t["template_id"] for t in templates}
+        assert ids == set(main_v2.WORKFLOW_TEMPLATES.keys())
+        feature = next(t for t in templates if t["template_id"] == "feature_request")
+        assert feature["name"] == "Feature Request Process"
+        assert feature["steps"] == 7
+
+
+def test_workflow_start_endpoint_creates_a_real_instance():
+    """main_v2.py's `workflow start/next/complete/approve/retry` commands -
+    the only way to actually drive a workflow instance forward - had zero
+    web routes even after /api/workflows gave the dashboard read-only
+    visibility: a human watching a stuck instance had no way to unstick it
+    without the CLI. Confirms POST /api/workflow/start calls the real
+    workflow_start(), returning the real instance_id (not reconstructed by
+    scraping its own printed log) and a status that matches
+    WorkflowEngine.get_status() exactly, and that the new instance is
+    immediately visible through the pre-existing /api/workflows route."""
+    print_section("22. POST /api/workflow/start Creates A Real Instance")
+
+    with RunningServer() as server:
+        status, body = server.post("/api/workflow/start", {
+            "template_id": "bug_fix", "input": {"severity": "high"},
+        })
+        print(f"  status={status} instance={body.get('instance', {}).get('instance_id')}")
+        assert status == 201
+        instance_id = body["instance"]["instance_id"]
+        assert body["instance"]["workflow_name"] == "Bug Fix Workflow"
+        assert body["instance"]["status"] == "in_progress"
+        assert "Started 'Bug Fix Workflow'" in body["log"]
+        assert instance_id in body["log"]
+
+        status, workflows = server.get("/api/workflows")
+        assert status == 200
+        assert any(w["instance_id"] == instance_id for w in workflows)
+
+
+def test_workflow_start_endpoint_validates_input():
+    """Mirrors workflow_start()'s own validation - an unknown template_id
+    gets the CLI's exact "Unknown workflow template" + available-list
+    message back as the error, not a generic 500 or a silently-created
+    instance for a template that doesn't exist."""
+    print_section("23. POST /api/workflow/start Validates Its Input")
+
+    with RunningServer() as server:
+        status, body = server.post("/api/workflow/start", {})
+        print(f"  missing template_id -> status={status} body={body}")
+        assert status == 400
+        assert "template_id" in body["error"]
+
+        status, body = server.post("/api/workflow/start", {"template_id": "no_such_template"})
+        print(f"  unknown template_id -> status={status} body={body}")
+        assert status == 400
+        assert "Unknown workflow template: no_such_template" in body["error"]
+        assert "feature_request" in body["error"] and "bug_fix" in body["error"]
+
+
+def test_workflow_next_endpoint_advances_a_real_instance():
+    """POST /api/workflow/next calls the real workflow_next() - the next
+    step's name, owning department, and step_id come back in the log
+    exactly as the CLI would print them, and the instance status returned
+    alongside it reflects the real advance (current_step set, that step's
+    own status flipped to in_progress) rather than a canned response."""
+    print_section("24. POST /api/workflow/next Advances A Real Instance")
+
+    with RunningServer() as server:
+        _, started = server.post("/api/workflow/start", {"template_id": "bug_fix"})
+        instance_id = started["instance"]["instance_id"]
+
+        status, body = server.post("/api/workflow/next", {"instance_id": instance_id})
+        print(f"  status={status} log={body.get('log')!r}")
+        assert status == 200
+        assert "Next step: Bug Triage (support)" in body["log"]
+        assert "step_id: triage" in body["log"]
+        assert body["instance"]["current_step"] == "triage"
+        assert body["instance"]["step_statuses"]["triage"] == "in_progress"
+
+        status, body = server.post("/api/workflow/next", {"instance_id": "no_such_instance"})
+        print(f"  unknown instance -> status={status} body={body}")
+        assert status == 404
+        assert "no_such_instance" in body["error"]
+
+
+def test_workflow_complete_endpoint_executes_a_real_step():
+    """POST /api/workflow/complete calls the real workflow_complete(), which
+    runs the step through the actual TaskExecutor/department pipeline (real
+    budget/capacity/decision-engine checks apply, per this project's "no
+    hand-typed placeholder result" rule for workflow steps) - not a faked
+    success. The support department actually executes the real "triage"
+    step and the instance's step_statuses reflects that, matching what
+    `python main_v2.py workflow complete <id> triage` would do."""
+    print_section("25. POST /api/workflow/complete Executes A Real Step")
+
+    with RunningServer() as server:
+        _, started = server.post("/api/workflow/start", {"template_id": "bug_fix"})
+        instance_id = started["instance"]["instance_id"]
+        server.post("/api/workflow/next", {"instance_id": instance_id})
+
+        status, body = server.post("/api/workflow/complete", {
+            "instance_id": instance_id, "step_id": "triage",
+        })
+        print(f"  status={status} log={body.get('log')!r}")
+        assert status == 200
+        assert "Step 'triage' executed and marked complete" in body["log"]
+        assert "Support team completed task" in body["log"]
+        assert body["instance"]["step_statuses"]["triage"] == "completed"
+        assert body["instance"]["progress"] == 0.25
+
+        status, body = server.post("/api/workflow/complete", {"instance_id": instance_id})
+        print(f"  missing step_id -> status={status} body={body}")
+        assert status == 400
+        assert "step_id" in body["error"]
+
+
+def test_workflow_approve_endpoint_enforces_the_real_approval_role():
+    """POST /api/workflow/approve calls the real approve_step(), which
+    checks the approver against the step's declared approval_role (see
+    WorkflowEngine._approver_qualifies) instead of trusting any string a
+    caller sends. An unregistered/unqualified approver_id is rejected with
+    the engine's own reason; once a real agent holding that exact role is
+    registered, the same approval through the same route actually commits
+    (the step moves to APPROVED, and its $500 estimated_cost becomes real
+    spend on the owning department's budget, not just a status flip)."""
+    print_section("26. POST /api/workflow/approve Enforces The Real Role")
+
+    with RunningServer() as server:
+        _, started = server.post("/api/workflow/start", {"template_id": "bug_fix"})
+        instance_id = started["instance"]["instance_id"]
+        server.post("/api/workflow/next", {"instance_id": instance_id})
+        server.post("/api/workflow/complete", {"instance_id": instance_id, "step_id": "triage"})
+        server.post("/api/workflow/next", {"instance_id": instance_id})
+        server.post("/api/workflow/complete", {"instance_id": instance_id, "step_id": "fix"})
+        server.post("/api/workflow/next", {"instance_id": instance_id})  # -> verify, needs approval
+        _, completed = server.post("/api/workflow/complete", {"instance_id": instance_id, "step_id": "verify"})
+        assert completed["instance"]["step_statuses"]["verify"] == "awaiting_approval"
+
+        status, body = server.post("/api/workflow/approve", {
+            "instance_id": instance_id, "step_id": "verify", "approver_id": "random_nobody",
+        })
+        print(f"  unqualified approver -> status={status} log={body.get('log')!r}")
+        assert status == 200
+        assert "does not hold the required approval role" in body["log"]
+        assert body["instance"]["step_statuses"]["verify"] == "awaiting_approval"
+
+        # A real tech_lead - registered the same way test_workflow_approval_role.py
+        # proves approve_step() itself requires - actually clears the gate.
+        if agent_registry.get("tech_lead") is None:
+            agent_registry.register(AgentProfile(
+                agent_id="tech_lead", name="tech_lead", agent_type="SpecialistAgent",
+                department="engineering", expertise_areas=[], skill_level=3,
+                capabilities=[], constraints=[],
+            ))
+        status, body = server.post("/api/workflow/approve", {
+            "instance_id": instance_id, "step_id": "verify", "approver_id": "tech_lead",
+        })
+        print(f"  qualified approver -> status={status} log={body.get('log')!r}")
+        assert status == 200
+        assert "approved by tech_lead" in body["log"]
+        assert body["instance"]["step_statuses"]["verify"] == "approved"
+
+
+def test_workflow_retry_endpoint_reports_a_real_non_blocked_state():
+    """POST /api/workflow/retry calls the real retry_blocked_step() -
+    proven here on the deterministic, always-reachable negative path (an
+    instance with nothing BLOCKED gets the engine's own "No blocked step to
+    retry" reason back, not a generic failure or a false "resumed")."""
+    print_section("27. POST /api/workflow/retry Reports A Real State")
+
+    with RunningServer() as server:
+        _, started = server.post("/api/workflow/start", {"template_id": "bug_fix"})
+        instance_id = started["instance"]["instance_id"]
+
+        status, body = server.post("/api/workflow/retry", {"instance_id": instance_id})
+        print(f"  status={status} log={body.get('log')!r}")
+        assert status == 200
+        assert "Still blocked: No blocked step to retry" in body["log"]
+
+        status, body = server.post("/api/workflow/retry", {"instance_id": "no_such_instance"})
+        print(f"  unknown instance -> status={status} body={body}")
+        assert status == 404
+
+
+def test_dashboard_html_wires_up_the_workflow_action_controls():
+    """Pins the frontend wiring the six tests above prove at the API layer:
+    the Start-a-workflow form (template select populated from
+    /api/workflow-templates, free-text key=value input, Start button) and
+    each instance card's Next/Complete/Approve/Reject/Retry controls post
+    to the right routes, and the per-card result line survives
+    loadWorkflows()'s own re-render (it rebuilds #workflow-list's innerHTML
+    from scratch on every refresh, including the one each action triggers
+    right after it runs) by keeping it in the wfLogs cache keyed by
+    instance_id rather than only in a DOM node that render is about to
+    replace - the exact bug proven live while building this feature: the
+    log line was visible for a moment and then vanished the instant the
+    post-action refresh completed."""
+    print_section("28. Dashboard HTML Wires Up The Workflow Action Controls")
+
+    with RunningServer() as server:
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=10) as resp:
+            body = resp.read().decode("utf-8")
+
+        assert 'id="wf-template"' in body
+        assert 'id="wf-input"' in body
+        assert 'id="wf-start-btn"' in body
+        assert "/api/workflow-templates" in body
+        assert "/api/workflow/start" in body
+        assert "/api/workflow/next" in body
+        assert "/api/workflow/complete" in body
+        assert "/api/workflow/approve" in body
+        assert "/api/workflow/retry" in body
+
+        script_section = body.split("const wfLogs")[-1].split("async function loadStrategy")[0]
+        assert "wf-next" in script_section
+        assert "wf-retry" in script_section
+        assert "wf-complete" in script_section
+        assert "wf-approve" in script_section
+        assert "wf-reject" in script_section
+        # The persistence fix itself: the cache is read back into the
+        # re-rendered card rather than left to default to empty.
+        assert "wfLogs[w.instance_id]" in body
+        assert "wfLogs[instanceId] = result.log" in script_section
+
+
 def test_agent_run_endpoint_answers_a_real_question():
     """main_v2.py's `agent-run` command - the read-only tool-calling loop
     (agent_loop.py) that lets an agent look up real budgets/capacity/
@@ -751,7 +994,7 @@ def test_agent_run_endpoint_answers_a_real_question():
     get_department_budget for a budget question, and the captured log -
     the same text the CLI prints - carries that real tool call and its
     real result, not a canned string."""
-    print_section("21. POST /api/agent-run Answers A Real Question")
+    print_section("29. POST /api/agent-run Answers A Real Question")
 
     with RunningServer() as server:
         status, body = server.post("/api/agent-run", {"question": "What is engineering's budget?"})
@@ -766,7 +1009,7 @@ def test_agent_run_endpoint_validates_input():
     """Mirrors the CLI's own `agent-run` validation (main_v2.py's argument
     parsing for --max-iterations) rather than letting bad input reach
     run_agent_loop()'s own ValueError as an unhandled 500."""
-    print_section("22. POST /api/agent-run Validates Its Input")
+    print_section("30. POST /api/agent-run Validates Its Input")
 
     with RunningServer() as server:
         status, body = server.post("/api/agent-run", {"question": "   "})
@@ -794,7 +1037,7 @@ def test_dashboard_html_wires_up_the_agent_run_panel():
     text is a transcript that can embed arbitrary tool-result content
     (e.g. a task description a user once typed), so it must never be
     interpreted as markup."""
-    print_section("23. Dashboard HTML Wires Up The Ask-An-Agent Panel")
+    print_section("31. Dashboard HTML Wires Up The Ask-An-Agent Panel")
 
     with RunningServer() as server:
         with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=10) as resp:
@@ -843,6 +1086,14 @@ def main():
         test_dashboard_html_wires_up_the_strategy_panel()
         test_workflows_endpoint_exposes_a_real_running_instance()
         test_dashboard_html_wires_up_the_workflow_panel()
+        test_workflow_templates_endpoint_lists_the_real_registered_templates()
+        test_workflow_start_endpoint_creates_a_real_instance()
+        test_workflow_start_endpoint_validates_input()
+        test_workflow_next_endpoint_advances_a_real_instance()
+        test_workflow_complete_endpoint_executes_a_real_step()
+        test_workflow_approve_endpoint_enforces_the_real_approval_role()
+        test_workflow_retry_endpoint_reports_a_real_non_blocked_state()
+        test_dashboard_html_wires_up_the_workflow_action_controls()
         test_agent_run_endpoint_answers_a_real_question()
         test_agent_run_endpoint_validates_input()
         test_dashboard_html_wires_up_the_agent_run_panel()

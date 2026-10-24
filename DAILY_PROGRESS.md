@@ -1,3 +1,66 @@
+# Daily Progress Report - October 24, 2026
+
+## 🔁 CHECKPOINT 76: WORKFLOWS COULD BE WATCHED FROM THE DASHBOARD BUT NEVER DRIVEN FROM IT
+
+**Session opened with `HEAD` detached one commit behind `main`/`origin/main`** - `git status` was clean, but `HEAD` sat at `a0c2453` (checkpoint 73's commit) while both the local `main` ref and `origin/main` were already at `e06d4e7` (checkpoint 75's own commit, the most recent). Recovered with `git checkout main && git pull origin main`, a plain fast-forward - nothing was at risk, just another instance of the stale-local-ref family of quirks checkpoints 53-74 hit repeatedly (checkpoint 72 had one clean session in between). Recorded per that convention, in case it resurfaces again.
+
+### Swept for the gap shape that has paid off before: a read route with no matching write route
+
+Checkpoint 75's Next Steps repeated the same policy-question backlog carried since checkpoints 42-75 (owner decisions on `WorkflowStep.input_schema`, `AgentProfile.capabilities`, `must_approve_over_100k`, the token-cost rate, placeholder department heads, `OrganizationDecisionMaker`, dead-code in `departments.py`, `WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`, a weekly-hours accumulator, `run_agent()`'s missing injection point, and `EventBus.subscribe()`'s zero subscribers) plus two concrete non-policy leads from checkpoint 75 itself (`PerformanceMetrics.customer_satisfaction` has no signal to compute it from; `BaseAgent.supports_managed_tool_fallback` gates a mechanism that was never built) - neither a unilateral call for an unattended run, same as checkpoint 75 judged them. Rather than re-opening either, this session widened the CLI/web-parity sweep checkpoint 75 ran for `agent-run` to cover every remaining CLI command: `grep -n "^def \|add_parser" main_v2.py` against `web_server.py`'s routing table. `workflow list/instances/status` (read) already had a web counterpart via `/api/workflows` (checkpoint 19/20-era). But `workflow start/next/complete/approve/retry` - the only way to actually *drive* a multi-step process (feature request, bug fix) forward, including clearing an approval gate or retrying a budget-blocked step - had none. `grep -n "self.path ==" web_server.py`'s `do_POST` body confirmed only `/api/submit`, `/api/process`, and `/api/agent-run` existed.
+
+### 🐛 Proven live before touching anything
+
+```
+$ python3 main_v2.py workflow start bug_fix
+✓ Started 'Bug Fix Workflow' -> instance bug_fix_1792850926_4464
+$ curl -s -X POST http://127.0.0.1:18765/api/workflow/next -d '{"instance_id":"bug_fix_1792850926_4464"}'
+{"error": "no such route: POST /api/workflow/next"}
+```
+
+A human watching the dashboard's existing (read-only) Workflows panel could see an instance was `awaiting_approval` or `escalated` and had no way to clear it without dropping to a terminal - the exact asymmetry checkpoint 75 found for `agent-run`, now found for every workflow-mutating command at once.
+
+### 🔧 Fix
+
+1. **`main_v2.py`'s `workflow_start()`** now returns the new instance's `instance_id` (`None` on an unknown template) instead of implicitly returning nothing - the one CLI function in this group whose caller needed a value back rather than just its printed side effects, since a web caller has to report back *which* instance it just created. The CLI's own call site (`workflow_start(sys.argv[3], sys.argv[4:])`) already discarded the return value, so this is additive - `python main_v2.py workflow start ...`'s own output is byte-for-byte unchanged.
+2. **`web_server.py`** gains five new `POST` routes - `/api/workflow/start`, `/api/workflow/next`, `/api/workflow/complete`, `/api/workflow/approve`, `/api/workflow/retry` - plus one new `GET /api/workflow-templates` (template_id/name/step-count, the data `workflow list` already prints, needed so a caller can know which `template_id`s are even valid before calling `start`). Every handler follows the exact `_handle_submit`/`_handle_process`/`_handle_agent_run` shape: validate, call straight into `main_v2.workflow_*()` under the existing `_write_lock`/`_run_capturing_stdout`, then return that function's own printed log plus a fresh `workflow_engine.get_status()` - so a web caller sees exactly what the CLI would print and exactly what `workflow status <id>` would show afterward, never a reimplemented summary that could drift from either.
+3. **`static/dashboard.html`**'s Workflows panel gains a "Start a workflow" form (template dropdown populated from the new `/api/workflow-templates` route, a free-text `key=value, key=value` input mapped to the same `input_pairs` shape the CLI's own `workflow start <id> key=value ...` parses) and, on every instance card, Next Step/Retry/Complete Step/Approve/Reject controls. The panel itself is no longer hidden until an instance exists - a human needs to see the start form *before* the first instance, not only after - replaced by a separate `#workflow-empty` placeholder that behaves the way the whole panel used to.
+
+### 🐛 A second bug, found building the fix's own UI, before it reached a human
+
+Proven live with Playwright against the real running server: clicking "Complete Step" called `/api/workflow/complete`, got back the real success log, wrote it into the card's `.wf-log` element - and then the very next `loadWorkflows()` call (fired by that same click handler, to refresh the card's new status) rebuilt `#workflow-list`'s `innerHTML` from scratch, replacing the node that log text had just been written to with a fresh, empty one. The result a human would actually see: the log line flashes for a moment and then vanishes, the moment the action that produced it finishes - this project's "truncated/missing result reaches a human" bug shape (checkpoint 74), self-inflicted in new code rather than inherited. Fixed by keeping each card's last action result in a small `wfLogs` object keyed by `instance_id`, read back into the freshly rendered card's `.wf-log` div on every `loadWorkflows()` call instead of left to default to empty - the same "state survives the next render" fix shape, applied before this ever shipped to `main`.
+
+### 🧪 Validation
+
+`tests/test_web_server.py` gains 8 new sections (21-28, renumbering the prior 21-23 agent-run sections to 29-31; 31 sections total, up from 23): `GET /api/workflow-templates` reflects `main_v2.WORKFLOW_TEMPLATES` itself, not a hand-typed copy; `POST /api/workflow/start` creates a real instance (visible immediately via the pre-existing `/api/workflows`) and rejects a missing/unknown `template_id` with the CLI's own message; `POST /api/workflow/next` advances a real instance and 404s a real-looking but nonexistent one; `POST /api/workflow/complete` actually executes the real `support` department's "triage" step (not a placeholder result) and 400s a missing `step_id`; `POST /api/workflow/approve` is proven on both sides of `_approver_qualifies()` - an unregistered/unqualified approver is rejected with the engine's own reason, and a real `tech_lead` agent (registered the same way `tests/test_workflow_approval_role.py` already proves `approve_step()` itself requires) actually clears the gate, committing the step's `$500` to real spend; `POST /api/workflow/retry` reports the engine's own "No blocked step to retry" on the always-reachable non-blocked case; and a dashboard-HTML test pins the new form/button wiring plus the exact `wfLogs[w.instance_id]` / `wfLogs[instanceId] = result.log` lines that are the second bug's fix, so a future refactor can't silently drop it. The pre-existing workflow-panel test's `'id="workflow-panel" hidden'` assertion was updated to match the panel's new always-visible behavior (see below) rather than left to rot.
+
+Ran the file twice back-to-back with zero failures. Full 67-file suite (same file count as checkpoint 75 - this extended `test_web_server.py` rather than adding a new file, matching that file's own convention for new `web_server.py` routes) run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. The dashboard UI itself was driven end-to-end with a real Chromium instance (Playwright) against a real running server before any test was written, including the sequence that exposed the second bug above. `data/agent_states.json`/`data/performance_metrics.json` restored and `data/budgets.json`/`data/workflows.json` removed after every run.
+
+### ⚠️ Behavior change, called out per this project's own rule
+
+The Workflows panel is no longer hidden when no workflow instance exists - it now always shows the Start-a-workflow form, with a separate empty-state message in place of the list. This is a deliberate, visible UI change (not just a reporting change): previously a dashboard user with zero workflow instances saw no trace of the feature at all. No CLI output changed, no API response shape changed for any pre-existing route, and no decision/budget/capacity/delegation logic changed - `WorkflowEngine`, `TaskExecutor`, and every other `workflow_*()` function's actual behavior are untouched; this is new routes plus new UI calling existing functions exactly as the CLI already did.
+
+### 📝 Next Steps
+
+- **`agent_state.py`'s `PerformanceMetrics.customer_satisfaction`** - unchanged, still open, per checkpoint 75. Policy question for the owner (no realistic signal to compute it from in this simulation).
+- **`core.py`'s `BaseAgent.supports_managed_tool_fallback`** - unchanged, still open, per checkpoint 75. Owner call: build the fallback it implies, or delete the attribute.
+- **`WorkflowStep.input_schema` has zero production consumers** - unchanged, still open, per checkpoint 69. Policy question for the owner.
+- **`AgentProfile.capabilities` has zero production consumers** - unchanged, still open, per checkpoint 68. Policy question for the owner.
+- **`ceo`'s `must_approve_over_100k` constraint has no implementation attempt at all** - unchanged, still open, per checkpoint 68. Design question for the owner.
+- **`core.py`'s `agent_registry`/`skill_registry`** - unchanged, still open, per checkpoint 66. Policy question for the owner.
+- **A real per-provider token-cost rate** - unchanged, still open, per checkpoints 42-75. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`**, and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-75. Policy question for the owner. (This session's own `tech_lead` approval test registers that agent only inside an isolated test process - it does not make `tech_lead` reachable in a real run.)
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - unchanged, still open, per checkpoint 61.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58. Policy question for the owner.
+- **`WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`** - unchanged, still open, per checkpoints 62-64.
+- **A real weekly-hours accumulator** - unchanged, still open, per checkpoint 65.
+- **`main_v2.run_agent()` has no injection point for its budget/capacity managers or tasks file** - unchanged, still open, per checkpoint 71.
+- **`core.py`'s `EventBus.subscribe()`/callback dispatch has zero registered subscribers anywhere** - unchanged, still open, per checkpoint 74.
+- **A found-but-deliberately-unfixed mechanical bug** (not a policy question): `agent_decisions.py:57`'s `needs_approval_over_50k` constraint (declared for `sales_head` in `config.json`) checks `context.task_id.startswith("high_budget")`, but every real task_id main_v2.py ever generates is a zero-padded number (`submit_task()`'s `str(len(tasks) + 1).zfill(4)`) - the constraint can never fire in a real run, the same shape as the already-fixed `should_execute()`/`is_available()` gaps (checkpoints 84a2453-era), but left for a session of its own since fixing it well means picking what real signal "high budget" should key off (estimated_hours × a rate? a real cost field?), bordering on the same token-cost-rate policy question already open above rather than a pure mechanical rewire.
+- **`budgets.py`'s `DepartmentBudget.period`** (declared, set by every `allocate()`/`ensure_allocated()` call, read by nothing) - found as a runner-up candidate this session, left for a session of its own: no code branches on its value and nothing rolls spend over when a period changes, despite `ensure_allocated()`'s own docstring describing period-rollover behavior the field never triggers. Self-contained, but a big enough accounting question (what should a period rollover actually do to `spent`/`reserved`?) to deserve its own increment rather than a bolt-on here.
+- The next session should either get an owner decision on one of the policy questions above, or take one of the two non-policy leads directly above, or look for a new gap the way checkpoints 45-76 each did.
+
+---
+
 # Daily Progress Report - October 23, 2026
 
 ## 🤖 CHECKPOINT 75: THE AGENT Q&A LOOP HAD A WORKING CLI AND NO WEB ROUTE AT ALL

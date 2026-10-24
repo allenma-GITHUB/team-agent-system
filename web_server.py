@@ -5,13 +5,15 @@ project's constraint: the HTTP layer is entirely `http.server`/`socketserver`
 (standard library), and the frontend (static/dashboard.html) is plain
 HTML/CSS/vanilla JS with no build step and no CDN scripts.
 
-Deliberately thin: every mutation (submitting a task, processing the queue)
-calls straight into main_v2.py's own submit_task()/process_tasks() rather
+Deliberately thin: every mutation (submitting a task, processing the queue,
+advancing/completing/approving/retrying a workflow step) calls straight
+into main_v2.py's own submit_task()/process_tasks()/workflow_*() rather
 than reimplementing them, so the dashboard and the CLI can never disagree
-about what a submit or a process actually does - they're the same function
-reading and writing the same data/*.json files. Read-only endpoints
-(status/report) mirror the data main_v2.py's show_status()/show_report()
-already print, just returned as JSON instead of formatted text.
+about what a submit, a process, or a workflow action actually does -
+they're the same function reading and writing the same data/*.json files.
+Read-only endpoints (status/report) mirror the data main_v2.py's
+show_status()/show_report() already print, just returned as JSON instead
+of formatted text.
 """
 import contextlib
 import io
@@ -138,6 +140,20 @@ def build_report_payload() -> dict:
     }
 
 
+def build_workflow_templates_payload() -> list:
+    """Every registered workflow template main_v2.py's `workflow list`
+    command already prints (template_id, name, step count) - the one
+    piece of information the new POST /api/workflow/start route's caller
+    needs to know which template_ids are even valid, and had zero web
+    consumers for the same reason build_workflows_payload() below didn't
+    until it was added: nothing over the wire ever asked."""
+    main_v2.init_workflows()
+    return [
+        {"template_id": template_id, "name": factory().name, "steps": len(factory().steps)}
+        for template_id, factory in main_v2.WORKFLOW_TEMPLATES.items()
+    ]
+
+
 def build_workflows_payload() -> list:
     """Every live workflow instance's status, in the exact per-instance shape
     WorkflowEngine.get_status() has always computed for main_v2.py's CLI
@@ -228,6 +244,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._send_json(build_report_payload())
         elif path == "/api/workflows":
             self._send_json(build_workflows_payload())
+        elif path == "/api/workflow-templates":
+            self._send_json(build_workflow_templates_payload())
         elif path == "/api/strategy":
             self._send_json(build_strategy_payload())
         elif path == "/api/tasks":
@@ -255,6 +273,16 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._handle_process(body)
         elif path == "/api/agent-run":
             self._handle_agent_run(body)
+        elif path == "/api/workflow/start":
+            self._handle_workflow_start(body)
+        elif path == "/api/workflow/next":
+            self._handle_workflow_next(body)
+        elif path == "/api/workflow/complete":
+            self._handle_workflow_complete(body)
+        elif path == "/api/workflow/approve":
+            self._handle_workflow_approve(body)
+        elif path == "/api/workflow/retry":
+            self._handle_workflow_retry(body)
         else:
             self._send_json({"error": f"no such route: POST {path}"}, status=404)
 
@@ -325,6 +353,113 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         _, log = _run_capturing_stdout(
             main_v2.run_agent, question, max_iterations=max_iterations, full_output=full_output)
         self._send_json({"log": log})
+
+    # ---- workflow mutation routes ----
+    #
+    # main_v2.py's `workflow start/next/complete/approve/retry` - the only
+    # way to actually drive a multi-step business process (feature_request,
+    # bug_fix) forward - had zero web routes, even after /api/workflows
+    # gave the dashboard read-only visibility into running instances: a
+    # human watching the dashboard could see a workflow was stuck awaiting
+    # approval and had no way to clear it without dropping to the CLI.
+    # Each handler below is the same thin pattern as _handle_submit/
+    # _handle_process/_handle_agent_run: validate, call straight into
+    # main_v2's own function under the write lock, and return the log it
+    # printed plus a fresh get_status() so the dashboard never has to
+    # reimplement what either one means.
+
+    def _handle_workflow_start(self, body: dict):
+        template_id = (body.get("template_id") or "").strip()
+        if not template_id:
+            self._send_json({"error": "template_id is required"}, status=400)
+            return
+
+        input_data = body.get("input") or {}
+        if not isinstance(input_data, dict):
+            self._send_json({"error": "input must be an object of key/value pairs"}, status=400)
+            return
+        input_pairs = [f"{key}={value}" for key, value in input_data.items()]
+
+        instance_id, log = _run_capturing_stdout(main_v2.workflow_start, template_id, input_pairs)
+        if instance_id is None:
+            # workflow_start() itself rejected an unknown template_id and
+            # printed exactly why (including the valid template list) -
+            # that printed reason IS the error, same convention as
+            # _handle_submit's "submission rejected" path.
+            self._send_json({"error": log.strip() or "could not start workflow"}, status=400)
+            return
+
+        self._send_json({"instance": workflow_engine.get_status(instance_id), "log": log}, status=201)
+
+    def _require_instance_id(self, body: dict):
+        """Returns (instance_id, None) or (None, error_message)."""
+        instance_id = (body.get("instance_id") or "").strip()
+        if not instance_id:
+            return None, "instance_id is required"
+        return instance_id, None
+
+    def _handle_workflow_next(self, body: dict):
+        instance_id, error = self._require_instance_id(body)
+        if error:
+            self._send_json({"error": error}, status=400)
+            return
+
+        _, log = _run_capturing_stdout(main_v2.workflow_next, instance_id)
+        status = workflow_engine.get_status(instance_id)
+        if status is None:
+            self._send_json({"error": log.strip() or f"no such workflow instance: {instance_id}"}, status=404)
+            return
+        self._send_json({"instance": status, "log": log})
+
+    def _handle_workflow_complete(self, body: dict):
+        instance_id, error = self._require_instance_id(body)
+        if error:
+            self._send_json({"error": error}, status=400)
+            return
+        step_id = (body.get("step_id") or "").strip()
+        if not step_id:
+            self._send_json({"error": "step_id is required"}, status=400)
+            return
+
+        _, log = _run_capturing_stdout(main_v2.workflow_complete, instance_id, step_id)
+        status = workflow_engine.get_status(instance_id)
+        if status is None:
+            self._send_json({"error": log.strip() or f"no such workflow instance: {instance_id}"}, status=404)
+            return
+        self._send_json({"instance": status, "log": log})
+
+    def _handle_workflow_approve(self, body: dict):
+        instance_id, error = self._require_instance_id(body)
+        if error:
+            self._send_json({"error": error}, status=400)
+            return
+        step_id = (body.get("step_id") or "").strip()
+        approver_id = (body.get("approver_id") or "").strip()
+        if not step_id or not approver_id:
+            self._send_json({"error": "step_id and approver_id are required"}, status=400)
+            return
+        approved = bool(body.get("approved", True))
+
+        _, log = _run_capturing_stdout(
+            main_v2.workflow_approve, instance_id, step_id, approver_id, approved)
+        status = workflow_engine.get_status(instance_id)
+        if status is None:
+            self._send_json({"error": log.strip() or f"no such workflow instance: {instance_id}"}, status=404)
+            return
+        self._send_json({"instance": status, "log": log})
+
+    def _handle_workflow_retry(self, body: dict):
+        instance_id, error = self._require_instance_id(body)
+        if error:
+            self._send_json({"error": error}, status=400)
+            return
+
+        _, log = _run_capturing_stdout(main_v2.workflow_retry, instance_id)
+        status = workflow_engine.get_status(instance_id)
+        if status is None:
+            self._send_json({"error": log.strip() or f"no such workflow instance: {instance_id}"}, status=404)
+            return
+        self._send_json({"instance": status, "log": log})
 
 
 def run(port: int = 8765, bind: str = "127.0.0.1"):

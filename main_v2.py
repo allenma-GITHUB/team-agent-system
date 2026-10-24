@@ -340,12 +340,15 @@ def workflow_instances():
 
 
 def workflow_start(template_id: str, input_pairs: list):
-    """Create and start a new workflow instance from a template."""
+    """Create and start a new workflow instance from a template. Returns the
+    new instance_id (None on an unknown template) - the CLI call site
+    discards it, but the web layer needs it to report back which instance
+    it just created without re-deriving it from print() output."""
     init_workflows()
     if template_id not in WORKFLOW_TEMPLATES:
         print(f"Unknown workflow template: {template_id}")
         print(f"Available: {', '.join(WORKFLOW_TEMPLATES.keys())}")
-        return
+        return None
 
     input_data = {}
     for pair in input_pairs:
@@ -356,6 +359,7 @@ def workflow_start(template_id: str, input_pairs: list):
     instance = workflow_engine.create_instance(template_id, input_data)
     workflow_engine.start_instance(instance.instance_id)
     print(f"✓ Started '{instance.workflow_name}' -> instance {instance.instance_id}")
+    return instance.instance_id
 
 
 def workflow_next(instance_id: str):
