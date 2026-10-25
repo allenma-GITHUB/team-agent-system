@@ -286,6 +286,9 @@ def show_status():
         if budget:
             budget_display = f"${budget.spent:,.0f}/${budget.allocated:,.0f}"
             print(render_bar(dept.title(), budget.utilization_pct(), budget_display, label_width=15))
+            days_left = budget.days_until_rollover()
+            if days_left is not None:
+                print(f"  {'':<15} {budget.period} period resets in {days_left:.1f}d")
         else:
             print(f"  {dept.title():<15} budget: not yet allocated")
         if snapshot.total_capacity > 0:

@@ -106,6 +106,8 @@ def build_status_payload() -> dict:
                 "reserved": budget.reserved_total(),
                 "available": budget.available(),
                 "utilization_pct": budget.utilization_pct(),
+                "period": budget.period,
+                "days_until_rollover": budget.days_until_rollover(),
             },
             "capacity": None if snapshot.total_capacity <= 0 else {
                 "agent_count": snapshot.agent_count,

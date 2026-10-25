@@ -277,7 +277,10 @@ async function loadStatus() {
 
   $("#dept-grid").innerHTML = status.departments.map(d => {
     const budget = d.budget
-      ? bar("Budget", d.budget.utilization_pct, `${money(d.budget.spent)} / ${money(d.budget.allocated)}`)
+      ? bar("Budget", d.budget.utilization_pct, `${money(d.budget.spent)} / ${money(d.budget.allocated)}`) +
+        (d.budget.days_until_rollover != null
+          ? `<div class="muted" style="font-size:11px;">${escapeHtml(d.budget.period)} period resets in ${d.budget.days_until_rollover.toFixed(1)}d</div>`
+          : "")
       : `<div class="muted" style="font-size:12px;margin-top:8px;">budget not yet allocated</div>`;
     const capacity = d.capacity
       ? bar("Capacity", d.capacity.utilization_pct, `${d.capacity.workload}/${d.capacity.total} tasks`)

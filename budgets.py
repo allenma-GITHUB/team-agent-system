@@ -16,6 +16,22 @@ from typing import Dict, List, Optional, Tuple
 from agent_state import agent_registry
 
 
+# Fixed day-counts rather than real calendar months/quarters/years - this
+# project is standard-library only (CLAUDE.md's "zero third-party
+# dependencies"), and real calendar math (a "monthly" period ending on the
+# same day-of-month it started) needs one. An approximation, documented
+# here rather than hidden: "monthly" rolls every 30 days, not on each
+# month's actual day count. A period name not in this map never elapses
+# (see DepartmentBudget.period_elapsed) rather than guessing a length.
+PERIOD_LENGTHS_DAYS: Dict[str, int] = {
+    "daily": 1,
+    "weekly": 7,
+    "monthly": 30,
+    "quarterly": 90,
+    "annual": 365,
+}
+
+
 @dataclass
 class ExpenseRecord:
     """A single committed spend against a department budget."""
@@ -35,9 +51,40 @@ class DepartmentBudget:
     allocated: float
     period: str = "monthly"
     spent: float = 0.0
+    # When the current period began. Needed to tell whether `period` has
+    # actually elapsed - before this field existed, `period` was recorded
+    # and read back on every load but had nothing to measure elapsed time
+    # against, so it could never trigger anything (see BudgetManager's
+    # module docstring note and CHECKPOINT 76's "found, not fixed" entry).
+    period_start: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     # Funds held for in-flight approvals so two concurrent requests can't
     # both pass a check against the same uncommitted dollars.
     reserved: Dict[str, float] = field(default_factory=dict)
+
+    def period_elapsed(self, now: Optional[datetime] = None) -> bool:
+        """True once this budget's period has fully run its length.
+
+        An unrecognized `period` name (not in PERIOD_LENGTHS_DAYS) never
+        elapses - same absence-means-never-computed convention the rest of
+        this module follows - rather than guessing a length for it.
+        """
+        length_days = PERIOD_LENGTHS_DAYS.get(self.period)
+        if length_days is None:
+            return False
+        now = now or datetime.utcnow()
+        started = datetime.fromisoformat(self.period_start)
+        return (now - started).days >= length_days
+
+    def days_until_rollover(self, now: Optional[datetime] = None) -> Optional[float]:
+        """Days left in the current period, or None for an unrecognized
+        period name (see period_elapsed)."""
+        length_days = PERIOD_LENGTHS_DAYS.get(self.period)
+        if length_days is None:
+            return None
+        now = now or datetime.utcnow()
+        started = datetime.fromisoformat(self.period_start)
+        elapsed_days = (now - started).total_seconds() / 86400
+        return max(0.0, length_days - elapsed_days)
 
     def reserved_total(self) -> float:
         return sum(self.reserved.values())
@@ -72,6 +119,22 @@ class DepartmentBudget:
         return amount
 
 
+@dataclass
+class PeriodRollover:
+    """Record of one department's budget period resetting. A rollover
+    zeroes `spent` so the next period starts clean - recorded here rather
+    than done silently, so an operator reading expense_log/rollover
+    history can still see what the old period actually spent and that
+    unspent allocation does not carry forward (a "use it or lose it"
+    budget, not an accumulating one)."""
+    department: str
+    period: str
+    period_start: str  # the period that just ended
+    rolled_at: str
+    spent_in_period: float
+    unused_forfeited: float
+
+
 class BudgetManager:
     """Central registry and persistence for all department budgets."""
 
@@ -79,10 +142,11 @@ class BudgetManager:
         self.data_file = Path(data_file)
         self.budgets: Dict[str, DepartmentBudget] = {}
         self.expense_log: List[ExpenseRecord] = []
+        self.rollover_log: List[PeriodRollover] = []
         self.load()
 
     def load(self):
-        """Load budgets and expense history from file."""
+        """Load budgets, expense history, and rollover history from file."""
         if not self.data_file.exists():
             return
         with open(self.data_file) as f:
@@ -90,16 +154,61 @@ class BudgetManager:
             for department, budget_data in data.get("budgets", {}).items():
                 self.budgets[department] = DepartmentBudget(**budget_data)
             self.expense_log = [ExpenseRecord(**e) for e in data.get("expenses", [])]
+            self.rollover_log = [PeriodRollover(**r) for r in data.get("rollovers", [])]
 
     def save(self):
-        """Persist budgets and expense history to file."""
+        """Persist budgets, expense history, and rollover history to file."""
         self.data_file.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "budgets": {dept: asdict(b) for dept, b in self.budgets.items()},
             "expenses": [asdict(e) for e in self.expense_log],
+            "rollovers": [asdict(r) for r in self.rollover_log],
         }
         with open(self.data_file, 'w') as f:
             json.dump(data, f, indent=2)
+
+    def _roll_if_due(self, budget: DepartmentBudget) -> Optional[PeriodRollover]:
+        """Lazily resets a budget into a fresh period once its period has
+        elapsed, logging what happened instead of just zeroing `spent`.
+
+        Checked on every real read/write path (get_budget, and everything
+        below that routes through it) since this project runs no
+        background scheduler - there is nothing else that would ever
+        notice a period boundary passing between runs.
+
+        `reserved` funds are deliberately left untouched: they represent
+        in-flight approvals a caller still expects to find by
+        reference_id (confirm_reservation/cancel_reservation); clearing
+        them here would silently orphan a pending approval mid-flight.
+        Only committed `spent` resets at a period boundary. If more than
+        one full period elapsed while nothing touched this budget (e.g.
+        the system was down), this still only ever rolls once, into a
+        period that starts now - it does not try to replay each missed
+        period in turn.
+        """
+        if not budget.period_elapsed():
+            return None
+        record = PeriodRollover(
+            department=budget.department,
+            period=budget.period,
+            period_start=budget.period_start,
+            rolled_at=datetime.utcnow().isoformat(),
+            spent_in_period=budget.spent,
+            unused_forfeited=budget.available(),
+        )
+        budget.spent = 0.0
+        budget.period_start = record.rolled_at
+        self.rollover_log.append(record)
+        self.save()
+        return record
+
+    def _roll_all_due(self):
+        """Apply _roll_if_due to every tracked department, for callers
+        (organization_summary, over_budget_departments) that read the
+        whole self.budgets dict directly instead of one get_budget() at
+        a time."""
+        for budget in self.budgets.values():
+            self._roll_if_due(budget)
 
     def allocate(self, department: str, amount: float, period: str = "monthly") -> DepartmentBudget:
         """Set (or reset) a department's budget for a new period."""
@@ -118,7 +227,10 @@ class BudgetManager:
         return self.budgets[department]
 
     def get_budget(self, department: str) -> Optional[DepartmentBudget]:
-        return self.budgets.get(department)
+        budget = self.budgets.get(department)
+        if budget is not None:
+            self._roll_if_due(budget)
+        return budget
 
     def request_expense(self, department: str, amount: float, category: str,
                          description: str = "", task_id: Optional[str] = None,
@@ -129,7 +241,7 @@ class BudgetManager:
             # it, manufacturing available budget rather than spending it.
             return False, f"Expense amount cannot be negative: ${amount:,.2f}"
 
-        budget = self.budgets.get(department)
+        budget = self.get_budget(department)
         if not budget:
             return False, f"No budget allocated for '{department}'"
 
@@ -150,7 +262,7 @@ class BudgetManager:
         if amount < 0:
             return False, f"Reservation amount cannot be negative: ${amount:,.2f}"
 
-        budget = self.budgets.get(department)
+        budget = self.get_budget(department)
         if not budget:
             return False, f"No budget allocated for '{department}'"
         if not budget.reserve(reference_id, amount):
@@ -163,7 +275,7 @@ class BudgetManager:
                              description: str = "", task_id: Optional[str] = None,
                              agent_id: Optional[str] = None) -> float:
         """Approval granted: convert a reservation into a logged expense."""
-        budget = self.budgets.get(department)
+        budget = self.get_budget(department)
         if not budget:
             return 0.0
         amount = budget.commit_reservation(reference_id)
@@ -177,7 +289,7 @@ class BudgetManager:
 
     def cancel_reservation(self, department: str, reference_id: str):
         """Approval denied: release held funds back to the department."""
-        budget = self.budgets.get(department)
+        budget = self.get_budget(department)
         if budget:
             budget.release_reservation(reference_id)
             self.save()
@@ -197,6 +309,7 @@ class BudgetManager:
 
     def organization_summary(self) -> Dict[str, float]:
         """Organization-wide totals across all department budgets."""
+        self._roll_all_due()
         if not self.budgets:
             return {"total_allocated": 0.0, "total_spent": 0.0, "total_reserved": 0.0, "total_available": 0.0}
         return {
@@ -232,6 +345,7 @@ class BudgetManager:
 
     def over_budget_departments(self, threshold: float = 0.9) -> List[str]:
         """Departments whose utilization has crossed the warning threshold."""
+        self._roll_all_due()
         return [dept for dept, b in self.budgets.items() if b.utilization_pct() >= threshold]
 
 

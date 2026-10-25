@@ -1,3 +1,71 @@
+# Daily Progress Report - October 25, 2026
+
+## 🔄 CHECKPOINT 77: `DepartmentBudget.period` WAS RECORDED AND ROUND-TRIPPED, WITH NOTHING TO MEASURE IT AGAINST
+
+**Session opened with `HEAD` detached two commits ahead of `main`/`origin/main`** - `git status` was clean, but `HEAD` sat at `e3d0845` (checkpoint 76's own commit) while the local `main` ref and `origin/main` were both still at `a0c2453` (checkpoint 74's commit) - checkpoints 75 and 76 existed on disk and in `DAILY_PROGRESS.md` but had never been fast-forwarded onto `main` or confirmed against the remote, the same stale-local-ref family of quirks checkpoints 53-76 have hit repeatedly. `git merge-base --is-ancestor main e3d0845` confirmed a clean fast-forward before touching anything; `git checkout main && git merge --ff-only e3d0845 && git push origin main` recovered it (the push reported "Everything up-to-date" - `origin/main` already carried `e3d0845`, only the local branch ref was stale). Nothing was at risk. Recorded per the project's own convention for this recurring quirk.
+
+### Took one of checkpoint 76's own two non-policy leads, as it invited
+
+Checkpoint 76's Next Steps named two concrete, non-policy gaps "left for a session of its own" rather than bolted onto that session's own change: `agent_decisions.py:57`'s `needs_approval_over_50k`/`high_budget` task-id mismatch (bordering on the still-open token-cost-rate policy question), and `budgets.py`'s `DepartmentBudget.period` - declared, set by every `allocate()`/`ensure_allocated()` call, read by nothing, despite `ensure_allocated()`'s own docstring describing rollover behavior the field never triggers. This session took the second: self-contained (one file's own unused field, no policy call needed on *what* a period should mean - "monthly" already has an obvious meaning), unlike the first which still needs an owner decision on what signal "high budget" should key off.
+
+### 🐛 Proven live before touching anything
+
+```
+>>> b = BudgetManager(data_file='data/test_period_repro.json')
+>>> budget = b.allocate('engineering', 10000, period='monthly')
+>>> b.request_expense('engineering', 9500, category='labor', description='big sprint')
+>>> budget.period, budget.spent
+('monthly', 9500.0)
+>>> # Raw persisted record: {"department": "engineering", "allocated": 10000,
+>>> #  "period": "monthly", "spent": 9500.0, "reserved": {}}
+>>> # Reloading a fresh BudgetManager against the same file, simulating the
+>>> # next run 90 days later in the real world:
+>>> b2 = BudgetManager(data_file='data/test_period_repro.json')
+>>> b2.get_budget('engineering').spent
+9500.0   # still carries last period's full spend, 90 days later
+```
+
+`period` had no companion timestamp recording when the current period began, so there was nothing even in principle to compare "now" against - the field could never have fired a rollover no matter how it was read, which is why no amount of searching found a reader for it.
+
+### 🔧 Fix
+
+1. **`budgets.py`** gains `PERIOD_LENGTHS_DAYS` (`daily`/`weekly`/`monthly`/`quarterly`/`annual` mapped to fixed day-counts - this project is standard-library only per `CLAUDE.md`, so real calendar-month arithmetic would need a dependency; documented as an approximation rather than hidden). `DepartmentBudget` gains `period_start` (defaults to allocation time) and two methods: `period_elapsed()` and `days_until_rollover()`. An unrecognized `period` string never elapses - the same absence-means-never-computed rule `earliest_relief()` already follows - rather than guessing a length for it.
+2. **`BudgetManager._roll_if_due(budget)`** is the single lazy rollover checkpoint: once a budget's period has elapsed, it zeroes `spent`, advances `period_start` to now, and appends a new `PeriodRollover` record (department, period, the period that just ended, what it spent, and what unused allocation was forfeited) to a new persisted `rollover_log` - visible and auditable rather than `spent` silently resetting with no trace, per this project's "never report unfinished work as finished" spirit applied to the opposite direction (never erase *finished* work's record either). **`reserved` funds are deliberately left untouched** - they represent in-flight approvals a caller still expects to find by `reference_id` via `confirm_reservation()`/`cancel_reservation()`; clearing them at a period boundary would silently orphan a pending approval mid-flight. If more than one full period elapsed with nothing touching the budget (the system was down), this still only rolls once, into a period starting now - it does not replay each missed period - an honest, documented limitation of a lazy check with no background scheduler, not a hidden one.
+3. **Every real access path now routes through the check**: `get_budget()` calls `_roll_if_due()` before returning; `request_expense()`, `reserve_funds()`, `confirm_reservation()`, and `cancel_reservation()` now call `self.get_budget()` instead of indexing `self.budgets` directly; `organization_summary()` and `over_budget_departments()` (which read the whole `self.budgets` dict at once) call a new `_roll_all_due()` first. There is no background scheduler anywhere in this project, so a lazy check on every real touch is the only point that will ever notice a period boundary passing between runs.
+4. **`main_v2.py`'s `show_status()`** and **`web_server.py`'s `build_status_payload()`** both now surface `period`/`days_until_rollover` next to each department's existing budget bar/JSON (CLI and API read the exact same `DepartmentBudget` fields, so neither can drift from the other). **`static/dashboard.html`**'s department cards show the same countdown line under the existing Budget bar.
+
+### 🧪 Validation
+
+`tests/test_budgets.py` gains 4 new tests (sections 6-9, 9 total, each on its own isolated `data/test_budgets_*.json` file so one test's `rollover_log`/org-wide totals can't leak into another's assertions - unlike this file's first five tests, which already shared one file but only ever asserted on their own department's numbers): a real rollover fires once a backdated `period_start` crosses the period length, resets `spent` to 0, leaves a live reservation both present *and* still resolvable afterward through `confirm_reservation()`, leaves `allocated` untouched, and logs the exact `spent_in_period`/`unused_forfeited` amounts; the same rollover persists to disk and does not fire a second time on a second reload of the same file; a `period` name outside `PERIOD_LENGTHS_DAYS` never rolls even with a decade-old `period_start`; and `organization_summary()`/`over_budget_departments()` pick up an overdue rollover on a department they were never asked about by name via `get_budget()`.
+
+Ran `tests/test_budgets.py` twice back-to-back with zero failures. Full 67-file suite run twice back-to-back with zero failures; `python3 -m py_compile` clean on every tracked `.py` file. The CLI (`python3 main_v2.py status`) and the real running dashboard server (`curl`/a direct HTTP client against `/api/status`) were both driven live to confirm `period`/`days_until_rollover` actually appear in real output before any test was written, not just in the new unit tests. `data/agent_states.json`/`data/performance_metrics.json` restored and `data/budgets.json`/`data/workflows.json` removed after every run (including the ad-hoc live CLI/API checks against real, non-test data files).
+
+### ⚠️ Behavior change, called out per this project's own rule
+
+Any department budget whose period has elapsed now resets `spent` to 0 (and its `period_start`) the next time anything touches it, instead of accumulating spend forever. In today's actual `data/budgets.json` this changes nothing yet (every `period_start` defaults to "now" on first allocation, and no real period has had 30+ days to elapse since this project started tracking budgets) - this is a forward-looking behavior change, not a retroactive one, and nothing in today's real data triggered a rollover during validation. `reserved` funds, `allocated` amounts, and every other budget/capacity/decision code path are untouched.
+
+### 📝 Next Steps
+
+- **`agent_decisions.py:57`'s `needs_approval_over_50k`/`high_budget` task-id mismatch** - unchanged, still open, per checkpoint 76. Policy question for the owner (what real signal "high budget" should key off).
+- **`agent_state.py`'s `PerformanceMetrics.customer_satisfaction`** - unchanged, still open, per checkpoints 75-76. Policy question for the owner.
+- **`core.py`'s `BaseAgent.supports_managed_tool_fallback`** - unchanged, still open, per checkpoints 75-76. Owner call: build the fallback it implies, or delete the attribute.
+- **`WorkflowStep.input_schema` has zero production consumers** - unchanged, still open, per checkpoint 69. Policy question for the owner.
+- **`AgentProfile.capabilities` has zero production consumers** - unchanged, still open, per checkpoint 68. Policy question for the owner.
+- **`ceo`'s `must_approve_over_100k` constraint has no implementation attempt at all** - unchanged, still open, per checkpoint 68. Design question for the owner.
+- **`core.py`'s `agent_registry`/`skill_registry`** - unchanged, still open, per checkpoint 66. Policy question for the owner.
+- **A real per-provider token-cost rate** - unchanged, still open, per checkpoints 42-76. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`**, and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-76. Policy question for the owner.
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - unchanged, still open, per checkpoint 61.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58. Policy question for the owner.
+- **`WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`** - unchanged, still open, per checkpoints 62-64.
+- **A real weekly-hours accumulator** - unchanged, still open, per checkpoint 65.
+- **`main_v2.run_agent()` has no injection point for its budget/capacity managers or tasks file** - unchanged, still open, per checkpoint 71.
+- **`core.py`'s `EventBus.subscribe()`/callback dispatch has zero registered subscribers anywhere** - unchanged, still open, per checkpoint 74.
+- **`rollover_log` has no CLI/web surface of its own yet** (not a policy question, a narrower non-policy lead): today's fix surfaces the *upcoming* countdown (`days_until_rollover`) in `status`/`/api/status`/the dashboard, but a rollover that already happened is only visible by reading `budget_manager.rollover_log` directly or the persisted `rollovers` array in `data/budgets.json` - there is no `budget history <dept>` CLI command or `/api/budget-rollovers` route yet. Left for a session of its own since it's a new read surface (plus tests) rather than a one-line addition to an existing one.
+- The next session should either get an owner decision on one of the policy questions above, or take the non-policy lead directly above, or look for a new gap the way checkpoints 45-77 each did.
+
+---
+
 # Daily Progress Report - October 24, 2026
 
 ## 🔁 CHECKPOINT 76: WORKFLOWS COULD BE WATCHED FROM THE DASHBOARD BUT NEVER DRIVEN FROM IT
