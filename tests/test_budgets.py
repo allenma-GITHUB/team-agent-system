@@ -271,6 +271,46 @@ def test_org_summary_rolls_every_department_it_reports_on():
     assert "hr" not in over_budget  # fresh period, 0% utilized
 
 
+def test_rollover_history_reads_back_recorded_rollovers():
+    """rollover_history() is the read side of _roll_if_due()'s write side -
+    confirms it: filters by department, orders newest first (not insertion
+    order), and - like get_budget()/organization_summary() - picks up an
+    overdue rollover immediately rather than only after some other call
+    happens to touch that department first."""
+    print_section("10. Rollover History Reads Back What Actually Happened")
+
+    budgets = BudgetManager(data_file="data/test_budgets_history.json")
+
+    eng = budgets.allocate("engineering", 5000, period="daily")
+    budgets.request_expense("engineering", 4000, category="labor")
+    eng.period_start = (datetime.utcnow() - timedelta(days=5)).isoformat()
+
+    sales = budgets.allocate("sales", 3000, period="daily")
+    budgets.request_expense("sales", 1000, category="labor")
+    sales.period_start = (datetime.utcnow() - timedelta(days=2)).isoformat()
+
+    # Nothing has called get_budget()/organization_summary() yet - both
+    # rollovers are still overdue and unrecorded on disk.
+    assert budgets.rollover_log == []
+
+    history = budgets.rollover_history()
+    print(f"  org-wide history: {[(r.department, r.spent_in_period) for r in history]}")
+    assert len(history) == 2  # rollover_history() itself triggered both
+
+    # Newest first: sales rolled from a 2-day-old period_start, engineering
+    # from a 5-day-old one, so engineering's rollover happened "further in
+    # the past" relative to now and sales' is the more recent of the two.
+    assert [r.department for r in history] == ["sales", "engineering"]
+
+    eng_only = budgets.rollover_history("engineering")
+    print(f"  engineering-only history: {[r.department for r in eng_only]}")
+    assert len(eng_only) == 1
+    assert eng_only[0].spent_in_period == 4000
+    assert eng_only[0].unused_forfeited == 1000  # 5000 allocated - 4000 spent
+
+    assert budgets.rollover_history("marketing") == []  # never allocated, never rolled
+
+
 def main():
     print("\n" + "=" * 60)
     print("  BUDGET & CAPACITY MANAGEMENT DEMONSTRATION")
@@ -285,6 +325,7 @@ def main():
     test_period_rollover_persists_across_reload()
     test_unrecognized_period_name_never_auto_rolls()
     test_org_summary_rolls_every_department_it_reports_on()
+    test_rollover_history_reads_back_recorded_rollovers()
 
     print("\n" + "=" * 60)
     print("  [OK] All budget & capacity tests passed!")
@@ -293,7 +334,8 @@ def main():
     import pathlib
     for f in ["data/test_budgets.json", "data/test_agent_states.json",
               "data/test_budgets_rollover.json", "data/test_budgets_reload.json",
-              "data/test_budgets_unrecognized.json", "data/test_budgets_org_summary.json"]:
+              "data/test_budgets_unrecognized.json", "data/test_budgets_org_summary.json",
+              "data/test_budgets_history.json"]:
         pathlib.Path(f).unlink(missing_ok=True)
 
 

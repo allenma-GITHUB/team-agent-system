@@ -23,7 +23,7 @@ import threading
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 import main_v2
 from budgets import budget_manager, capacity_manager
@@ -171,6 +171,19 @@ def build_workflows_payload() -> list:
     return [workflow_engine.get_status(i.instance_id) for i in workflow_engine.list_instances()]
 
 
+def build_budget_rollovers_payload(department=None) -> list:
+    """Every recorded BudgetManager.rollover_log entry, newest first - the
+    read surface checkpoint 77's own session named and deliberately left
+    for later: `days_until_rollover` (in build_status_payload above) shows
+    the *upcoming* countdown, but a rollover that already happened was only
+    ever visible by reading budget_manager.rollover_log directly or the
+    persisted "rollovers" array in data/budgets.json - no CLI command or
+    API route surfaced it. Mirrors main_v2.py's `budget history` command
+    exactly, both calling straight into rollover_history() so neither can
+    drift from the other."""
+    return [asdict(r) for r in budget_manager.rollover_history(department)]
+
+
 def build_strategy_payload() -> list:
     """Every reallocation StrategicPlanner.propose_reallocations() would
     make right now - the same CEO-level donor-to-recipient signal
@@ -231,7 +244,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
     # ---- routing ----
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path == "/":
             self._send_html(DASHBOARD_HTML_PATH.read_text())
         elif path == "/favicon.ico":
@@ -250,6 +264,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._send_json(build_workflow_templates_payload())
         elif path == "/api/strategy":
             self._send_json(build_strategy_payload())
+        elif path == "/api/budget-rollovers":
+            department = parse_qs(parsed.query).get("department", [None])[0]
+            self._send_json(build_budget_rollovers_payload(department))
         elif path == "/api/tasks":
             self._send_json([_task_summary(t) for t in _tasks()])
         elif path.startswith("/api/tasks/"):

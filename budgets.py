@@ -348,6 +348,25 @@ class BudgetManager:
         self._roll_all_due()
         return [dept for dept, b in self.budgets.items() if b.utilization_pct() >= threshold]
 
+    def rollover_history(self, department: Optional[str] = None) -> List[PeriodRollover]:
+        """Every recorded period rollover, newest first - org-wide or scoped
+        to one department. `rollover_log` has logged a real PeriodRollover
+        every time `_roll_if_due()` actually fires since the rollover fix
+        shipped, and persists it to data/budgets.json's "rollovers" array,
+        but nothing has ever read it back: `_roll_if_due()` logs rollovers,
+        `_roll_all_due()` triggers them on the organization-wide reads, and
+        both leave the result sitting in memory and on disk with no CLI
+        command or API route to see it - the one gap that fix's own session
+        named and deliberately left for a session of its own. Calls
+        `_roll_all_due()` first so a rollover that just became due is
+        reflected here immediately, the same "every real access path routes
+        through the check" rule `get_budget()`/`organization_summary()`
+        already follow, rather than only showing up the next time something
+        else happens to touch that department's budget."""
+        self._roll_all_due()
+        matches = [r for r in self.rollover_log if department is None or r.department == department]
+        return sorted(matches, key=lambda r: r.rolled_at, reverse=True)
+
 
 @dataclass
 class CapacitySnapshot:

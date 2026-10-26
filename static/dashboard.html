@@ -232,6 +232,11 @@
     <h2>Strategic Reallocation</h2>
     <div id="strategy-list"></div>
   </div>
+
+  <div class="panel" id="rollover-panel" hidden>
+    <h2>Budget Rollover History</h2>
+    <div id="rollover-list"></div>
+  </div>
 </div>
 
 <script>
@@ -769,9 +774,28 @@ async function loadStrategy() {
   </div>`).join("");
 }
 
+// BudgetManager.rollover_log has recorded a real entry every time a
+// department's budget period actually elapsed and reset since budgets.py's
+// rollover fix shipped, but it had no read surface of its own - the
+// "upcoming" countdown (days_until_rollover, in the department cards above)
+// was the only rollover-related thing a human could see. Hidden entirely
+// when nothing has rolled over yet, same convention as the Strategic
+// Reallocation panel above.
+async function loadBudgetRollovers() {
+  const rollovers = await api("/api/budget-rollovers");
+  const panel = $("#rollover-panel");
+  panel.hidden = rollovers.length === 0;
+  if (panel.hidden) return;
+
+  $("#rollover-list").innerHTML = rollovers.map(r => `<div class="workflow-card">
+    <div><strong>${escapeHtml(r.department)}</strong> (${escapeHtml(r.period)}) rolled over at ${escapeHtml(r.rolled_at)}</div>
+    <div class="muted" style="font-size:12px;">spent ${money(r.spent_in_period)}, forfeited ${money(r.unused_forfeited)} - period started ${escapeHtml(r.period_start)}</div>
+  </div>`).join("");
+}
+
 async function refreshAll() {
   try {
-    await Promise.all([loadStatus(), loadTasks(), loadReport(), loadWorkflows(), loadStrategy(), refreshOpenTaskDetail()]);
+    await Promise.all([loadStatus(), loadTasks(), loadReport(), loadWorkflows(), loadStrategy(), loadBudgetRollovers(), refreshOpenTaskDetail()]);
   } catch (err) {
     console.error(err);
   }

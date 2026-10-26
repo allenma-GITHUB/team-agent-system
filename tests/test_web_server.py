@@ -668,6 +668,73 @@ def test_dashboard_html_wires_up_the_strategy_panel():
         assert "/api/strategy/apply" not in body
 
 
+def test_budget_rollovers_endpoint_exposes_a_real_recorded_rollover():
+    """BudgetManager.rollover_log has recorded a real PeriodRollover every
+    time _roll_if_due() actually fires since budgets.py's rollover fix
+    shipped, but had zero web consumers - the same "real logic, no wire
+    consumer" gap shape test 17 above closed for strategy.py. Backdates a
+    daily budget's period_start (same technique test_budgets.py's own
+    rollover tests use) and drives a real rollover via get_budget(), then
+    confirms /api/budget-rollovers reports it, scoped by ?department= and
+    org-wide. Uses "legal" - unused as a budget_manager department anywhere
+    else in this shared-singleton file, so a second rollover from a prior
+    idempotency pass (this file's main() runs every test twice) only ever
+    adds a *newer* "legal" entry rather than changing what the most recent
+    one says."""
+    print_section("19. GET /api/budget-rollovers Reports A Real Rollover")
+
+    with RunningServer() as server:
+        from datetime import datetime, timedelta
+
+        budget = budget_manager.allocate("legal", 4000, period="daily")
+        budget_manager.request_expense("legal", 3000, "labor")
+        budget.period_start = (datetime.utcnow() - timedelta(days=2)).isoformat()
+        budget_manager.get_budget("legal")  # drives the overdue rollover
+
+        status, rollovers = server.get("/api/budget-rollovers?department=legal")
+        print(f"  legal-only rollovers: {rollovers}")
+        assert status == 200
+        assert len(rollovers) >= 1
+        newest = rollovers[0]
+        assert newest["department"] == "legal"
+        assert newest["spent_in_period"] == 3000
+        assert newest["unused_forfeited"] == 1000  # 4000 allocated - 3000 spent
+
+        status, all_rollovers = server.get("/api/budget-rollovers")
+        print(f"  org-wide rollover count: {len(all_rollovers)}")
+        assert status == 200
+        assert any(r["department"] == "legal" for r in all_rollovers)
+
+
+def test_dashboard_html_wires_up_the_budget_rollover_panel():
+    """Pins the frontend wiring that closes the gap the test above proves at
+    the API layer: the panel/list containers exist, loadBudgetRollovers()
+    reads /api/budget-rollovers into them, every dynamic string goes through
+    escapeHtml() like every other value on this page, and the panel stays
+    hidden until a rollover has actually happened - mirrors
+    test_dashboard_html_wires_up_the_strategy_panel's shape exactly."""
+    print_section("20. Dashboard HTML Wires Up The Budget Rollover Panel")
+
+    with RunningServer() as server:
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=10) as resp:
+            body = resp.read().decode("utf-8")
+
+        assert 'id="rollover-panel" hidden' in body
+        assert 'id="rollover-list"' in body
+        assert "/api/budget-rollovers" in body
+
+        script_section = body.split("async function loadBudgetRollovers")[-1].split("async function refreshAll")[0]
+        assert "r.department" in script_section
+        assert "r.period" in script_section
+        assert "r.rolled_at" in script_section
+        assert "r.spent_in_period" in script_section
+        assert "r.unused_forfeited" in script_section
+        assert "r.period_start" in script_section
+        assert "escapeHtml(r.department)" in script_section
+
+        assert "loadBudgetRollovers()" in body.split("async function refreshAll")[-1].split("}")[0]
+
+
 def test_workflows_endpoint_exposes_a_real_running_instance():
     """workflows.py's WorkflowEngine has run multi-step business processes
     (feature requests, bug fixes) since it was built, but had zero consumers
@@ -687,7 +754,7 @@ def test_workflows_endpoint_exposes_a_real_running_instance():
     already documents for budget_manager/capacity_manager), so this looks up
     this pass's own instance by id rather than assuming it's the only one
     the endpoint returns."""
-    print_section("19. GET /api/workflows Reports A Real Instance's Live State")
+    print_section("21. GET /api/workflows Reports A Real Instance's Live State")
 
     with RunningServer() as server:
         main_v2.init_workflows()
@@ -724,7 +791,7 @@ def test_dashboard_html_wires_up_the_workflow_panel():
     below) - a human needs to see the "start a workflow" form before any
     instance exists, not just after one shows up. Only the now-separate
     #workflow-empty placeholder is conditionally hidden instead."""
-    print_section("20. Dashboard HTML Wires Up The Workflow Panel")
+    print_section("22. Dashboard HTML Wires Up The Workflow Panel")
 
     with RunningServer() as server:
         with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=10) as resp:
@@ -754,7 +821,7 @@ def test_workflow_templates_endpoint_lists_the_real_registered_templates():
     same gap shape /api/workflows itself had before checkpoint 19/20 above.
     Confirms the route reflects main_v2.WORKFLOW_TEMPLATES itself, not a
     hand-typed copy that could drift from it."""
-    print_section("21. GET /api/workflow-templates Lists The Real Templates")
+    print_section("23. GET /api/workflow-templates Lists The Real Templates")
 
     with RunningServer() as server:
         status, templates = server.get("/api/workflow-templates")
@@ -777,7 +844,7 @@ def test_workflow_start_endpoint_creates_a_real_instance():
     scraping its own printed log) and a status that matches
     WorkflowEngine.get_status() exactly, and that the new instance is
     immediately visible through the pre-existing /api/workflows route."""
-    print_section("22. POST /api/workflow/start Creates A Real Instance")
+    print_section("24. POST /api/workflow/start Creates A Real Instance")
 
     with RunningServer() as server:
         status, body = server.post("/api/workflow/start", {
@@ -801,7 +868,7 @@ def test_workflow_start_endpoint_validates_input():
     gets the CLI's exact "Unknown workflow template" + available-list
     message back as the error, not a generic 500 or a silently-created
     instance for a template that doesn't exist."""
-    print_section("23. POST /api/workflow/start Validates Its Input")
+    print_section("25. POST /api/workflow/start Validates Its Input")
 
     with RunningServer() as server:
         status, body = server.post("/api/workflow/start", {})
@@ -822,7 +889,7 @@ def test_workflow_next_endpoint_advances_a_real_instance():
     exactly as the CLI would print them, and the instance status returned
     alongside it reflects the real advance (current_step set, that step's
     own status flipped to in_progress) rather than a canned response."""
-    print_section("24. POST /api/workflow/next Advances A Real Instance")
+    print_section("26. POST /api/workflow/next Advances A Real Instance")
 
     with RunningServer() as server:
         _, started = server.post("/api/workflow/start", {"template_id": "bug_fix"})
@@ -850,7 +917,7 @@ def test_workflow_complete_endpoint_executes_a_real_step():
     success. The support department actually executes the real "triage"
     step and the instance's step_statuses reflects that, matching what
     `python main_v2.py workflow complete <id> triage` would do."""
-    print_section("25. POST /api/workflow/complete Executes A Real Step")
+    print_section("27. POST /api/workflow/complete Executes A Real Step")
 
     with RunningServer() as server:
         _, started = server.post("/api/workflow/start", {"template_id": "bug_fix"})
@@ -882,7 +949,7 @@ def test_workflow_approve_endpoint_enforces_the_real_approval_role():
     registered, the same approval through the same route actually commits
     (the step moves to APPROVED, and its $500 estimated_cost becomes real
     spend on the owning department's budget, not just a status flip)."""
-    print_section("26. POST /api/workflow/approve Enforces The Real Role")
+    print_section("28. POST /api/workflow/approve Enforces The Real Role")
 
     with RunningServer() as server:
         _, started = server.post("/api/workflow/start", {"template_id": "bug_fix"})
@@ -925,7 +992,7 @@ def test_workflow_retry_endpoint_reports_a_real_non_blocked_state():
     proven here on the deterministic, always-reachable negative path (an
     instance with nothing BLOCKED gets the engine's own "No blocked step to
     retry" reason back, not a generic failure or a false "resumed")."""
-    print_section("27. POST /api/workflow/retry Reports A Real State")
+    print_section("29. POST /api/workflow/retry Reports A Real State")
 
     with RunningServer() as server:
         _, started = server.post("/api/workflow/start", {"template_id": "bug_fix"})
@@ -954,7 +1021,7 @@ def test_dashboard_html_wires_up_the_workflow_action_controls():
     replace - the exact bug proven live while building this feature: the
     log line was visible for a moment and then vanished the instant the
     post-action refresh completed."""
-    print_section("28. Dashboard HTML Wires Up The Workflow Action Controls")
+    print_section("30. Dashboard HTML Wires Up The Workflow Action Controls")
 
     with RunningServer() as server:
         with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=10) as resp:
@@ -994,7 +1061,7 @@ def test_agent_run_endpoint_answers_a_real_question():
     get_department_budget for a budget question, and the captured log -
     the same text the CLI prints - carries that real tool call and its
     real result, not a canned string."""
-    print_section("29. POST /api/agent-run Answers A Real Question")
+    print_section("31. POST /api/agent-run Answers A Real Question")
 
     with RunningServer() as server:
         status, body = server.post("/api/agent-run", {"question": "What is engineering's budget?"})
@@ -1009,7 +1076,7 @@ def test_agent_run_endpoint_validates_input():
     """Mirrors the CLI's own `agent-run` validation (main_v2.py's argument
     parsing for --max-iterations) rather than letting bad input reach
     run_agent_loop()'s own ValueError as an unhandled 500."""
-    print_section("30. POST /api/agent-run Validates Its Input")
+    print_section("32. POST /api/agent-run Validates Its Input")
 
     with RunningServer() as server:
         status, body = server.post("/api/agent-run", {"question": "   "})
@@ -1037,7 +1104,7 @@ def test_dashboard_html_wires_up_the_agent_run_panel():
     text is a transcript that can embed arbitrary tool-result content
     (e.g. a task description a user once typed), so it must never be
     interpreted as markup."""
-    print_section("31. Dashboard HTML Wires Up The Ask-An-Agent Panel")
+    print_section("33. Dashboard HTML Wires Up The Ask-An-Agent Panel")
 
     with RunningServer() as server:
         with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=10) as resp:
@@ -1084,6 +1151,8 @@ def main():
         test_dashboard_html_wires_up_the_resource_panel()
         test_strategy_endpoint_exposes_a_real_reallocation_proposal()
         test_dashboard_html_wires_up_the_strategy_panel()
+        test_budget_rollovers_endpoint_exposes_a_real_recorded_rollover()
+        test_dashboard_html_wires_up_the_budget_rollover_panel()
         test_workflows_endpoint_exposes_a_real_running_instance()
         test_dashboard_html_wires_up_the_workflow_panel()
         test_workflow_templates_endpoint_lists_the_real_registered_templates()

@@ -305,6 +305,24 @@ def show_report():
     print(analytics.generate_report())
 
 
+def budget_history(department=None):
+    """Show recorded budget period rollovers - when a department's spend
+    last reset, what it spent in the period that just ended, and what
+    unused allocation was forfeited. BudgetManager.rollover_history() has
+    had real data since the rollover fix shipped but no CLI/web surface of
+    its own until now."""
+    rollovers = budget_manager.rollover_history(department)
+    scope = f" for '{department}'" if department else ""
+    if not rollovers:
+        print(f"\nNo budget rollovers recorded yet{scope}.")
+        return
+    print(f"\n🔁 Budget Rollover History{scope}")
+    for r in rollovers:
+        print(f"  {r.rolled_at}  {r.department:<12} {r.period:<9} "
+              f"spent ${r.spent_in_period:,.2f}, forfeited ${r.unused_forfeited:,.2f} "
+              f"(period started {r.period_start})")
+
+
 def init_workflows():
     """Re-register known workflow templates. They're never persisted (see
     workflows.py) - only instances are - so this must run before any
@@ -567,6 +585,7 @@ def main():
         print("  python main_v2.py show <task_id>")
         print("  python main_v2.py status")
         print("  python main_v2.py report")
+        print("  python main_v2.py budget history [department]")
         print("  python main_v2.py workflow list")
         print("  python main_v2.py workflow instances")
         print("  python main_v2.py workflow start <template_id> [key=value ...]")
@@ -641,6 +660,13 @@ def main():
 
     elif command == "report":
         show_report()
+
+    elif command == "budget":
+        if len(sys.argv) < 3 or sys.argv[2] != "history":
+            print("Usage: python main_v2.py budget history [department]")
+            return
+        dept = sys.argv[3] if len(sys.argv) > 3 else None
+        budget_history(dept)
 
     elif command == "workflow":
         if len(sys.argv) < 3:
