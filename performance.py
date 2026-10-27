@@ -241,9 +241,40 @@ class PerformanceAnalytics:
         return [(a.name, getattr(a, f"avg_{metric}", 0) if metric != "speed" else a.avg_duration_hours)
                 for a in ranked[:limit]]
 
-    def get_recommendations(self) -> List[Dict[str, str]]:
+    def get_recommendations(self, budgets=None, rollover_forfeiture_threshold: float = 0.5) -> List[Dict[str, str]]:
         """Get AI-powered recommendations for optimization."""
         recommendations = []
+
+        # Rollover forfeitures, checked first and independent of
+        # self.agent_metrics below: over_budget_departments() already gives
+        # a push-side signal for a department straining against its
+        # allocation, but the opposite failure mode - a department that just
+        # rolled into a new period having left most of an old one unspent -
+        # had none; rollover_history() (checkpoint 78) only let an operator
+        # go looking for it. Only the latest rollover per department is
+        # considered: an older one either already prompted a reallocation or
+        # didn't, and re-flagging it every call would just accumulate noise
+        # for a period that's long since closed. Ratioed against
+        # spent_in_period + unused_forfeited - the period's own known total -
+        # rather than the department's *current* `allocated`, which can have
+        # changed (re-`allocate()`d) since the reported period actually ran.
+        budgets = budgets or _default_budget_manager
+        latest_by_department: Dict[str, Any] = {}
+        for rollover in budgets.rollover_history():
+            latest_by_department.setdefault(rollover.department, rollover)
+        for rollover in latest_by_department.values():
+            period_total = rollover.spent_in_period + rollover.unused_forfeited
+            if period_total <= 0:
+                continue
+            forfeited_pct = rollover.unused_forfeited / period_total
+            if forfeited_pct >= rollover_forfeiture_threshold:
+                recommendations.append({
+                    "type": "rollover_underspend",
+                    "department": rollover.department,
+                    "issue": f"{forfeited_pct:.0%} (${rollover.unused_forfeited:,.2f}) of its "
+                             f"{rollover.period} period ending {rollover.rolled_at} went unspent and was forfeited",
+                    "action": f"Reconsider {rollover.department}'s next allocation or route more work to it",
+                })
 
         if not self.agent_metrics:
             return recommendations
@@ -392,11 +423,18 @@ class PerformanceAnalytics:
             ]))
 
         # Recommendations
-        recs = self.get_recommendations()
+        recs = self.get_recommendations(budgets=budgets)
         if recs:
             report.append(f"\nRecommendations:")
             for rec in recs:
-                report.append(f"  - {rec['agent']}: {rec['action']}")
+                # Every recommendation before rollover_underspend was keyed
+                # by "agent"; this one is department-scoped like
+                # CapacityManager.recommend_actions()'s own entries (which
+                # never reach this text report, only the dashboard's merged
+                # list) - same `agent or department` fallback
+                # static/dashboard.html's loadReport() already uses so one
+                # piece of code doesn't have to assume every entry's shape.
+                report.append(f"  - {rec.get('agent') or rec.get('department')}: {rec['action']}")
 
         # Trust & collaboration - only shown once a real delegation has
         # happened (collaboration_summary() returns [] otherwise), so a

@@ -1,3 +1,76 @@
+# Daily Progress Report - October 27, 2026
+
+## 📢 CHECKPOINT 79: A ROLLOVER'S FORFEITURE HAD A READ SURFACE SINCE CHECKPOINT 78, NO PUSH-SIDE SIGNAL
+
+**Session opened with `HEAD` clean and matching `origin/main` at `90f4c25`** (checkpoint 78's own commit) - no stale-ref recovery needed this time, unlike checkpoints 53-78.
+
+### Took checkpoint 78's own named non-policy lead
+
+Checkpoint 78's Next Steps named one concrete, non-policy gap in its own words: "`rollover_log` now has a read surface (`budget history`, `/api/budget-rollovers`), but no automated alerting - today's fix is pull-only (an operator has to go look); there is still no push-side signal (e.g. a recommendation in `analytics.get_recommendations()`) when a rollover forfeits a large unused amount, the same gap shape `over_budget_departments()` closes for utilization but rollovers don't yet have for themselves." Self-contained (one new check inside an existing method, no policy call needed on *what* counts as a forfeiture worth flagging - "most of the period went unspent" already has an obvious meaning), unlike the policy-question backlog carried since checkpoints 42-78 (token-cost rate, placeholder department heads, `OrganizationDecisionMaker`, `must_approve_over_100k`, etc.), none of which a session can settle unilaterally.
+
+### 🐛 Proven live before touching anything
+
+```
+>>> bm = BudgetManager(data_file='data/test_rollover_repro.json')
+>>> budget = bm.allocate('engineering', 10000, period='daily')
+>>> bm.request_expense('engineering', 500, category='labor', description='small task')
+>>> budget.period_start = (now - 5 days).isoformat()  # force the period overdue
+>>> bm.save()
+
+>>> pa = PerformanceAnalytics()
+>>> pa.get_recommendations()
+[... agent-level entries only, nothing about engineering ...]
+
+>>> 'budgets' in pa.get_recommendations.__code__.co_varnames
+False   # get_recommendations() had no way to even be handed a BudgetManager
+
+>>> bm.rollover_history()
+[PeriodRollover(department='engineering', period='daily', ...,
+                 spent_in_period=500.0, unused_forfeited=9500.0)]
+```
+
+`BudgetManager.rollover_log`/`rollover_history()` already had the real record - checkpoint 78 proved exactly that - but `get_recommendations()` (the one function both `main_v2.show_report()`'s CLI "Recommendations" section and the dashboard's `#recs-list` already read) took no `budgets` argument at all and had zero awareness that rollovers existed. `engineering` forfeiting 95% ($9,500 of $10,000) of a period is precisely the kind of signal `over_budget_departments()` already pushes for the opposite failure mode (too little budget) - underspend had no equivalent.
+
+### 🔧 Fix
+
+1. **`performance.py`**: `PerformanceAnalytics.get_recommendations()` gains a `budgets=None` parameter (same optional-injection shape `get_resource_summary()`/`generate_report()` already use, defaulting to the shared `_default_budget_manager` singleton) and a `rollover_forfeiture_threshold: float = 0.5` parameter, matching the hardcoded-default convention every other threshold in this module already follows (`over_budget_departments(threshold=0.9)`, `recommend_actions(over_threshold=0.85, under_threshold=0.3)` - none of them read from `config.json` either). For each department, only its *most recent* rollover (via `rollover_history()`, already newest-first) is considered - an old rollover either already prompted a reallocation or didn't, so re-flagging it on every call would just accumulate noise for a period long since closed. The forfeited ratio is computed against `spent_in_period + unused_forfeited` - the period's own known total - rather than the department's *current* `allocated`, which can have changed (re-`allocate()`d) since the reported period actually ran. Crossing the threshold appends a `"rollover_underspend"` recommendation, department-keyed (`{"type", "department", "issue", "action"}`) rather than agent-keyed like every recommendation type before it.
+2. **`performance.py`**: `generate_report()`'s call site now passes `budgets=budgets` through (the method's own already-existing parameter) instead of calling `get_recommendations()` bare.
+3. **`web_server.py`**: `build_report_payload()`'s call site now passes `budgets=budget_manager`, matching the line directly below it (`get_resource_summary(budgets=budget_manager, ...)`) instead of silently relying on the same default the CLI falls back to.
+4. **Found while wiring step 2, not something step 1 could have been validated without**: `generate_report()`'s own "Recommendations" text section printed `rec['agent']` unconditionally - true of every recommendation type that existed before this one, so nothing had ever hit it, but the new department-keyed type has no `"agent"` key. Confirmed live: calling `generate_report()` with a real forfeited rollover crashed with `KeyError: 'agent'` instead of printing a report - exactly the kind of half-formed-answer-as-conclusion failure CLAUDE.md's "Never report unfinished work as finished" calls out. Fixed with the same `rec.get('agent') or rec.get('department')` fallback `static/dashboard.html`'s `loadReport()` already uses to merge agent-keyed and department-keyed recommendation lists into one `#recs-list` - one piece of code doesn't get to assume every entry's shape anymore.
+
+### 🧪 Validation
+
+New `tests/test_rollover_recommendation.py`, 5 tests: a 95%-forfeited rollover is flagged (exact department, percentage, and dollar amount in `issue`); a 30%-forfeited one (below the 0.5 threshold) is not; omitting `budgets` entirely still runs without raising (falls back to the shared singleton); a department with two rollovers on file is only judged on its latest one (first 95% forfeited, second only 10% - recommendation absent); and `generate_report()` prints the new entry instead of crashing on `KeyError('agent')`.
+
+Ran `tests/test_rollover_recommendation.py` alone, then the full suite twice back-to-back (`for f in tests/test_*.py; do python3 "$f"; done`) - all green both times, including every pre-existing `get_recommendations()` consumer (`test_performance.py`, `test_effort_metrics.py`, `test_quality_trend_recommendation.py`, `test_performance_zero_average_crash.py`), none of which assert an exact-length recommendations list, so the new entry type couldn't silently break any of them even when the real `_default_budget_manager` singleton picks up a stale `data/budgets.json` left on disk - confirmed that file doesn't exist at session start, so these tests see an empty rollover history by default. `python3 -m py_compile` clean on every tracked `.py` file. Beyond the unit tests: ran the real `main_v2.py serve` dashboard server against a live, seeded `data/budgets.json` with a genuinely overdue, 95%-forfeited department and `curl`'d `/api/report`, confirming the `rollover_underspend` entry appears in the real JSON payload and the dashboard's `/` route still returns `200` rather than erroring on the new shape. `data/agent_states.json`/`data/performance_metrics.json` restored and `data/budgets.json`/`data/workflows.json` removed afterward, including the ad-hoc live checks against real, non-test data files.
+
+### Behavior change: yes, scoped
+
+`get_recommendations()`'s and `generate_report()`'s "Recommendations" output can now include a new `rollover_underspend` entry - visible over the CLI, `/api/report`, and the dashboard's `#recs-list` - but *only* once a real department has actually rolled over a period having forfeited at least half of it. A system where no department has ever hit a period boundary, or where every rollover spent most of its allocation, sees no change in output shape or content. The `KeyError('agent')` fix is a pure crash fix with no behavior change for any recommendation type that existed before this one.
+
+### 📝 Next Steps
+
+- **`rollover_forfeiture_threshold`'s default of 0.5 is this session's own guess**, matching the hardcoded-default convention already used for `over_budget_departments`/`recommend_actions`, not read from `config.json`. Not flagged as a new gap on its own (no threshold in this codebase is config-driven yet), but if the owner ever decides thresholds *should* move into `config.json`, this one should move with them rather than being special-cased.
+- **`agent_decisions.py:57`'s `needs_approval_over_50k`/`high_budget` task-id mismatch** - unchanged, still open, per checkpoints 76-78. Policy question for the owner (what real signal "high budget" should key off).
+- **`agent_state.py`'s `PerformanceMetrics.customer_satisfaction`** - unchanged, still open, per checkpoints 75-78. Policy question for the owner.
+- **`core.py`'s `BaseAgent.supports_managed_tool_fallback`** - unchanged, still open, per checkpoints 75-78. Owner call: build the fallback it implies, or delete the attribute.
+- **`WorkflowStep.input_schema` has zero production consumers** - unchanged, still open, per checkpoint 69. Policy question for the owner.
+- **`AgentProfile.capabilities` has zero production consumers** - unchanged, still open, per checkpoint 68. Policy question for the owner.
+- **`ceo`'s `must_approve_over_100k` constraint has no implementation attempt at all** - unchanged, still open, per checkpoint 68. Design question for the owner.
+- **`core.py`'s `agent_registry`/`skill_registry`** - unchanged, still open, per checkpoint 66. Policy question for the owner.
+- **A real per-provider token-cost rate** - unchanged, still open, per checkpoints 42-78. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`**, and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-78. Policy question for the owner.
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - unchanged, still open, per checkpoint 61.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58. Policy question for the owner.
+- **`WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`** - unchanged, still open, per checkpoints 62-64.
+- **A real weekly-hours accumulator** - unchanged, still open, per checkpoint 65.
+- **`main_v2.run_agent()` has no injection point for its budget/capacity managers or tasks file** - unchanged, still open, per checkpoint 71.
+- **`core.py`'s `EventBus.subscribe()`/callback dispatch has zero registered subscribers anywhere** - unchanged, still open, per checkpoint 74.
+- The dashboard's `#recs-list` rendering (`static/dashboard.html`'s `loadReport()`) still does not call `escapeHtml()` on any recommendation field (`issue`, `action`, `agent`/`department`) the way other dynamic panels on that page do - every recommendation today is server-generated from department/agent names already validated elsewhere, so there is no live XSS path, but it's an inconsistency with the page's own convention. Non-policy, narrower than today's fix - left for a session of its own.
+- The next session should either get an owner decision on one of the policy questions above, or take the non-policy lead directly above, or look for a new gap the way checkpoints 45-79 each did.
+
+---
+
 # Daily Progress Report - October 26, 2026
 
 ## 🔁 CHECKPOINT 78: `rollover_log` WAS RECORDED SINCE CHECKPOINT 77, READ BY NOTHING

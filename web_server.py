@@ -135,7 +135,7 @@ def build_report_payload() -> dict:
             {"name": name, "value": value}
             for name, value in analytics.get_top_performers("quality", 5)
         ],
-        "recommendations": analytics.get_recommendations(),
+        "recommendations": analytics.get_recommendations(budgets=budget_manager),
         "resources": analytics.get_resource_summary(budgets=budget_manager, capacity=capacity_manager),
         "capacity_recommendations": capacity_manager.recommend_actions(),
         "collaboration": analytics.get_collaboration_summary(),
