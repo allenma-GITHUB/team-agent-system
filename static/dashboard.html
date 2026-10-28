@@ -509,7 +509,7 @@ async function loadReport() {
         const relief = r.earliest_relief_at
           ? ` <span class="muted">(earliest relief: ${new Date(r.earliest_relief_at).toLocaleString()})</span>`
           : "";
-        return `<li><strong>${r.agent || r.department}</strong>: ${r.issue} — <span class="muted">${r.action}</span>${relief}</li>`;
+        return `<li><strong>${escapeHtml(r.agent || r.department)}</strong>: ${escapeHtml(r.issue)} — <span class="muted">${escapeHtml(r.action)}</span>${relief}</li>`;
       }).join("")
     : `<li class="empty">No recommendations right now.</li>`;
 

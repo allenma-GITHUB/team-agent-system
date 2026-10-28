@@ -1126,6 +1126,35 @@ def test_dashboard_html_wires_up_the_agent_run_panel():
         assert "innerHTML" not in show_agent_log
 
 
+def test_dashboard_html_escapes_recommendation_fields():
+    """Checkpoint 79's own Next Steps named this gap: loadReport()'s
+    #recs-list rendering interpolated r.agent/r.department, r.issue, and
+    r.action directly into innerHTML, the only dynamic panel on this page
+    that skipped escapeHtml() - every other interpolation (task detail,
+    performance, resource, strategy, rollover, workflow, agent-run panels)
+    already goes through it. Every recommendation today is server-generated
+    from agent/department names already validated elsewhere (AgentState's
+    own profile, set from config.json), so there was no live XSS path, but
+    the inconsistency meant a future recommendation type keyed off anything
+    less trusted would render unescaped by default. Pins that every field
+    loadReport() reads off a recommendation is now escaped, mirroring
+    test_dashboard_html_wires_up_the_budget_rollover_panel's shape."""
+    print_section("34. Dashboard HTML Escapes Recommendation Fields")
+
+    with RunningServer() as server:
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=10) as resp:
+            body = resp.read().decode("utf-8")
+
+        script_section = body.split("async function loadReport")[-1].split("async function refreshAll")[0]
+        assert "r.agent" in script_section
+        assert "r.department" in script_section
+        assert "r.issue" in script_section
+        assert "r.action" in script_section
+        assert "escapeHtml(r.agent || r.department)" in script_section
+        assert "escapeHtml(r.issue)" in script_section
+        assert "escapeHtml(r.action)" in script_section
+
+
 def main():
     print("\n" + "=" * 60)
     print("  WEB DASHBOARD (web_server.py) REGRESSION TESTS")
@@ -1166,6 +1195,7 @@ def main():
         test_agent_run_endpoint_answers_a_real_question()
         test_agent_run_endpoint_validates_input()
         test_dashboard_html_wires_up_the_agent_run_panel()
+        test_dashboard_html_escapes_recommendation_fields()
 
     print("\n" + "=" * 60)
     print("  [OK] All web dashboard tests passed!")

@@ -1,3 +1,60 @@
+# Daily Progress Report - October 28, 2026
+
+## 🧹 CHECKPOINT 80: `#recs-list` WAS THE ONLY DYNAMIC PANEL ON THE DASHBOARD SKIPPING `escapeHtml()`
+
+**Session opened with `HEAD` clean and matching `origin/main` at `c61b146`** (checkpoint 79's own commit) - no stale-ref recovery needed, unlike checkpoints 53-78.
+
+### Took checkpoint 79's own named non-policy lead
+
+Checkpoint 79's Next Steps named one concrete, non-policy gap in its own words: "The dashboard's `#recs-list` rendering (`static/dashboard.html`'s `loadReport()`) still does not call `escapeHtml()` on any recommendation field (`issue`, `action`, `agent`/`department`) the way other dynamic panels on that page do - every recommendation today is server-generated from department/agent names already validated elsewhere, so there is no live XSS path, but it's an inconsistency with the page's own convention." Self-contained (one rendering line, no policy call needed - "escape it like every other panel does" has an obvious meaning), unlike the policy-question backlog carried since checkpoints 42-79 (token-cost rate, placeholder department heads, `OrganizationDecisionMaker`, `must_approve_over_100k`, etc.), none of which a session can settle unilaterally.
+
+### 🐛 Proven live before touching anything
+
+```
+$ grep -n "loadReport\|escapeHtml\|recs-list" static/dashboard.html
+...
+512:  return `<li><strong>${r.agent || r.department}</strong>: ${r.issue} — <span class="muted">${r.action}</span>${relief}</li>`;
+```
+
+Every other dynamic interpolation on this page - the task detail view, the performance panel, the resource panel, the strategy panel, the budget-rollover panel, the workflow panel, the ask-an-agent panel - routes its values through `escapeHtml()` before landing in `innerHTML`. `loadReport()`'s recommendation list (line 512) was the one holdout, interpolating `r.agent`/`r.department`/`r.issue`/`r.action` raw. Confirmed the fields themselves (traced through `performance.py`'s `get_recommendations()` and `budgets.py`'s `CapacityManager.recommend_actions()`) are always `agent.name`/`snap`'s department key, both sourced from `AgentState.profile`, itself populated from `config.json` at registration - not user-submitted text - so there is no live XSS path today, exactly as checkpoint 79 said. The gap was pure inconsistency with the page's own convention, not a live exploit, which is why it was correctly left as a non-policy lead rather than an urgent fix.
+
+### 🔧 Fix
+
+**`static/dashboard.html`**: `loadReport()`'s recommendation-list template literal now wraps `r.agent || r.department`, `r.issue`, and `r.action` each in `escapeHtml()`, matching every other dynamic panel on the page. `r.earliest_relief_at` is untouched - it was already rendered via `new Date(...).toLocaleString()`, a formatted timestamp, not raw text, the same reasoning that already exempts e.g. `money()`-formatted and `.toFixed()`-formatted values elsewhere on this page.
+
+### 🧪 Validation
+
+New `tests/test_web_server.py` test 34 (`test_dashboard_html_escapes_recommendation_fields`), same shape as `test_dashboard_html_wires_up_the_budget_rollover_panel`: fetches the real served `index.html`, isolates `loadReport()`'s own script body, and asserts `escapeHtml(r.agent || r.department)`, `escapeHtml(r.issue)`, and `escapeHtml(r.action)` are all present in the rendered source - so a future edit can't quietly drop the escaping again.
+
+Ran `tests/test_web_server.py` alone (34 sections, all green) and the full 68-file suite (`for f in tests/test_*.py; do python3 "$f"; done`) twice back-to-back, zero failures both times. `python3 -m py_compile` clean on every tracked `.py` file. Beyond the unit tests: started the real `main_v2.py serve` dashboard server and `curl`'d `/`, confirming the served HTML carries `escapeHtml(r.agent || r.department)`, `escapeHtml(r.issue)`, and `escapeHtml(r.action)` verbatim, then `curl`'d `/api/report` against the live, un-seeded `_default_budget_manager`/`_default_capacity_manager` singletons and confirmed a real `underutilized`/`hiring_needed` recommendation pair renders through that path (no test data needed - the shipped `config.json` staffing already produces an over/under-utilized department pair at idle). `data/agent_states.json`/`data/performance_metrics.json` restored and `data/budgets.json`/`data/workflows.json` removed afterward, including the ad-hoc live server check.
+
+### Behavior change: none
+
+Pure defense-in-depth: the rendered text for every recommendation is unchanged for every recommendation that exists today (escaping plain department/agent names and formatted issue/action strings is a no-op visually), and no return value, status field, persisted schema, or CLI/API output shape changed. The only behavior difference is for a hypothetical future recommendation whose `issue`/`action`/`agent` text contained HTML-special characters - today's fix is the one that keeps that rendering safely instead of as markup, the same protection the task-detail panel already has for genuinely user-submitted text.
+
+### 📝 Next Steps
+
+- **`agent_decisions.py:57`'s `needs_approval_over_50k`/`high_budget` task-id mismatch** - unchanged, still open, per checkpoints 76-79. Policy question for the owner (what real signal "high budget" should key off).
+- **`agent_state.py`'s `PerformanceMetrics.customer_satisfaction`** - unchanged, still open, per checkpoints 75-79. Policy question for the owner.
+- **`core.py`'s `BaseAgent.supports_managed_tool_fallback`** - unchanged, still open, per checkpoints 75-79. Owner call: build the fallback it implies, or delete the attribute.
+- **`WorkflowStep.input_schema` has zero production consumers** - unchanged, still open, per checkpoint 69. Policy question for the owner.
+- **`AgentProfile.capabilities` has zero production consumers** - unchanged, still open, per checkpoint 68. Policy question for the owner.
+- **`ceo`'s `must_approve_over_100k` constraint has no implementation attempt at all** - unchanged, still open, per checkpoint 68. Design question for the owner.
+- **`core.py`'s `agent_registry`/`skill_registry`** - unchanged, still open, per checkpoint 66. Policy question for the owner.
+- **A real per-provider token-cost rate** - unchanged, still open, per checkpoints 42-79. Policy question for the owner.
+- **Placeholder values for `product_head`/`finance_head`**, and the still-unreachable `ceo`/`tech_lead`/`product_coordinator` config entries - unchanged, still open, per checkpoints 42-79. Policy question for the owner.
+- **`agent_decisions.py`'s `OrganizationDecisionMaker`** - unchanged, still open, per checkpoint 61.
+- **`departments.py`'s `create_department()`/`list_departments()` dead-code question** - unchanged, still open, per checkpoint 58. Policy question for the owner.
+- **`WorkflowStep.timeout_minutes`/`retry_on_failure`/`max_retries`** - unchanged, still open, per checkpoints 62-64.
+- **A real weekly-hours accumulator** - unchanged, still open, per checkpoint 65.
+- **`main_v2.run_agent()` has no injection point for its budget/capacity managers or tasks file** - unchanged, still open, per checkpoint 71.
+- **`core.py`'s `EventBus.subscribe()`/callback dispatch has zero registered subscribers anywhere** - unchanged, still open, per checkpoint 74.
+- **`rollover_forfeiture_threshold`'s default of 0.5 is checkpoint 79's own guess**, not read from `config.json` - unchanged, still open, per checkpoint 79, same shape as every other hardcoded threshold in this codebase.
+- Today's fix closed the one named non-policy lead from checkpoint 79; no new non-policy gap was found or left open by this session's own change (the `escapeHtml()` sweep touched exactly the one holdout line and nothing else needed it).
+- The next session should either get an owner decision on one of the policy questions above, or look for a new non-policy gap the way checkpoints 45-80 each did.
+
+---
+
 # Daily Progress Report - October 27, 2026
 
 ## 📢 CHECKPOINT 79: A ROLLOVER'S FORFEITURE HAD A READ SURFACE SINCE CHECKPOINT 78, NO PUSH-SIDE SIGNAL
