@@ -233,7 +233,9 @@ def show_task(task_id: str):
             m = result['metrics']
             print(f"  Agent Metrics: avg_quality={m.get('avg_quality', 0):.2f}, "
                   f"tasks_completed={m.get('tasks_completed', 0)}, "
-                  f"error_rate={m.get('error_rate', 0):.1%}")
+                  f"error_rate={m.get('error_rate', 0):.1%}, "
+                  f"avg_cost_per_task=${m.get('avg_cost_per_task', 0):.5f}, "
+                  f"avg_completion_time_hours={m.get('avg_completion_time_hours', 0):.2f}")
         if result.get('used_tools'):
             print(f"  Tool Calls: {result.get('tool_calls', 0)} "
                   f"({result.get('tool_calls_failed', 0)} failed)")

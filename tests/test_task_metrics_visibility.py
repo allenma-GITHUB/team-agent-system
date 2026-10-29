@@ -30,6 +30,17 @@ returns the task dict unmodified (no field allowlist), so it has carried
 pins that fact so a future refactor that adds a field allowlist there
 doesn't quietly reintroduce the same gap this checkpoint just closed in the
 two human-facing renderers.
+
+CHECKPOINT 81 follow-up: this fix only wired 3 of PerformanceMetrics' 5
+fields (agent_state.py) into the dict - avg_cost_per_task and
+avg_completion_time_hours were computed by the same update() call, written
+to disk, and left out of task_executor_v2.py's "metrics" dict (and so out
+of both renderers) entirely. Confirmed live: data/agent_states.json carried
+a real agent with avg_completion_time_hours=3.375, avg_cost_per_task=63.28
+while every "metrics" dict ever returned by DepartmentHeadAgent.run() had
+only the other three keys. Fixed the same way checkpoint 72 fixed the
+first three: both fields added to the dict and to each renderer's line
+right after error_rate.
 """
 
 import os
@@ -93,6 +104,8 @@ def test_show_task_prints_the_real_metrics_dict():
         assert task["status"] == "completed"
         assert metrics["tasks_completed"] >= 1
         assert metrics["avg_quality"] > 0
+        assert metrics["avg_cost_per_task"] > 0
+        assert metrics["avg_completion_time_hours"] > 0
 
         _, output = _captured(main_v2.show_task, task_id)
         print(output)
@@ -101,6 +114,8 @@ def test_show_task_prints_the_real_metrics_dict():
         assert f"avg_quality={metrics['avg_quality']:.2f}" in output
         assert f"tasks_completed={metrics['tasks_completed']}" in output
         assert f"error_rate={metrics['error_rate']:.1%}" in output
+        assert f"avg_cost_per_task=${metrics['avg_cost_per_task']:.5f}" in output
+        assert f"avg_completion_time_hours={metrics['avg_completion_time_hours']:.2f}" in output
 
 
 def test_show_task_omits_the_metrics_line_when_never_run():
@@ -127,6 +142,8 @@ def test_dashboard_html_renders_the_same_metrics_fields():
     # guard is referenced below it, matching every other optional field in
     # this renderer (used_tools, delegation_chain, ...).
     assert re.search(r"if\s*\(result\.metrics\)\s*\{", dashboard)
+    assert "m.avg_cost_per_task" in dashboard
+    assert "m.avg_completion_time_hours" in dashboard
 
 
 def test_api_tasks_detail_already_carried_metrics_unmodified():
@@ -159,6 +176,8 @@ def test_api_tasks_detail_already_carried_metrics_unmodified():
         assert status == 200
         assert isinstance(body["result"]["metrics"], dict)
         assert body["result"]["metrics"]["tasks_completed"] >= 1
+        assert body["result"]["metrics"]["avg_cost_per_task"] > 0
+        assert body["result"]["metrics"]["avg_completion_time_hours"] > 0
     finally:
         os.chdir(original_cwd)
         shutil.rmtree(tmpdir, ignore_errors=True)

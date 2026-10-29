@@ -772,7 +772,9 @@ class DepartmentHeadAgent(BaseAgent):
             "metrics": {
                 "avg_quality": self.agent_state.metrics.avg_quality_score,
                 "tasks_completed": self.agent_state.metrics.tasks_completed,
-                "error_rate": self.agent_state.metrics.error_rate
+                "error_rate": self.agent_state.metrics.error_rate,
+                "avg_cost_per_task": self.agent_state.metrics.avg_cost_per_task,
+                "avg_completion_time_hours": self.agent_state.metrics.avg_completion_time_hours
             },
             "staff_contributions": [
                 {"role": f"{self.department.title()} Staff {i + 1}", "contribution": f"Task component {i + 1}"}

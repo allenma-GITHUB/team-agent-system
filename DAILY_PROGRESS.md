@@ -1,3 +1,49 @@
+# Daily Progress Report - October 29, 2026
+
+## 📊 CHECKPOINT 81: CHECKPOINT 72 WIRED 3 OF 5 `PerformanceMetrics` FIELDS THROUGH — THE OTHER TWO STAYED DEAD
+
+**Session opened with `HEAD` detached, one commit (`b92333b`, checkpoint 80's own `escapeHtml()` fix) ahead of the local `main` ref but already present on `origin/main`** - a stale local ref from a prior session, not unpushed work. Fast-forwarded local `main` to it and confirmed with `git fetch` that `origin/main` already carried it; no push was needed. Full `tests/test_*.py` suite (65 files) re-run clean before starting new work, confirming checkpoint 80 is intact.
+
+### Took a new non-policy lead, since checkpoint 80's own Next Steps were all open policy questions
+
+Checkpoint 80's Next Steps listed sixteen items, every one of them an unresolved owner-policy question carried forward from checkpoints 42-80 (token-cost rate, placeholder department heads, `must_approve_over_100k`, etc.) or explicitly marked "no new non-policy gap was found." Per CLAUDE.md's instruction to leave policy questions to the owner, this session searched for a new, self-contained, non-policy defect instead.
+
+### 🐛 Proven live before touching anything
+
+`agent_state.py:48-54` declares `PerformanceMetrics` with five fields - `tasks_completed`, `avg_quality_score`, `avg_completion_time_hours`, `avg_cost_per_task`, `error_rate` - all five updated identically, every task, by the same incremental-mean formula in `PerformanceMetrics.update()` (`agent_state.py:69-75`), and all five persisted to `data/agent_states.json` on every run (a real agent on disk already carried `"avg_completion_time_hours": 3.375, "avg_cost_per_task": 63.28125"`).
+
+But `task_executor_v2.py`'s `DepartmentHeadAgent.run()` only ever copied three of those five into the `"metrics"` dict it returns (`avg_quality`, `tasks_completed`, `error_rate` - lines 772-775 pre-fix). `grep -rn "avg_cost_per_task\|avg_completion_time_hours" --include=*.py .` outside `agent_state.py`'s own declaration/update site turned up nothing in production code: not in `task_executor_v2.py`'s dict, not in `main_v2.show_task()`'s "Agent Metrics:" line (`main_v2.py:232-235`), not in `static/dashboard.html`'s matching renderer block (`dashboard.html:433-437`). This is literally the gap checkpoint 72 ("A task's own agent metrics were persisted to disk and never shown to a human") closed for the other three fields in the same dict - checkpoint 72 just didn't notice two of its five siblings.
+
+Confirmed live with `tests/test_task_metrics_visibility.py`'s own harness before the fix: submitting and processing a real task produced `avg_cost_per_task=0.00122`/`avg_completion_time_hours=1.0` in the persisted `PerformanceMetrics`, while the `"metrics"` dict returned by `DepartmentHeadAgent.run()`, and both renderers reading it, never had those two keys at all.
+
+### 🔧 Fix
+
+**`task_executor_v2.py`** (completed-task branch of `DepartmentHeadAgent.run()`): added `"avg_cost_per_task"` and `"avg_completion_time_hours"` to the `"metrics"` dict, reading the same `self.agent_state.metrics` object the other three keys already read.
+
+**`main_v2.py`**'s `show_task()`: extended the `"Agent Metrics:"` print line with `avg_cost_per_task=$X.XXXXX` (same `.5f` precision `token_cost` already uses) and `avg_completion_time_hours=X.XX`.
+
+**`static/dashboard.html`**'s `renderTaskDetail()`: extended the matching `<dt>Agent Metrics</dt>` line the same way, reusing the existing `moneyPrecise()` helper for the cost field rather than inventing new formatting.
+
+Left untouched: the escalated-task branch of `DepartmentHeadAgent.run()` has no `"metrics"` key at all (not three fields, not five) - a separate, pre-existing gap from this one. `agent_state.record_performance()` (and so `PerformanceMetrics.update()`) is called unconditionally before the completed/escalated branch even splits, so the data exists for an escalated task too; whether an escalated run's metrics should be surfaced the same way is a real design question (does "escalated, not executed" warrant showing the agent's running averages at all?), not the pure wiring gap this checkpoint fixed, so it's recorded here rather than folded into this fix.
+
+### 🧪 Validation
+
+Extended `tests/test_task_metrics_visibility.py` (no new test file - this is the same mechanism checkpoint 72's tests already pin, just two more fields of it) to assert `avg_cost_per_task`/`avg_completion_time_hours` are non-zero in the persisted dict, printed by `show_task()`, present in `dashboard.html`'s JS, and round-tripped unmodified through `GET /api/tasks/<id>` - mirroring each of the file's four existing tests exactly.
+
+Ran `tests/test_task_metrics_visibility.py` alone (all 4 tests green, real non-zero values logged: `avg_cost_per_task=$0.00122`, `avg_completion_time_hours=1.00`) and the full 65-file suite twice back-to-back, zero failures both times. `python3 -m py_compile` clean on every tracked `.py` file. `data/agent_states.json`/`data/performance_metrics.json` restored and `data/budgets.json`/`data/workflows.json` removed afterward.
+
+### Behavior change: none
+
+Pure visibility fix. No return value, status field, or persisted schema changed shape beyond gaining two more keys in an already-present dict; no decision logic (budget, capacity, delegation) reads these fields, so nothing about what the system *does* changed - only what a human reading `show_task()` or the dashboard can now see about an agent's own running cost/duration averages.
+
+### 📝 Next Steps
+
+- **The escalated-branch `"metrics"` key gap named above** - new, non-policy, but a real design question first: should an escalated task's result carry the agent's metrics at all, or does "escalated, not executed" mean no metrics line by definition (the convention `main_v2.py`'s own comment at line ~220 already states for `llm_provider`/`tokens_used`/`quality_score`)? Worth an owner call before coding either answer.
+- All sixteen policy-question items from checkpoint 80's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()`'s zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default) - unchanged, still open, per checkpoints 42-80.
+- The next session should either get an owner decision on one of the policy questions above (including the new escalated-metrics question this checkpoint raised), or look for a new non-policy gap the way checkpoints 45-81 each did.
+
+---
+
 # Daily Progress Report - October 28, 2026
 
 ## 🧹 CHECKPOINT 80: `#recs-list` WAS THE ONLY DYNAMIC PANEL ON THE DASHBOARD SKIPPING `escapeHtml()`

@@ -435,7 +435,9 @@ function renderTaskDetail(task) {
       const m = result.metrics;
       const avgQuality = Number(m.avg_quality || 0).toFixed(2);
       const errorRate = (Number(m.error_rate || 0) * 100).toFixed(1);
-      extra.push(`<dt>Agent Metrics</dt><dd>avg_quality=${avgQuality}, tasks_completed=${m.tasks_completed || 0}, error_rate=${errorRate}%</dd>`);
+      const avgCost = moneyPrecise(m.avg_cost_per_task || 0);
+      const avgHours = Number(m.avg_completion_time_hours || 0).toFixed(2);
+      extra.push(`<dt>Agent Metrics</dt><dd>avg_quality=${avgQuality}, tasks_completed=${m.tasks_completed || 0}, error_rate=${errorRate}%, avg_cost_per_task=${avgCost}, avg_completion_time_hours=${avgHours}</dd>`);
     }
     if (result.used_tools) {
       extra.push(`<dt>Tool Calls</dt><dd>${result.tool_calls || 0} (${result.tool_calls_failed || 0} failed)</dd>`);
