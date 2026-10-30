@@ -659,6 +659,7 @@ class WorkflowEngine:
             "step_statuses": {k: v.value for k, v in instance.step_status.items()},
             "error": instance.error,
             "created_at": instance.created_at,
+            "started_at": instance.started_at,
             "completed_at": instance.completed_at
         }
 

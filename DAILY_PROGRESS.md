@@ -1,4 +1,53 @@
-# Daily Progress Report - October 29, 2026
+# Daily Progress Report - October 30, 2026
+
+## 🕒 CHECKPOINT 82: `WorkflowInstance.started_at` WAS PERSISTED, NEVER LEFT `get_status()` — AND NO CONSUMER PRINTED ANY OF ITS THREE TIMESTAMPS
+
+**Session opened with `HEAD` detached, two commits (`b92333b`, `698aa64` — checkpoints 80 and 81's own fixes) ahead of the local `main` ref but already present on `origin/main`** — a stale local ref from a prior session, same shape checkpoints 53-81 have each hit, not unpushed work. Fast-forwarded local `main` to it and confirmed with `git fetch` that `origin/main` already carried both commits; no push was needed for that reconciliation. Full `tests/test_*.py` suite (69 files) re-run clean before starting new work, confirming checkpoints 80-81 are intact.
+
+### Took a new non-policy lead, since checkpoint 81's own Next Steps were policy questions or a design question needing an owner call
+
+Checkpoint 81's Next Steps named one new item (the escalated-branch `"metrics"` key gap) explicitly as a design question for the owner ("does 'escalated, not executed' mean no metrics line by definition... worth an owner call before coding either answer"), plus the same sixteen-item policy-question backlog carried since checkpoints 42-81. Per CLAUDE.md's instruction to leave policy questions to the owner, this session searched for a new, self-contained, non-policy defect instead — surveying every production module for a field that is computed/persisted somewhere but never wired to where a human would see it, the same shape checkpoints 45-81 each used.
+
+### 🐛 Proven live before touching anything
+
+`workflows.py:119-121` declares `WorkflowInstance.created_at`/`started_at`/`completed_at` — all three round-tripped through `to_dict()`/`from_dict()` (lines 240-242) on every save/load, and `started_at` is set to a real timestamp by `start_instance()` (line 270) the moment an instance begins. But `get_status()` (lines 653-663) — the one dict every human-facing consumer reads (the CLI's `workflow status <id>`, `static/dashboard.html`'s workflow cards, and `/api/workflows`, which returns `get_status()`'s dict unmodified) — only ever returned `created_at` and `completed_at`. `started_at` was the only one of the three timestamp fields missing from the dict itself. Worse, neither human-facing consumer printed *any* of the three, even the two `get_status()` already supplied: `main_v2.py`'s `workflow_status()` (lines 460-476) prints `workflow_name`/`status`/`progress`/`current_step`/`error`/`step_statuses` with no timestamp line at all, and `static/dashboard.html`'s workflow-card renderer (`loadWorkflows()`) matched that same omission field-for-field.
+
+Confirmed live before the fix, against a real instance:
+```
+real object: created_at='2026-10-30T14:11:48.388323' started_at='2026-10-30T14:11:48.388450' completed_at=None
+get_status() keys: ['completed_at', 'created_at', 'current_step', 'error', 'instance_id', 'progress', 'status', 'step_statuses', 'workflow_name']
+```
+`started_at` is absent from the key list despite being a real, non-null value on the object one line above it. Every prior workflow checkpoint (53-56, 62-64, 69-71, 76) targeted step-level mechanics (dependencies, approval gates, retries, output schemas, execution) or the instance-list/web-route gap — none had audited the three plain timestamp fields on `WorkflowInstance` itself, which have no decision logic reading them and so never surfaced in a "field is read by nothing" grep sweep the way skill/trust/metrics fields did.
+
+### 🔧 Fix
+
+**`workflows.py`**: `get_status()` now includes `"started_at": instance.started_at` alongside the `created_at`/`completed_at` it already returned.
+
+**`main_v2.py`**'s `workflow_status()`: three new print lines — `Created:`, `Started:` (or `(not started)` if `None` — can't happen today since `get_status()` is only reachable for an instance that already exists, but matches the `.get()`-guarded, absence-means-never-happened convention every other optional field in this file follows), and `Completed:` (or `(not completed)`).
+
+**`static/dashboard.html`**'s `loadWorkflows()`: one new line per workflow card rendering all three timestamps, each through `escapeHtml()` like every other dynamic string on the card — same raw-ISO-string treatment the task-detail panel's own `task.created_at` line already uses (no `toLocaleString()` reformatting), for consistency with that existing convention rather than inventing a new one.
+
+### 🧪 Validation
+
+New `tests/test_workflow_timestamps_visibility.py`, 3 tests: `get_status()` carries a real `started_at` matching the object's own value (plus `created_at`/`completed_at` for completeness); the real CLI `workflow_status()` function, run through `main_v2.workflow_start()` on the real `bug_fix` template inside an isolated-cwd scratch directory (so the module-level `workflow_engine` singleton's relative `data/workflows.json` write never touches the repo's own data files), prints all three labeled lines with the real timestamp values in them; and `static/dashboard.html`'s `loadWorkflows()` source contains `escapeHtml(w.created_at...)`/`escapeHtml(w.started_at...)`/`escapeHtml(w.completed_at...)`.
+
+Extended `tests/test_web_server.py`'s existing tests 21 (`test_workflows_endpoint_exposes_a_real_running_instance`) and 22 (`test_dashboard_html_wires_up_the_workflow_panel`) rather than adding new test functions there, since this is the same `/api/workflows` payload and the same rendered panel those tests already pin — just three more fields of each.
+
+Ran `tests/test_workflow_timestamps_visibility.py` alone (all 3 green, real timestamps logged) and the full 69-file suite twice back-to-back, zero failures both times. `python3 -m py_compile` clean on every tracked `.py` file. Beyond the unit tests: started the real `main_v2.py serve` dashboard server and `curl`'d `POST /api/workflow/start` followed by `GET /api/workflows` against it, confirming the live JSON payload carries real `created_at`/`started_at`/`completed_at` values end-to-end through the actual HTTP route, not just the test harness's direct Python calls. `data/agent_states.json`/`data/performance_metrics.json` restored and `data/budgets.json`/`data/workflows.json` removed afterward, including after the ad-hoc live server checks.
+
+### Behavior change: none
+
+Pure visibility fix. No return value, status field, or persisted schema changed shape beyond `get_status()`'s dict gaining one more already-existing key; no decision logic (budget, capacity, delegation, step execution) reads `started_at`, so nothing about what the system *does* changed — only what a human reading `workflow status <id>` or the dashboard's workflow cards can now see about when an instance actually began running, not just when it was created or finished.
+
+### 📝 Next Steps
+
+- **The escalated-branch task `"metrics"` key gap named by checkpoint 81** — unchanged, still open. Design question for the owner (does an escalated, not-executed task's result carry the agent's running metrics at all?).
+- All sixteen policy-question items from checkpoints 42-81's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()`'s zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default) — unchanged, still open, per checkpoints 42-81.
+- No new non-policy gap was found or left open by this session's own change beyond the one it closed — `started_at` was the only timestamp field missing from `get_status()`, and the CLI/dashboard now render all three consistently.
+- The next session should either get an owner decision on one of the policy questions above, or look for a new non-policy gap the way checkpoints 45-82 each did.
+
+---
+
 
 ## 📊 CHECKPOINT 81: CHECKPOINT 72 WIRED 3 OF 5 `PerformanceMetrics` FIELDS THROUGH — THE OTHER TWO STAYED DEAD
 

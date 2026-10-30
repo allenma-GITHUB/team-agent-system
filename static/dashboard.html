@@ -663,6 +663,7 @@ async function loadWorkflows() {
     return `<div class="workflow-card" data-instance="${escapeHtml(w.instance_id)}">
       <h3><span>${escapeHtml(w.workflow_name)}</span><span class="badge ${escapeHtml(w.status)}">${escapeHtml(w.status)}</span></h3>
       <div class="muted" style="font-size:12px;">${escapeHtml(w.instance_id)}${w.current_step ? " · current: " + escapeHtml(w.current_step) : ""}</div>
+      <div class="muted" style="font-size:12px;">Created: ${escapeHtml(w.created_at || "—")} · Started: ${escapeHtml(w.started_at || "—")} · Completed: ${escapeHtml(w.completed_at || "—")}</div>
       ${bar("Progress", w.progress, `${(w.progress * 100).toFixed(0)}%`)}
       <div class="muted" style="font-size:12px;margin-top:6px;">${steps}</div>
       ${errorLine}

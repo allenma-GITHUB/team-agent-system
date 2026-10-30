@@ -776,6 +776,9 @@ def test_workflows_endpoint_exposes_a_real_running_instance():
         assert wf["step_statuses"]["design"] == "pending"
         assert 0 < wf["progress"] < 1
         assert wf["error"] is None
+        assert wf["created_at"] == instance.created_at
+        assert wf["started_at"] == instance.started_at
+        assert wf["completed_at"] is None
 
 
 def test_dashboard_html_wires_up_the_workflow_panel():
@@ -812,6 +815,12 @@ def test_dashboard_html_wires_up_the_workflow_panel():
         assert "escapeHtml(w.instance_id)" in script_section
         assert "escapeHtml(stepId)" in script_section
         assert "escapeHtml(w.error)" in script_section
+        assert "w.created_at" in script_section
+        assert "w.started_at" in script_section
+        assert "w.completed_at" in script_section
+        assert "escapeHtml(w.created_at" in script_section
+        assert "escapeHtml(w.started_at" in script_section
+        assert "escapeHtml(w.completed_at" in script_section
 
 
 def test_workflow_templates_endpoint_lists_the_real_registered_templates():

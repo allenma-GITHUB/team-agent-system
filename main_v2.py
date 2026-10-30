@@ -469,6 +469,9 @@ def workflow_status(instance_id: str):
     print(f"Status: {status['status']}")
     print(f"Progress: {status['progress']:.0%}")
     print(f"Current step: {status['current_step']}")
+    print(f"Created: {status['created_at']}")
+    print(f"Started: {status['started_at'] or '(not started)'}")
+    print(f"Completed: {status['completed_at'] or '(not completed)'}")
     if status["error"]:
         print(f"Error: {status['error']}")
     print("Steps:")
