@@ -343,6 +343,24 @@ class BudgetManager:
             breakdown[expense.category] = breakdown.get(expense.category, 0.0) + expense.amount
         return breakdown
 
+    def recent_expenses(self, department: Optional[str] = None) -> List[ExpenseRecord]:
+        """Every recorded ExpenseRecord, newest first - org-wide or scoped
+        to one department. `expense_breakdown()` above sums these records
+        down to a per-category total, which answers "how much was spent on
+        what" but discards the record itself: which task or agent incurred
+        it, and the free-text description attached at `request_expense()`/
+        `confirm_reservation()` time. Those three fields (`task_id`,
+        `agent_id`, `description`), plus the per-expense `timestamp` and
+        `amount`, have been populated and persisted to disk on every real
+        expense since the budget system existed, but `expense_log` itself
+        has never had a read method of its own - the same "computed and
+        recorded, zero consumer" shape `rollover_history()` closed for
+        `rollover_log` above, just one field over: the aggregate had a
+        reader, the ledger behind it didn't.
+        """
+        matches = [e for e in self.expense_log if department is None or e.department == department]
+        return sorted(matches, key=lambda e: e.timestamp, reverse=True)
+
     def over_budget_departments(self, threshold: float = 0.9) -> List[str]:
         """Departments whose utilization has crossed the warning threshold."""
         self._roll_all_due()

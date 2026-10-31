@@ -311,6 +311,45 @@ def test_rollover_history_reads_back_recorded_rollovers():
     assert budgets.rollover_history("marketing") == []  # never allocated, never rolled
 
 
+def test_recent_expenses_reads_back_individual_records():
+    """recent_expenses() is the read side of request_expense()/
+    confirm_reservation()'s write side - the per-record ledger behind
+    expense_breakdown()'s per-category totals. Confirms task_id, agent_id,
+    description, and timestamp all round-trip on the real objects (not
+    just the amount/category expense_breakdown() already summed), that
+    filtering by department works, and that ordering is newest first."""
+    print_section("11. Recent Expenses Reads Back Individual Records")
+
+    budgets = BudgetManager(data_file="data/test_budgets_expenses.json")
+    budgets.allocate("engineering", 5000, period="monthly")
+    budgets.allocate("sales", 5000, period="monthly")
+
+    budgets.request_expense("engineering", 250.0, category="labor",
+                             description="Fix auth bug", task_id="task-1", agent_id="agent-dev-1")
+    budgets.request_expense("sales", 100.0, category="llm_tokens",
+                             description="Lead scoring", task_id="task-2", agent_id="agent-sales-1")
+    budgets.request_expense("engineering", 400.0, category="labor",
+                             description="Add caching", task_id="task-3", agent_id="agent-dev-2")
+
+    org_wide = budgets.recent_expenses()
+    print(f"  org-wide expenses: {[(e.department, e.amount, e.task_id) for e in org_wide]}")
+    assert len(org_wide) == 3
+    # Newest first: task-3 was logged last, task-1 first.
+    assert [e.task_id for e in org_wide] == ["task-3", "task-2", "task-1"]
+
+    eng_only = budgets.recent_expenses("engineering")
+    print(f"  engineering-only expenses: {[e.task_id for e in eng_only]}")
+    assert len(eng_only) == 2
+    assert [e.task_id for e in eng_only] == ["task-3", "task-1"]
+    first = eng_only[1]
+    assert first.agent_id == "agent-dev-1"
+    assert first.description == "Fix auth bug"
+    assert first.amount == 250.0
+    assert first.timestamp  # real, non-empty ISO timestamp
+
+    assert budgets.recent_expenses("marketing") == []  # never spent
+
+
 def main():
     print("\n" + "=" * 60)
     print("  BUDGET & CAPACITY MANAGEMENT DEMONSTRATION")
@@ -326,6 +365,7 @@ def main():
     test_unrecognized_period_name_never_auto_rolls()
     test_org_summary_rolls_every_department_it_reports_on()
     test_rollover_history_reads_back_recorded_rollovers()
+    test_recent_expenses_reads_back_individual_records()
 
     print("\n" + "=" * 60)
     print("  [OK] All budget & capacity tests passed!")
@@ -335,7 +375,7 @@ def main():
     for f in ["data/test_budgets.json", "data/test_agent_states.json",
               "data/test_budgets_rollover.json", "data/test_budgets_reload.json",
               "data/test_budgets_unrecognized.json", "data/test_budgets_org_summary.json",
-              "data/test_budgets_history.json"]:
+              "data/test_budgets_history.json", "data/test_budgets_expenses.json"]:
         pathlib.Path(f).unlink(missing_ok=True)
 
 

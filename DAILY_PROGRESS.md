@@ -1,3 +1,66 @@
+# Daily Progress Report - October 31, 2026
+
+## 💳 CHECKPOINT 83: `BudgetManager.expense_log` HAD A PER-CATEGORY TOTAL CONSUMER AND NOTHING THAT READ THE LEDGER ITSELF
+
+**Session opened with `HEAD` clean and matching `origin/main` at `c79a9eb`** (checkpoint 82's own commit) - no stale-ref recovery needed, unlike checkpoints 53-81. Full `tests/test_*.py` suite (69 files) run clean before starting new work, confirming checkpoint 82 is intact.
+
+### Took a new non-policy lead, since checkpoint 82's own Next Steps were policy questions or already-closed
+
+Checkpoint 82's Next Steps named one open item (the escalated-branch `"metrics"` key gap from checkpoint 81) as an explicit design question for the owner, plus the same sixteen-item policy-question backlog carried since checkpoints 42-82, and stated "no new non-policy gap was found." Per CLAUDE.md's instruction to leave policy questions to the owner, this session surveyed the codebase for a new, self-contained, non-policy defect of the same "computed/persisted, zero human-facing consumer" shape checkpoints 45-82 each closed.
+
+### 🐛 Proven live before touching anything
+
+`budgets.py`'s `ExpenseRecord` (lines 36-44) carries five fields beyond `department`/`amount`/`category`: `description`, `task_id`, `agent_id`, and `timestamp`. Every real spend in this system - `request_expense()` (labor charges, LLM token charges) and `confirm_reservation()` (workflow-step approvals) - has populated all of them with real values and appended the record to `self.expense_log`, persisted to `data/budgets.json`'s `"expenses"` array on every `save()`, since the budget system existed.
+
+But `expense_breakdown()` (added by an earlier checkpoint to close the *category*-total gap, and itself wired all the way through `performance.py`'s report, `main_v2.py`'s `report` command, and `static/dashboard.html`'s resource panel) only ever sums `amount` by `category` - it reads every record in `expense_log` and then discards `description`/`task_id`/`agent_id`/`timestamp` on the way out. `grep -rn "expense_log" --include=*.py --include=*.html .` outside `budgets.py`'s own read/write site and test files turned up nothing: no CLI command, no API route, no dashboard panel ever read an individual `ExpenseRecord`. A human could see "labor cost $630 this month" but had no way to see *which* task or agent that $630 came from, or the description attached at commit time - the same "aggregate had a reader, the ledger behind it didn't" gap `rollover_history()` closed for `rollover_log` at checkpoints 76-78, one field removed.
+
+Confirmed live before the fix:
+```
+request_expense('engineering', 250.0, 'labor', description='Fix auth bug', task_id='task-42', agent_id='agent-dev-1')
+
+Real ExpenseRecord on disk:
+ department: engineering       amount: 250.0        category: labor
+ description: Fix auth bug     task_id: task-42     agent_id: agent-dev-1
+ timestamp: 2026-10-31T14:03:25.837806
+
+Only consumer that reads expense_log at all: expense_breakdown()
+ expense_breakdown(): {'labor': 250.0}
+ -> task_id/agent_id/description/timestamp are not present anywhere in that result,
+ and BudgetManager has no other method that returns expense_log entries themselves.
+```
+
+### 🔧 Fix
+
+**`budgets.py`**: new `BudgetManager.recent_expenses(department=None)`, mirroring `rollover_history()` exactly - every `ExpenseRecord`, newest first, org-wide or scoped to one department, returned as the real dataclass objects (not re-summed).
+
+**`main_v2.py`**: new `budget_expenses(department=None)` CLI function, printing each expense's timestamp, department, category, amount, agent/task identifiers (`-` when absent, same "absence means never recorded" convention `budget_history`'s rollover printer already follows), and description when present. Wired as `python main_v2.py budget expenses [department]` alongside the existing `budget history` subcommand, and added to the top-level usage banner.
+
+**`web_server.py`**: new `build_budget_expenses_payload(department=None)`, calling straight through to `recent_expenses()` (same pattern as `build_budget_rollovers_payload`), and a new `GET /api/budget-expenses` route (optional `?department=`).
+
+**`static/dashboard.html`**: new `#expense-panel`/`#expense-list`, mirroring the Budget Rollover History panel's markup; `loadBudgetExpenses()` fetches `/api/budget-expenses` and renders each record with `escapeHtml()` on every dynamic string, hidden entirely when nothing has been spent yet; wired into `refreshAll()`.
+
+### 🧪 Validation
+
+Extended `tests/test_budgets.py` with `test_recent_expenses_reads_back_individual_records` (section 11) - same shape as `test_rollover_history_reads_back_recorded_rollovers`: three real expenses across two departments, confirms org-wide and per-department filtering, newest-first ordering, and that `agent_id`/`description`/`amount`/`timestamp` all round-trip on the real objects.
+
+Extended `tests/test_web_server.py` with two new tests (sections 35-36), mirroring tests 19-20 (`test_budget_rollovers_endpoint_exposes_a_real_recorded_rollover` / `test_dashboard_html_wires_up_the_budget_rollover_panel`) exactly: `test_budget_expenses_endpoint_exposes_a_real_recorded_expense` drives a real expense through a running server and confirms `GET /api/budget-expenses` reports every field (scoped and org-wide); `test_dashboard_html_wires_up_the_expense_panel` pins the panel markup, the `escapeHtml()` calls, and that `loadBudgetExpenses()` is wired into `refreshAll()`.
+
+Ran `tests/test_budgets.py` and `tests/test_web_server.py` individually (all new sections green) and the full 69-file suite (`for f in tests/test_*.py; do python3 "$f"; done`) twice back-to-back, zero failures both times. `python3 -m py_compile` clean on every tracked `.py` file. Beyond the unit tests: ran the real CLI (`submit`/`process`/`budget expenses`) end-to-end in an isolated temp directory and confirmed `budget expenses engineering` printed the real labor and `llm_tokens` charges a genuine task execution produced; separately started the real `main_v2.py serve` dashboard server in another isolated temp directory and `curl`'d `POST /api/submit` + `POST /api/process` followed by `GET /api/budget-expenses`, confirming the live JSON payload carries the real `task_id`/`agent_id`/`description` values end-to-end over HTTP, and that the served HTML contains `id="expense-panel" hidden`. `data/agent_states.json`/`data/performance_metrics.json` restored and `data/budgets.json`/`data/workflows.json` removed afterward, including after the ad-hoc live checks.
+
+### Behavior change: none
+
+Pure visibility fix. No return value, status field, or persisted schema changed shape - `recent_expenses()` is a new read-only method over data `expense_log` already held; no decision logic (budget approval, capacity, delegation) reads it, so nothing about what the system *does* changed, only what a human running `budget expenses` or opening the dashboard can now see about which task or agent incurred a given dollar of spend, and why.
+
+### 📝 Next Steps
+
+- **The escalated-branch task `"metrics"` key gap named by checkpoint 81** - unchanged, still open. Design question for the owner (does an escalated, not-executed task's result carry the agent's running metrics at all?).
+- **A real `task_id` on labor expenses** - noticed in this session's own live validation (`approve_decision()`, budgets.py, only passes `agent_id` to `request_expense()`, never `task_id`, so every labor `ExpenseRecord`'s `task_id` is `None` even though the caller - `decide_on_task()` - knows the task) - not fixed here, since it's a write-side gap in a different method than the one this checkpoint touched, and not purely mechanical: `approve_decision()`'s signature would need a new parameter threaded from every call site, which is a bigger, judgement-free-but-not-trivial change than "add a missing read," worth its own session rather than folding into a visibility fix. Flagging it here so it isn't rediscovered from scratch.
+- All sixteen policy-question items from checkpoints 42-82's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()`'s zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default) - unchanged, still open, per checkpoints 42-82.
+- The next session should either get an owner decision on one of the policy questions above, fix the `approve_decision()` `task_id` gap this session named, or look for a new non-policy gap the way checkpoints 45-83 each did.
+
+---
+
+
 # Daily Progress Report - October 30, 2026
 
 ## 🕒 CHECKPOINT 82: `WorkflowInstance.started_at` WAS PERSISTED, NEVER LEFT `get_status()` — AND NO CONSUMER PRINTED ANY OF ITS THREE TIMESTAMPS

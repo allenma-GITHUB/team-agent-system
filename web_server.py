@@ -184,6 +184,18 @@ def build_budget_rollovers_payload(department=None) -> list:
     return [asdict(r) for r in budget_manager.rollover_history(department)]
 
 
+def build_budget_expenses_payload(department=None) -> list:
+    """Every recorded BudgetManager.expense_log entry, newest first - the
+    read surface budgets.py's recent_expenses() docstring names as the
+    "ledger behind the aggregate": /api/report's expense_breakdown already
+    shows per-category totals, but which task or agent incurred each
+    dollar, and why, had no API route of its own. Mirrors
+    build_budget_rollovers_payload() exactly, both calling straight
+    through to the BudgetManager method so this can't drift from the
+    CLI's `budget expenses` output."""
+    return [asdict(e) for e in budget_manager.recent_expenses(department)]
+
+
 def build_strategy_payload() -> list:
     """Every reallocation StrategicPlanner.propose_reallocations() would
     make right now - the same CEO-level donor-to-recipient signal
@@ -267,6 +279,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         elif path == "/api/budget-rollovers":
             department = parse_qs(parsed.query).get("department", [None])[0]
             self._send_json(build_budget_rollovers_payload(department))
+        elif path == "/api/budget-expenses":
+            department = parse_qs(parsed.query).get("department", [None])[0]
+            self._send_json(build_budget_expenses_payload(department))
         elif path == "/api/tasks":
             self._send_json([_task_summary(t) for t in _tasks()])
         elif path.startswith("/api/tasks/"):

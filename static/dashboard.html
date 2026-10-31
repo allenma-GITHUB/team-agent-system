@@ -237,6 +237,11 @@
     <h2>Budget Rollover History</h2>
     <div id="rollover-list"></div>
   </div>
+
+  <div class="panel" id="expense-panel" hidden>
+    <h2>Expense Ledger</h2>
+    <div id="expense-list"></div>
+  </div>
 </div>
 
 <script>
@@ -796,9 +801,28 @@ async function loadBudgetRollovers() {
   </div>`).join("");
 }
 
+// BudgetManager.expense_log has recorded a real ExpenseRecord - department,
+// amount, category, who incurred it (task_id/agent_id), and why
+// (description) - for every committed spend since the budget system
+// existed, but only the per-category total (the Spend By Category bars in
+// the report panel) ever reached a human; the individual ledger entries
+// behind that total had no read surface of their own. Hidden entirely
+// when nothing has been spent yet, same convention as the panels above.
+async function loadBudgetExpenses() {
+  const expenses = await api("/api/budget-expenses");
+  const panel = $("#expense-panel");
+  panel.hidden = expenses.length === 0;
+  if (panel.hidden) return;
+
+  $("#expense-list").innerHTML = expenses.map(e => `<div class="workflow-card">
+    <div><strong>${escapeHtml(e.department)}</strong> ${escapeHtml(e.category)}: ${money(e.amount)} <span class="muted" style="font-size:12px;">(${escapeHtml(e.timestamp)})</span></div>
+    <div class="muted" style="font-size:12px;">agent=${escapeHtml(e.agent_id || "-")} task=${escapeHtml(e.task_id || "-")}${e.description ? " - " + escapeHtml(e.description) : ""}</div>
+  </div>`).join("");
+}
+
 async function refreshAll() {
   try {
-    await Promise.all([loadStatus(), loadTasks(), loadReport(), loadWorkflows(), loadStrategy(), loadBudgetRollovers(), refreshOpenTaskDetail()]);
+    await Promise.all([loadStatus(), loadTasks(), loadReport(), loadWorkflows(), loadStrategy(), loadBudgetRollovers(), loadBudgetExpenses(), refreshOpenTaskDetail()]);
   } catch (err) {
     console.error(err);
   }

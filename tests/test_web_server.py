@@ -1164,6 +1164,78 @@ def test_dashboard_html_escapes_recommendation_fields():
         assert "escapeHtml(r.action)" in script_section
 
 
+def test_budget_expenses_endpoint_exposes_a_real_recorded_expense():
+    """BudgetManager.expense_log has recorded a real ExpenseRecord - with
+    task_id, agent_id, and description, not just amount/category - every
+    time request_expense()/confirm_reservation() committed a spend since
+    the budget system existed, but had zero web consumers: /api/report's
+    expense_breakdown only ever summed these records down to a per-category
+    total. Same "real logic, no wire consumer" gap shape test 19 above
+    closed for rollover_log. Uses "legal_ledger" - unused as a
+    budget_manager department anywhere else in this shared-singleton file -
+    so a second pass (this file's main() runs every test twice) only ever
+    adds a *newer* entry rather than changing what the most recent one
+    says."""
+    print_section("35. GET /api/budget-expenses Reports A Real Expense")
+
+    with RunningServer() as server:
+        budget_manager.allocate("legal_ledger", 4000, period="monthly")
+        budget_manager.request_expense(
+            "legal_ledger", 250.0, "labor",
+            description="Contract review", task_id="task-99", agent_id="agent-legal-1"
+        )
+
+        status, expenses = server.get("/api/budget-expenses?department=legal_ledger")
+        print(f"  legal_ledger-only expenses: {expenses}")
+        assert status == 200
+        assert len(expenses) >= 1
+        newest = expenses[0]
+        assert newest["department"] == "legal_ledger"
+        assert newest["amount"] == 250.0
+        assert newest["category"] == "labor"
+        assert newest["description"] == "Contract review"
+        assert newest["task_id"] == "task-99"
+        assert newest["agent_id"] == "agent-legal-1"
+        assert newest["timestamp"]
+
+        status, all_expenses = server.get("/api/budget-expenses")
+        print(f"  org-wide expense count: {len(all_expenses)}")
+        assert status == 200
+        assert any(e["department"] == "legal_ledger" for e in all_expenses)
+
+
+def test_dashboard_html_wires_up_the_expense_panel():
+    """Pins the frontend wiring that closes the gap the test above proves at
+    the API layer: the panel/list containers exist, loadBudgetExpenses()
+    reads /api/budget-expenses into them, every dynamic string goes through
+    escapeHtml() like every other value on this page, and the panel stays
+    hidden until an expense has actually been logged - mirrors
+    test_dashboard_html_wires_up_the_budget_rollover_panel's shape
+    exactly."""
+    print_section("36. Dashboard HTML Wires Up The Expense Ledger Panel")
+
+    with RunningServer() as server:
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=10) as resp:
+            body = resp.read().decode("utf-8")
+
+        assert 'id="expense-panel" hidden' in body
+        assert 'id="expense-list"' in body
+        assert "/api/budget-expenses" in body
+
+        script_section = body.split("async function loadBudgetExpenses")[-1].split("async function refreshAll")[0]
+        assert "e.department" in script_section
+        assert "e.category" in script_section
+        assert "e.amount" in script_section
+        assert "e.timestamp" in script_section
+        assert "e.agent_id" in script_section
+        assert "e.task_id" in script_section
+        assert "e.description" in script_section
+        assert "escapeHtml(e.department)" in script_section
+        assert "escapeHtml(e.category)" in script_section
+
+        assert "loadBudgetExpenses()" in body.split("async function refreshAll")[-1].split("}")[0]
+
+
 def main():
     print("\n" + "=" * 60)
     print("  WEB DASHBOARD (web_server.py) REGRESSION TESTS")
@@ -1205,6 +1277,8 @@ def main():
         test_agent_run_endpoint_validates_input()
         test_dashboard_html_wires_up_the_agent_run_panel()
         test_dashboard_html_escapes_recommendation_fields()
+        test_budget_expenses_endpoint_exposes_a_real_recorded_expense()
+        test_dashboard_html_wires_up_the_expense_panel()
 
     print("\n" + "=" * 60)
     print("  [OK] All web dashboard tests passed!")

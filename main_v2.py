@@ -325,6 +325,27 @@ def budget_history(department=None):
               f"(period started {r.period_start})")
 
 
+def budget_expenses(department=None):
+    """Show the individual expense ledger - which task/agent incurred
+    each committed spend and why, not just the per-category totals
+    `report` already shows. BudgetManager.recent_expenses() has had real
+    data (task_id, agent_id, description) since the budget system existed
+    but no CLI/web surface of its own until now, the same gap shape
+    `budget history` closed for rollover_log."""
+    expenses = budget_manager.recent_expenses(department)
+    scope = f" for '{department}'" if department else ""
+    if not expenses:
+        print(f"\nNo expenses recorded yet{scope}.")
+        return
+    print(f"\n💳 Expense Ledger{scope}")
+    for e in expenses:
+        who = e.agent_id or "-"
+        task = e.task_id or "-"
+        desc = f" - {e.description}" if e.description else ""
+        print(f"  {e.timestamp}  {e.department:<12} {e.category:<14} "
+              f"${e.amount:,.2f}  agent={who} task={task}{desc}")
+
+
 def init_workflows():
     """Re-register known workflow templates. They're never persisted (see
     workflows.py) - only instances are - so this must run before any
@@ -591,6 +612,7 @@ def main():
         print("  python main_v2.py status")
         print("  python main_v2.py report")
         print("  python main_v2.py budget history [department]")
+        print("  python main_v2.py budget expenses [department]")
         print("  python main_v2.py workflow list")
         print("  python main_v2.py workflow instances")
         print("  python main_v2.py workflow start <template_id> [key=value ...]")
@@ -667,11 +689,14 @@ def main():
         show_report()
 
     elif command == "budget":
-        if len(sys.argv) < 3 or sys.argv[2] != "history":
-            print("Usage: python main_v2.py budget history [department]")
+        if len(sys.argv) < 3 or sys.argv[2] not in ("history", "expenses"):
+            print("Usage: python main_v2.py budget <history|expenses> [department]")
             return
         dept = sys.argv[3] if len(sys.argv) > 3 else None
-        budget_history(dept)
+        if sys.argv[2] == "history":
+            budget_history(dept)
+        else:
+            budget_expenses(dept)
 
     elif command == "workflow":
         if len(sys.argv) < 3:
