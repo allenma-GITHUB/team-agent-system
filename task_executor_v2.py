@@ -460,12 +460,14 @@ class DepartmentHeadAgent(BaseAgent):
         # large tasks are resource-constrained, which understates real cost.
         if decision.approval_required:
             approved, reason = self.budget_manager.approve_decision(
-                decision, department=self.department, cost_per_hour=self.cost_per_hour
+                decision, department=self.department, cost_per_hour=self.cost_per_hour,
+                task_id=task_id
             )
         else:
             approved, reason = self.budget_manager.request_expense(
                 department=self.department, amount=estimated_hours * self.cost_per_hour,
-                category="labor", description=decision.reasoning, agent_id=self.agent_id
+                category="labor", description=decision.reasoning, agent_id=self.agent_id,
+                task_id=task_id
             )
         self._emit("budget_check", {
             "approved": approved, "reason": reason, "approval_required": decision.approval_required

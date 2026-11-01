@@ -125,6 +125,53 @@ def test_execute_parallel_still_accepts_two_tuples():
     assert budget.spent == expected
 
 
+def test_labor_expense_carries_real_task_id():
+    """decide_and_budget() generates a real task_id (decide_on_task()'s
+    DecisionContext.task_id) before it ever charges the department, but
+    neither labor-charging branch passed it to budgets.py: the
+    approval-required branch called approve_decision() (which didn't even
+    accept a task_id parameter), and the routine branch's request_expense()
+    call named every other field except task_id. Every labor ExpenseRecord
+    this executor ever produced had task_id=None, same shape as the
+    "computed, never wired through" gap checkpoints 45-83 each closed, just
+    on the write side instead of a missing read.
+
+    Confirmed live before the fix: both a routine task (routed through
+    request_expense() directly) and a large/urgent one (routed through
+    approve_decision(), which requires approval) logged task_id=None.
+
+    Covers both branches, since they're two separate call sites that both
+    needed the same fix."""
+    print_section("4. Labor Expenses Carry Their Real task_id")
+
+    bus = EventBus()
+    executor = _executor(bus)
+
+    routine_dept = "qa_exec_task_id_routine"
+    budget_manager.allocate(routine_dept, 10000)
+    executor.execute(routine_dept, "A routine task, no approval needed", estimated_hours=1.0)
+    routine_labor = [e for e in budget_manager.expense_log
+                     if e.department == routine_dept and e.category == "labor"]
+    print(f"  routine task_id: {[e.task_id for e in routine_labor]}")
+    assert len(routine_labor) == 1
+    assert routine_labor[0].task_id is not None
+    assert routine_labor[0].task_id.startswith("task_")
+
+    approval_dept = "qa_exec_task_id_approval"
+    budget_manager.allocate(approval_dept, 10000)
+    executor.execute(
+        approval_dept,
+        "A huge urgent cross-department strategic restructuring negotiation",
+        estimated_hours=40.0,
+    )
+    approval_labor = [e for e in budget_manager.expense_log
+                      if e.department == approval_dept and e.category == "labor"]
+    print(f"  approval-required task_id: {[e.task_id for e in approval_labor]}")
+    assert len(approval_labor) == 1
+    assert approval_labor[0].task_id is not None
+    assert approval_labor[0].task_id.startswith("task_")
+
+
 def main():
     print("\n" + "=" * 60)
     print("  EXECUTOR ESTIMATED-HOURS THREADING DEMONSTRATION")
@@ -133,6 +180,7 @@ def main():
     test_execute_passes_estimated_hours_through()
     test_execute_parallel_passes_per_task_hours_through()
     test_execute_parallel_still_accepts_two_tuples()
+    test_labor_expense_carries_real_task_id()
 
     print("\n" + "=" * 60)
     print("  [OK] All executor-hours-threading tests passed!")

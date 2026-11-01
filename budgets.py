@@ -294,7 +294,8 @@ class BudgetManager:
             budget.release_reservation(reference_id)
             self.save()
 
-    def approve_decision(self, decision, department: str, cost_per_hour: float = 100.0) -> Tuple[bool, str]:
+    def approve_decision(self, decision, department: str, cost_per_hour: float = 100.0,
+                          task_id: Optional[str] = None) -> Tuple[bool, str]:
         """Bridge for agent_decisions.DecisionResult: approve only if the
         department can actually afford the estimated cost of the work."""
         if not decision.approval_required:
@@ -303,7 +304,8 @@ class BudgetManager:
         estimated_cost = (decision.recommended_deadline or 5.0) * cost_per_hour
         approved, reason = self.request_expense(
             department=department, amount=estimated_cost, category="labor",
-            description=decision.reasoning, agent_id=decision.assigned_agent_id
+            description=decision.reasoning, agent_id=decision.assigned_agent_id,
+            task_id=task_id
         )
         return approved, reason
 

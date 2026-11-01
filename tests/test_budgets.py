@@ -107,13 +107,28 @@ def test_decision_bridge():
         recommended_deadline=40  # hours
     )
 
-    approved, reason = budgets.approve_decision(decision, department="engineering", cost_per_hour=100)
+    approved, reason = budgets.approve_decision(
+        decision, department="engineering", cost_per_hour=100, task_id="task-arch-redesign"
+    )
     print(f"  40-hour task ($100/hr) approval: {approved} ({reason})")
     assert approved
 
     budget = budgets.get_budget("engineering")
     print(f"  Spent after approval: ${budget.spent:,.2f}")
     assert budget.spent == 4000
+
+    # approve_decision() used to drop task_id on the floor - the resulting
+    # ExpenseRecord carried agent_id but task_id was always None, even though
+    # the caller (task_executor_v2.decide_and_budget) always has a real one.
+    logged = budgets.recent_expenses("engineering")[0]
+    print(f"  Logged expense task_id: {logged.task_id}")
+    assert logged.task_id == "task-arch-redesign"
+
+    # Default stays None when the caller doesn't have one - this is a bridge
+    # for any DecisionResult, not just ones task_executor_v2 produces.
+    approved2, _ = budgets.approve_decision(decision, department="engineering", cost_per_hour=100)
+    assert approved2
+    assert budgets.recent_expenses("engineering")[0].task_id is None
 
 
 def test_capacity_management():

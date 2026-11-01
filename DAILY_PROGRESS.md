@@ -1,3 +1,63 @@
+# Daily Progress Report - November 1, 2026
+
+## 🧾 CHECKPOINT 84: EVERY LABOR `ExpenseRecord` HAD `task_id=None`, EVEN THOUGH `decide_and_budget()` ALWAYS HAD A REAL ONE
+
+**Session opened on a detached `HEAD`, one commit ahead of `main`/`origin/main`**: checkpoint 83's own commit (`9c753a2`) existed locally but `main` was still parked at `c79a9eb`, and the prior session's push apparently never updated the local branch ref either (`git push` reported "Everything up-to-date" on first try - a `git fetch` showed `origin/main` already at `9c753a2`). Recovered by fast-forwarding `main` to the detached commit, re-running the full 69-file suite (clean), restoring the two tracked seed files `budget expenses`'s own CLI validation dirtied, and removing `data/budgets.json`/`data/workflows.json` before touching anything new. No code change of this session's own was needed to fix the stranded-ref situation - just getting the already-validated checkpoint 83 work where it belonged.
+
+### Took checkpoint 83's own named non-policy lead
+
+Checkpoint 83's Next Steps named one self-contained, non-policy gap it deliberately didn't fix: `approve_decision()` (`budgets.py`) only passed `agent_id` to `request_expense()`, never `task_id`, even though its caller (`decide_on_task()` in `task_executor_v2.py`) always has a real one. Per CLAUDE.md's instruction to leave policy questions to the owner and prove a defect before fixing it, this session confirmed that gap live - and found it was larger than checkpoint 83's note described.
+
+### 🐛 Proven live before touching anything
+
+`task_executor_v2.py`'s `decide_and_budget()` (formerly read as `_run_locked()`'s budget-charging block) generates a real `task_id` at line 430 (`decision_info["context"].task_id`, itself `decide_on_task()`'s `DecisionContext.task_id`) before it ever charges a department. But **both** of its two labor-charging branches dropped it:
+
+- `decision.approval_required` → `self.budget_manager.approve_decision(decision, department=..., cost_per_hour=...)` - `approve_decision()` didn't even accept a `task_id` parameter.
+- otherwise → `self.budget_manager.request_expense(department=..., amount=..., category="labor", description=..., agent_id=self.agent_id)` - every keyword except `task_id` was named.
+
+Confirmed live with a real `TaskExecutor` (isolated `BudgetManager`/`AgentRegistry`, no mocks beyond the LLM) before the fix:
+
+```
+executor.execute("repro_dept", "A routine task, no approval needed", estimated_hours=1.0)
+executor.execute("repro_dept", "A huge urgent cross-department strategic restructuring negotiation", estimated_hours=40.0)
+
+labor expenses: [(180.0, None, 'repro_dept_head', '...'), (7200.0, None, 'repro_dept_head', '...')]
+```
+
+Both the routine (`request_expense()`-direct) and approval-required (`approve_decision()`) paths logged `task_id=None` - every labor `ExpenseRecord` this system has ever produced has a dead `task_id` field, the same "computed, never wired through" shape checkpoints 45-83 each closed, just on the write side instead of a missing read. Checkpoint 83's own new `budget expenses`/`/api/budget-expenses` surface (yesterday's fix) was already rendering `task=-` for every labor line as a result.
+
+### 🔧 Fix
+
+**`budgets.py`**: `approve_decision()` gained an optional `task_id: Optional[str] = None` parameter, passed straight through to its internal `request_expense()` call.
+
+**`task_executor_v2.py`**: both labor-charging call sites now pass `task_id=task_id` (the value already computed two lines above either branch, at line 430) - the `approve_decision()` call and the direct `request_expense()` call.
+
+Both changes are additive (new keyword-only parameter, default `None`) - no existing caller of `approve_decision()` or `request_expense()` needed updating, and a `DecisionResult` bridged from outside `task_executor_v2.py` (e.g. a future caller of `approve_decision()` with no task of its own) still gets `task_id=None`, same as before.
+
+### 🧪 Validation
+
+Re-ran the live repro above after the fix: both expenses now carry `task_1793541900` instead of `None`. (The two share one id because `decide_on_task()` derives it from `int(time.time())` - a pre-existing one-second-resolution limitation, unrelated to this fix and out of scope here; noted below instead of silently left for someone to rediscover.)
+
+Extended `tests/test_budgets.py`'s `test_decision_bridge` (section 4) to pass a `task_id` through `approve_decision()` and assert it lands on the logged `ExpenseRecord` via `recent_expenses()`, plus a second call with no `task_id` confirming the default stays `None` for callers that don't have one.
+
+Added `test_labor_expense_carries_real_task_id` to `tests/test_executor_hours_threading.py` (section 4) - drives a real `TaskExecutor.execute()` through both the routine (`request_expense()`-direct) and approval-required (`approve_decision()`) branches and asserts each logged labor expense's `task_id` is non-`None` and matches the `task_<timestamp>` shape `decide_on_task()` produces.
+
+`python3 -m py_compile` clean on every tracked `.py` file. Ran the full 69-file suite (`for f in tests/test_*.py; do python3 "$f"; done`) twice back-to-back from a clean `main`, zero failures both times. `git grep approve_decision` confirmed every existing call site (budgets.py's own def, task_executor_v2.py, and the unrelated `agent_decisions.OrganizationDecisionMaker.approve_decision()`, a different method on a different class) uses keyword arguments, so the new parameter couldn't break a positional caller. `data/agent_states.json`/`data/performance_metrics.json` restored and `data/budgets.json`/`data/workflows.json` removed afterward.
+
+### Behavior change: none observable, one internal field corrected
+
+No return value, status field, approval outcome, or dollar amount changed - `task_id` was already being persisted (as `None`) on every labor `ExpenseRecord`; this fix only corrects *what* gets persisted there. The one place this is newly visible to a human is checkpoint 83's own `budget expenses` CLI output and `/api/budget-expenses` dashboard panel, which will now show a real task identifier instead of `-` for labor charges going forward. Expenses already on disk from before this fix keep their recorded `task_id=None` - this is not a backfill.
+
+### 📝 Next Steps
+
+- **The escalated-branch task `"metrics"` key gap named by checkpoint 81** - unchanged, still open. Design question for the owner (does an escalated, not-executed task's result carry the agent's running metrics at all?).
+- **`decide_on_task()`'s `task_id = f"task_{int(time.time())}"` has one-second resolution** - noticed in this session's own live validation (two `execute()` calls one line apart produced the identical `task_id`). Not fixed here: it's a pre-existing identifier-uniqueness gap unrelated to the write-side bug this checkpoint closed, and changing the id format is a bigger decision (does anything downstream depend on the current string shape - sort order, display, a test fixture?) than this session's scope. Flagging it here so it isn't rediscovered from scratch.
+- All sixteen policy-question items from checkpoints 42-83's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()`'s zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default) - unchanged, still open, per checkpoints 42-83.
+- The next session should either get an owner decision on one of the policy questions above, fix the `task_id` timestamp-resolution gap this session named, or look for a new non-policy gap the way checkpoints 45-84 each did.
+
+---
+
+
 # Daily Progress Report - October 31, 2026
 
 ## 💳 CHECKPOINT 83: `BudgetManager.expense_log` HAD A PER-CATEGORY TOTAL CONSUMER AND NOTHING THAT READ THE LEDGER ITSELF
