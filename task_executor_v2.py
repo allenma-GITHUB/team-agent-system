@@ -147,8 +147,13 @@ class DepartmentHeadAgent(BaseAgent):
         # already-tracked period's spend alone on subsequent runs.
         self.budget_manager.ensure_allocated(department, DepartmentManager.get_monthly_budget(department))
 
-    def decide_on_task(self, task: str, estimated_hours: float = 1.0) -> Dict[str, Any]:
-        """Use decision engine to decide how to handle the task."""
+    def decide_on_task(self, task: str, estimated_hours: float = 1.0,
+                       task_id: Optional[str] = None) -> Dict[str, Any]:
+        """Use decision engine to decide how to handle the task.
+
+        task_id is the caller's real identifier for this work (a submitted
+        task's own id, a workflow instance id, ...), when it has one - see
+        DecisionContext.task_id below for why "when it has one" matters."""
         # Complexity and the approval level it implies are now read from the
         # task itself. Both were hardcoded (0.5 and 2), and both constants sat
         # on the safe side of every threshold agent_decisions.py tests them
@@ -197,7 +202,27 @@ class DepartmentHeadAgent(BaseAgent):
             DepartmentManager.infer_required_skills(task) if has_declared_expertise else []
         )
         decision_context = DecisionContext(
-            task_id=f"task_{int(time.time())}",
+            # A caller with a real task id of its own (main_v2.process_tasks())
+            # gets that id on every ExpenseRecord this decision produces -
+            # see the history below. Only a caller with no identifier of its
+            # own (a bare agent.run() in a test, or future standalone usage)
+            # falls back to this synthetic one, which exists solely so
+            # task_id is never None, not to stand in for a real task's own id.
+            #
+            # Checkpoint 84 wired this field through to budgets.py's
+            # ExpenseRecord.task_id so a human could finally see which task a
+            # given dollar of labor/token spend came from - but confirmed
+            # live here, afterward: TaskExecutor.execute()/execute_parallel()
+            # never received the real submitted task's id (main_v2.py's
+            # zero-padded sequential "0001", shown by every CLI/dashboard
+            # task view) in the first place, so this method always minted
+            # its own disconnected one. `budget expenses` showed
+            # task=task_1793629549 for a labor charge whose real task was
+            # "0001" - two separate id spaces that never intersected, so a
+            # human reading the ledger had no way to trace a dollar back to
+            # the task they actually submitted. This parameter closes that:
+            # the id now flows in from the one place that has the real one.
+            task_id=task_id or f"task_{int(time.time())}",
             task_type=self.department,
             required_skills=required_skills,
             complexity=complexity,
@@ -227,7 +252,7 @@ class DepartmentHeadAgent(BaseAgent):
 
     def run(self, task: str, estimated_hours: float = 1.0,
             delegation_chain: Optional[tuple] = None, allow_delegation: bool = True,
-            **kwargs) -> Dict[str, Any]:
+            task_id: Optional[str] = None, **kwargs) -> Dict[str, Any]:
         """Serialized per-agent: TaskExecutor reuses one DepartmentHeadAgent
         per department across worker threads, and every mutation this method
         makes (workload, budget, performance metrics) is a non-atomic
@@ -254,14 +279,16 @@ class DepartmentHeadAgent(BaseAgent):
 
         with self._lock:
             outcome = self._run_locked(task, estimated_hours, chain=chain,
-                                       allow_delegation=allow_delegation, **kwargs)
+                                       allow_delegation=allow_delegation,
+                                       task_id=task_id, **kwargs)
 
         if isinstance(outcome, _DelegationRequest):
-            return self._dispatch_delegation(outcome, task, estimated_hours, chain)
+            return self._dispatch_delegation(outcome, task, estimated_hours, chain, task_id=task_id)
         return outcome
 
     def _dispatch_delegation(self, request: "_DelegationRequest", task: str,
-                             estimated_hours: float, chain: tuple) -> Dict[str, Any]:
+                             estimated_hours: float, chain: tuple,
+                             task_id: Optional[str] = None) -> Dict[str, Any]:
         """Hand a task to another department's agent. Called only with this
         agent's lock already released (see run()).
 
@@ -277,7 +304,7 @@ class DepartmentHeadAgent(BaseAgent):
         def execute_here(note: str) -> Dict[str, Any]:
             self._emit("delegation_declined", {"intended_target": target_id, "reason": note})
             result = self.run(task, estimated_hours, delegation_chain=chain,
-                              allow_delegation=False)
+                              allow_delegation=False, task_id=task_id)
             result["delegation_declined"] = note
             result["intended_delegate"] = target_id
             return result
@@ -328,7 +355,7 @@ class DepartmentHeadAgent(BaseAgent):
             "chain": list(new_chain),
         })
 
-        result = target.run(task, estimated_hours, delegation_chain=new_chain)
+        result = target.run(task, estimated_hours, delegation_chain=new_chain, task_id=task_id)
 
         # agent_decisions.py's rank_candidate() has weighed trust_score as one
         # of find_best_delegate()'s five ranking factors since Phase 1 - but
@@ -407,7 +434,7 @@ class DepartmentHeadAgent(BaseAgent):
 
     def _run_locked(self, task: str, estimated_hours: float = 1.0,
                     chain: tuple = (), allow_delegation: bool = True,
-                    **kwargs) -> Dict[str, Any]:
+                    task_id: Optional[str] = None, **kwargs) -> Dict[str, Any]:
         self._emit("agent_start", {"task": task, "department": self.department, "agent_id": self.agent_id})
         start = time.time()
 
@@ -425,8 +452,13 @@ class DepartmentHeadAgent(BaseAgent):
             "over_capacity": self.capacity_manager.is_over_capacity(self.department)
         })
 
-        decision_info = self.decide_on_task(task, estimated_hours=estimated_hours)
+        decision_info = self.decide_on_task(task, estimated_hours=estimated_hours, task_id=task_id)
         decision = decision_info["raw_decision"]
+        # Re-read from the resolved context rather than trusting the
+        # parameter directly: when this method's own caller had no real id
+        # (task_id=None), decide_on_task() is what actually mints the
+        # synthetic fallback - this line is how that resolved value (real or
+        # synthetic) reaches the budget charges below either way.
         task_id = decision_info["context"].task_id
 
         if decision.decision == "escalate":
@@ -873,8 +905,16 @@ class TaskExecutor:
             return None
         return self.get_agent_for_department(state.profile.department)
 
-    def execute(self, department: str, task_description: str, estimated_hours: float = 1.0) -> Dict[str, Any]:
-        """Execute a task (single, synchronous)."""
+    def execute(self, department: str, task_description: str, estimated_hours: float = 1.0,
+               task_id: Optional[str] = None) -> Dict[str, Any]:
+        """Execute a task (single, synchronous).
+
+        task_id is the caller's own real identifier for this work (e.g.
+        main_v2.py's submitted-task id, or a workflow instance id) - see
+        decide_on_task()'s comment for why a disconnected synthetic one was
+        all every ExpenseRecord this produced ever carried before this
+        parameter existed. Omit it and that synthetic fallback still
+        applies, unchanged, for a caller with no real id of its own."""
         self.bus.emit("task_execute_start", {
             "task": task_description[:60],
             "department": department
@@ -882,7 +922,7 @@ class TaskExecutor:
 
         start = time.time()
         agent = self.get_agent_for_department(department)
-        result = agent.run(task_description, estimated_hours=estimated_hours)
+        result = agent.run(task_description, estimated_hours=estimated_hours, task_id=task_id)
         duration = time.time() - start
         status = result.get("status", "completed")
 
@@ -923,9 +963,12 @@ class TaskExecutor:
         """Execute multiple tasks in parallel.
 
         Args:
-            tasks: List of (department, description) or
-                   (department, description, estimated_hours) tuples.
-                   estimated_hours defaults to 1.0 if omitted.
+            tasks: List of (department, description),
+                   (department, description, estimated_hours), or
+                   (department, description, estimated_hours, task_id) tuples.
+                   estimated_hours defaults to 1.0 if omitted; task_id
+                   defaults to None (execute()'s own synthetic fallback)
+                   if omitted.
 
         Returns:
             List of results in original order
@@ -943,7 +986,8 @@ class TaskExecutor:
             for i, task_tuple in enumerate(tasks):
                 dept, desc, *rest = task_tuple
                 estimated_hours = rest[0] if rest else 1.0
-                futures[executor.submit(self.execute, dept, desc, estimated_hours)] = i
+                task_id = rest[1] if len(rest) > 1 else None
+                futures[executor.submit(self.execute, dept, desc, estimated_hours, task_id)] = i
 
             completed = 0
             for future in as_completed(futures):

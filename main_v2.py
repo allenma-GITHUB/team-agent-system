@@ -140,7 +140,14 @@ def process_tasks(parallel=True):
 
     if parallel and len(queued) > 1:
         # Parallel execution
-        task_list = [(t["department"], t["description"], t.get("estimated_hours", 1.0)) for t in queued]
+        # task["id"] (the zero-padded "0001" shown by `show`/`list` and the
+        # dashboard) is passed through as each tuple's 4th element so the
+        # budget expenses this execution produces carry it too - see
+        # task_executor_v2.decide_on_task()'s comment for the gap this
+        # closes: every ExpenseRecord.task_id used to be a synthetic
+        # timestamp id disconnected from the real task a human could look up.
+        task_list = [(t["department"], t["description"], t.get("estimated_hours", 1.0), t["id"])
+                     for t in queued]
         results = executor.execute_parallel(task_list)
 
         for i, (task, result) in enumerate(zip(queued, results)):
@@ -152,7 +159,8 @@ def process_tasks(parallel=True):
         # Sequential execution
         for task in queued:
             result = executor.execute(
-                task["department"], task["description"], task.get("estimated_hours", 1.0)
+                task["department"], task["description"], task.get("estimated_hours", 1.0),
+                task_id=task["id"]
             )
             task["status"] = _task_status_for_result(result)
             task["result"] = result

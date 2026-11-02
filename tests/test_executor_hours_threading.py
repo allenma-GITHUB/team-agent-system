@@ -172,6 +172,61 @@ def test_labor_expense_carries_real_task_id():
     assert approval_labor[0].task_id.startswith("task_")
 
 
+def test_execute_passes_caller_s_real_task_id_through():
+    """Checkpoint 84 wired decide_on_task()'s task_id all the way to
+    budgets.py's ExpenseRecord - but confirmed live afterward, that id was
+    always a synthetic `task_{int(time.time())}`, never the caller's own
+    real task id: execute()/execute_parallel() had no task_id parameter at
+    all, so main_v2.process_tasks() (and workflows.execute_step()) could
+    not have passed their real task/instance id through even if they'd
+    wanted to. A human running `budget expenses` saw e.g.
+    task=task_1793629549 for a labor charge whose real, submitted task was
+    "0001" - two id spaces that never intersected.
+
+    Confirmed live before this fix (see DAILY_PROGRESS.md): submitting and
+    processing a real task through main_v2.py's own CLI produced exactly
+    this mismatch - `budget expenses` showed a `task_<timestamp>` value
+    with no relationship to the "0001" task id `show`/`list` and the
+    dashboard use for the same task.
+
+    This test pins the fix at the level that matters for every caller:
+    TaskExecutor.execute()'s new task_id parameter must reach the real
+    ExpenseRecord unchanged, for both the routine and parallel paths, and
+    a caller with no real id of its own must still get the old synthetic
+    fallback (test 4, above, already pins that unchanged case)."""
+    print_section("5. execute()/execute_parallel() Thread The Caller's Real task_id Through")
+
+    bus = EventBus()
+    executor = _executor(bus)
+
+    single_dept = "qa_exec_real_task_id_single"
+    budget_manager.allocate(single_dept, 10000)
+    executor.execute(single_dept, "A task with a real caller-supplied id",
+                     estimated_hours=1.0, task_id="0001")
+    single_expenses = [e for e in budget_manager.expense_log if e.department == single_dept]
+    print(f"  single execute() task_ids: {[(e.category, e.task_id) for e in single_expenses]}")
+    assert len(single_expenses) == 2  # labor + llm_tokens
+    assert all(e.task_id == "0001" for e in single_expenses)
+
+    # Two tasks in one parallel batch, each with its own real id - proving
+    # the id is threaded per-task, not shared/overwritten the way a single
+    # module-level or closed-over variable would be under concurrency (the
+    # same per-task-not-shared concern test 2 above already pins for hours).
+    dept_a = "qa_exec_real_task_id_parallel_a"
+    dept_b = "qa_exec_real_task_id_parallel_b"
+    budget_manager.allocate(dept_a, 10000)
+    budget_manager.allocate(dept_b, 10000)
+    executor.execute_parallel([
+        (dept_a, "Real task A", 1.0, "0010"),
+        (dept_b, "Real task B", 1.0, "0011"),
+    ])
+    labor_a = [e for e in budget_manager.expense_log if e.department == dept_a and e.category == "labor"]
+    labor_b = [e for e in budget_manager.expense_log if e.department == dept_b and e.category == "labor"]
+    print(f"  parallel task_ids: a={[e.task_id for e in labor_a]} b={[e.task_id for e in labor_b]}")
+    assert len(labor_a) == 1 and labor_a[0].task_id == "0010"
+    assert len(labor_b) == 1 and labor_b[0].task_id == "0011"
+
+
 def main():
     print("\n" + "=" * 60)
     print("  EXECUTOR ESTIMATED-HOURS THREADING DEMONSTRATION")
@@ -181,6 +236,7 @@ def main():
     test_execute_parallel_passes_per_task_hours_through()
     test_execute_parallel_still_accepts_two_tuples()
     test_labor_expense_carries_real_task_id()
+    test_execute_passes_caller_s_real_task_id_through()
 
     print("\n" + "=" * 60)
     print("  [OK] All executor-hours-threading tests passed!")

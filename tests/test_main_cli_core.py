@@ -168,6 +168,53 @@ def test_show_status_reflects_real_counts():
         assert "Completed" in output
 
 
+def test_budget_expenses_show_the_real_submitted_task_id():
+    """Checkpoint 84 wired decide_on_task()'s task_id through to budgets.py's
+    ExpenseRecord so `budget expenses` could finally show which task a dollar
+    of spend came from - but confirmed live afterward (see
+    DAILY_PROGRESS.md), that id was a synthetic `task_{int(time.time())}`,
+    never the real submitted task's own id (the zero-padded "0001" this
+    file's own tests already assert `tasks[0]["id"]` equals). TaskExecutor
+    had no task_id parameter at all, so process_tasks() could not have
+    passed it through even though it already has the real id on every
+    `task` dict it loops over.
+
+    Confirmed live before the fix: submitting and processing a real task
+    here produced `budget expenses` output with a `task=task_<timestamp>`
+    value bearing no relationship to the task's own id - a human reading
+    the ledger had no way to trace a dollar back to the task they actually
+    submitted. Covers both process_tasks() paths (sequential and parallel),
+    since task_executor_v2.py threads task_id through two separate call
+    sites (execute()/execute_parallel()) that both needed the fix."""
+    print_section("8. budget expenses Shows The Real Submitted task_id, Not A Synthetic One")
+
+    # Unique department names, never used by any other test in this
+    # process-wide shared budget_manager singleton (same reasoning
+    # test_web_server.py's "legal_ledger" department comment gives) - so
+    # scoping budget_expenses() to one of them can't pick up another
+    # test's "engineering" expenses from earlier in this same file's run,
+    # regardless of how much history the shared singleton has accumulated.
+    with IsolatedCwd():
+        seq_id = main_v2.submit_task("A sequential-mode task", department="cli_task_id_seq_qa")
+        main_v2.process_tasks(parallel=False)
+
+        _, output = _captured(main_v2.budget_expenses, "cli_task_id_seq_qa")
+        print(output)
+        assert f"task={seq_id}" in output
+        assert "task=task_" not in output  # the old synthetic, disconnected id
+
+    with IsolatedCwd():
+        par_id_a = main_v2.submit_task("A parallel-mode task A", department="cli_task_id_par_qa")
+        par_id_b = main_v2.submit_task("A parallel-mode task B", department="cli_task_id_par_qa")
+        main_v2.process_tasks(parallel=True)
+
+        _, output = _captured(main_v2.budget_expenses, "cli_task_id_par_qa")
+        print(output)
+        assert f"task={par_id_a}" in output
+        assert f"task={par_id_b}" in output
+        assert "task=task_" not in output
+
+
 def main():
     print("\n" + "=" * 60)
     print("  main_v2.py CORE CLI PIPELINE REGRESSION TESTS")
@@ -180,6 +227,7 @@ def main():
     test_list_tasks_filters_by_status()
     test_show_task_displays_details_and_handles_missing_gracefully()
     test_show_status_reflects_real_counts()
+    test_budget_expenses_show_the_real_submitted_task_id()
 
     print("\n" + "=" * 60)
     print("  [OK] All main_v2.py core CLI tests passed!")
