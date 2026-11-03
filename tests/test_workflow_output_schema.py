@@ -43,7 +43,7 @@ class FakeExecutor:
         self.results = list(results)
         self.calls = []
 
-    def execute(self, department: str, description: str):
+    def execute(self, department: str, description: str, task_id=None):
         self.calls.append((department, description))
         return self.results.pop(0)
 

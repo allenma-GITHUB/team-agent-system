@@ -40,7 +40,7 @@ agent_registry = AgentRegistry(data_file="data/test_wagc_agents.json")
 class FakeExecutor:
     """Always "succeeds" - the point here is the approval gate, not department
     routing/decision-engine behavior, which other tests already cover."""
-    def execute(self, department, description):
+    def execute(self, department, description, task_id=None):
         return {"status": "completed", "summary": f"did {description}"}
 
 
@@ -184,7 +184,7 @@ def test_calling_execute_step_again_on_an_awaiting_step_does_not_redo_the_work()
     calls = []
 
     class CountingExecutor:
-        def execute(self, department, description):
+        def execute(self, department, description, task_id=None):
             calls.append(description)
             return {"status": "completed", "summary": "ran"}
 

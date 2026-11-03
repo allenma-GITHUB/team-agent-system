@@ -377,10 +377,14 @@ class WorkflowEngine:
         placeholder result for work nobody actually did.
 
         `executor` is duck-typed - anything with an
-        `execute(department, description) -> dict` method works (e.g.
-        task_executor_v2.TaskExecutor). Kept duck-typed rather than
-        importing TaskExecutor directly so workflows.py doesn't take on a
-        hard dependency on the execution layer just to describe workflows.
+        `execute(department, description, task_id=None) -> dict` method
+        works (e.g. task_executor_v2.TaskExecutor). Kept duck-typed rather
+        than importing TaskExecutor directly so workflows.py doesn't take
+        on a hard dependency on the execution layer just to describe
+        workflows. `task_id` is passed as a keyword so an executor stand-in
+        that only accepts (department, description) positionally still
+        breaks loudly rather than silently swallowing the id - every
+        production executor.execute() signature already accepts it.
 
         A step requiring approval still needs a separate approve_step()
         call afterward - this only performs and records the work, it
@@ -419,7 +423,12 @@ class WorkflowEngine:
             return False
 
         task_description = f"{step.name}: {step.description}" if step.description else step.name
-        result = executor.execute(step.owner_department, task_description)
+        # Same real identifier approve_step()'s own confirm_reservation()
+        # call already uses for this step's approval-gated charge - without
+        # this, the labor/llm_tokens charge execute() triggers here instead
+        # got a disconnected synthetic task_id, the same gap checkpoint
+        # 85's own fix closed for main_v2.py's submitted tasks.
+        result = executor.execute(step.owner_department, task_description, task_id=instance_id)
 
         if result.get("status") == "escalated":
             # The department declined the work (budget/capacity/decision

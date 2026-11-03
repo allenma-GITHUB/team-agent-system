@@ -53,7 +53,7 @@ class FakeExecutor:
     """Always reports a successful, real execution - these tests are about
     the completion bookkeeping, not department decision logic."""
 
-    def execute(self, department, description):
+    def execute(self, department, description, task_id=None):
         return {"status": "completed", "summary": "done", "quality_score": 4.0}
 
 

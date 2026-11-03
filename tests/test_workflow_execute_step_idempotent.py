@@ -40,7 +40,7 @@ class CountingExecutor:
     def __init__(self):
         self.calls = 0
 
-    def execute(self, department: str, description: str):
+    def execute(self, department: str, description: str, task_id=None):
         self.calls += 1
         return {
             "status": "completed", "approved": True,

@@ -41,7 +41,7 @@ class CountingExecutor:
     def __init__(self):
         self.calls = []
 
-    def execute(self, department: str, description: str):
+    def execute(self, department: str, description: str, task_id=None):
         self.calls.append((department, description))
         return {"status": "completed", "summary": f"did {description}"}
 

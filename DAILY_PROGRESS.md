@@ -1,3 +1,57 @@
+# Daily Progress Report - November 3, 2026
+
+## 🔗 CHECKPOINT 86: `workflows.execute_step()` HAD THE IDENTICAL `task_id` GAP CHECKPOINT 85 FIXED FOR `main_v2.py` - NAMED, NOT FIXED, LAST SESSION
+
+**Session opened on a detached `HEAD`, one commit ahead of the local `main` ref but already present on `origin/main`** (`a4a5a8a`/checkpoint 85's own commit) - the same stale-local-ref shape checkpoints 53-85 have each hit, not unpushed work. `git fetch origin main` confirmed `origin/main` already carried it; fast-forwarded local `main` to match (`git branch -f main origin/main && git checkout main`), no push needed for the reconciliation. Full `tests/test_*.py` suite (70 files) ran clean before starting new work, confirming checkpoint 85 is intact.
+
+### Took checkpoint 85's own named non-policy lead
+
+Checkpoint 85's Next Steps named one self-contained, non-policy gap it deliberately didn't fix: `workflows.py`'s `execute_step()` calls `executor.execute(step.owner_department, task_description)` with no `task_id` - the identical buggy call shape checkpoint 85 fixed for `main_v2.py`'s submitted tasks - but checkpoint 85 left it out of scope because seven test files hand it a `FakeExecutor`/`CountingExecutor` with a fixed two-positional-argument `execute(self, department, description)` signature, and passing `task_id=` as a keyword would raise `TypeError` on every one of them. Per CLAUDE.md's instruction to prove a defect before fixing it, this session re-confirmed the gap live first rather than assuming checkpoint 85's description was complete.
+
+### 🐛 Proven live before touching anything
+
+Built a real `WorkflowEngine` + real `TaskExecutor` + real `BudgetManager`/`AgentRegistry` (no fakes), registered `create_bug_fix_workflow()`, started an instance, and ran its first step (`"triage"`, `requires_approval=False`, `estimated_cost=0`) through `execute_step()`:
+
+```
+instance_id: bug_fix_1793714632_5536
+step: triage Bug Triage requires_approval=False cost=0.0
+execute_step ok: True
+expenses for support:
+  labor      180.0    'task_1793714626' Executing with skill level 3/5, affinity: 0.0
+  llm_tokens 0.00124   'task_1793714626' 124 tokens via mock
+```
+
+The expense ledger's `task_id` (`task_1793714626`, a bare Unix-timestamp string `decide_on_task()` invents when no caller supplies one) has nothing to do with the real workflow instance (`bug_fix_1793714632_5536`) that requested the work - a human reading `budget expenses`/`/api/budget-expenses` for a workflow-driven charge had no way to connect it back to `workflow status`'s own instance id, exactly the disconnected-identifier shape checkpoint 85 closed for `main_v2.py`'s CLI-submitted tasks, just via the other production caller of `TaskExecutor.execute()`. Confirmed this is a *different* gap from `approve_step()`'s own `confirm_reservation(..., task_id=instance_id)` call (`workflows.py:503`, the approval-gated reservation charge) - that call site already passes the real `instance_id` correctly and needed no change; only the `"labor"`/`"llm_tokens"` charge triggered via `executor.execute()` had this gap.
+
+### 🔧 Fix
+
+**`workflows.py`**: `execute_step()`'s `executor.execute()` call now passes `task_id=instance_id` - the workflow instance id already in scope as the method's own first parameter, the exact value `approve_step()`'s `confirm_reservation()` call one method below already uses for the same purpose. The method's docstring now documents the duck-typed `execute()` contract as `execute(department, description, task_id=None) -> dict`, matching every production executor's real signature.
+
+**Seven test stand-ins updated to accept the new keyword** (mechanical, no judgement calls, as checkpoint 85 predicted): `FakeExecutor`/`CountingExecutor` classes in `test_workflow_execution.py`, `test_workflow_execute_step_idempotent.py`, `test_workflow_execution_escalation.py`, `test_workflow_output_schema.py`, `test_workflow_depends_on_enforced.py`, `test_workflow_auto_completion.py`, and both stand-ins (`FakeExecutor` and the inline `CountingExecutor`) in `test_workflow_approval_gate_blocks_completion.py` - each gained `task_id=None` as an accepted (and, where cheap, ignored) parameter. All additive: no caller of any touched method needed updating, and a caller with no real id (any existing test that drives `execute_step()` without this change, and every call site this session didn't touch) gets the unchanged synthetic fallback from `decide_on_task()`.
+
+### 🧪 Validation
+
+`test_workflow_execution.py`'s `test_execute_step_calls_the_executor_with_the_right_department_and_description()` extended to assert the exact 3-tuple `(department, description, instance.instance_id)` the `FakeExecutor` now records, pinning the new behavior at the unit level, not just "doesn't crash."
+
+Added `tests/test_workflow_execute_step_real_task_id.py` (new file, following the project's own convention) driving a **real** `WorkflowEngine` + `TaskExecutor` + `BudgetManager` + `AgentRegistry` end to end (no fakes): one test asserts a no-approval step's labor and `llm_tokens` `ExpenseRecord`s both carry the real instance id and neither starts with the old `"task_"` synthetic prefix; a second test runs two separate instances of the same `bug_fix` template through `execute_step()` and asserts their departments' expenses keep distinct, correctly-attributed `task_id`s - the same per-caller-not-shared concern checkpoint 85's own tests pinned for `main_v2.py`'s per-task ids. Ran this file twice back-to-back (idempotent, each run's own isolated `data/test_wetrti_*` files cleaned up after).
+
+Ran all seven touched test files individually (all green) and the full 70-file suite (`for f in tests/test_*.py; do python3 "$f"; done`) twice back-to-back, zero failures both times. `python3 -m py_compile` clean on every tracked `.py` file.
+
+Beyond the unit tests: re-ran the live repro above after the fix (now shows the real instance id, confirmed again with two further instances through separate `workflow start`/`workflow complete` sequences, each keeping its own distinct id); separately drove the **real CLI** in an isolated temp directory (own `config.json`, own `data/`) - `python main_v2.py workflow start bug_fix bug=repro` → `workflow next` → `workflow complete <instance> triage` → `budget expenses support` - and confirmed the printed ledger shows `task=bug_fix_1793714878_5408` (the real instance id `workflow instances` already displays for that run) instead of a disconnected timestamp string. `data/agent_states.json`/`data/performance_metrics.json` restored and `data/budgets.json`/`data/workflows.json` removed afterward, including after every ad-hoc live check.
+
+### Behavior change: none observable in what gets charged or decided, one more identifier now meaningful
+
+No return value, status field, dollar amount, or approval outcome changed - `task_id` was already being persisted on every labor/`llm_tokens` `ExpenseRecord` since checkpoint 84; this fix only corrects *which* value gets persisted there for workflow-driven charges, the second of the two production callers of `TaskExecutor.execute()` (after `main_v2.process_tasks()`, fixed by checkpoint 85) that has a real id to give. The one place this is newly visible to a human is `budget expenses`/`/api/budget-expenses` output for a workflow step's labor/token charge: it now shows the same instance id `workflow status`/`workflow instances` already use, instead of an unrelated timestamp string. Expenses already on disk from before this fix keep their recorded synthetic `task_id` - this is not a backfill. A caller with no real id of its own is entirely unaffected: unchanged synthetic fallback, same as before.
+
+### 📝 Next Steps
+
+- All sixteen-plus policy-question items from checkpoints 42-85's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()`'s zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default) - unchanged, still open.
+- The escalated-branch task `"metrics"` key gap named by checkpoint 81 - unchanged, still open. Design question for the owner (does an escalated, not-executed task's result carry the agent's running metrics at all?).
+- No new non-policy, self-contained gap was spotted and deliberately left this session - the two production callers of `TaskExecutor.execute()` (`main_v2.process_tasks()` and `workflows.execute_step()`) now both thread their real task id through. The next session should look for a new non-policy gap the way checkpoints 45-86 each did, or get an owner decision on one of the policy questions above.
+
+---
+
+
 # Daily Progress Report - November 2, 2026
 
 ## 🔗 CHECKPOINT 85: `decide_on_task()`'S `task_id` WAS ALWAYS A SYNTHETIC ONE - THE REAL SUBMITTED TASK ID NEVER REACHED IT

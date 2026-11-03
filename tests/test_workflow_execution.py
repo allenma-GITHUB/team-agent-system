@@ -29,8 +29,8 @@ class FakeExecutor:
     def __init__(self):
         self.calls = []
 
-    def execute(self, department: str, description: str):
-        self.calls.append((department, description))
+    def execute(self, department: str, description: str, task_id=None):
+        self.calls.append((department, description, task_id))
         return {"summary": f"{department} handled it", "department": department}
 
 
@@ -48,7 +48,11 @@ def make_template() -> WorkflowTemplate:
 
 def test_execute_step_calls_the_executor_with_the_right_department_and_description():
     """The executor should receive the step's own department and a
-    description built from the step's name/description, not a placeholder."""
+    description built from the step's name/description, not a placeholder.
+    It should also receive the instance's own real id as task_id - not a
+    disconnected synthetic one invented inside the executor, the gap
+    checkpoint 86 closed here (same shape as checkpoint 85's fix for
+    main_v2.py's submitted tasks)."""
     print_section("1. execute_step() Calls The Executor Correctly")
 
     engine = WorkflowEngine(data_file="data/test_wf_exec.json")
@@ -63,7 +67,7 @@ def test_execute_step_calls_the_executor_with_the_right_department_and_descripti
     print(f"  execute_step() returned: {ok}")
     print(f"  Executor was called with: {executor.calls}")
     assert ok
-    assert executor.calls == [("qa_exec_dept", "Intake: Collect the request")]
+    assert executor.calls == [("qa_exec_dept", "Intake: Collect the request", instance.instance_id)]
 
 
 def test_execute_step_records_the_real_result_not_a_placeholder():
