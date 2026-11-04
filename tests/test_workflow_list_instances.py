@@ -145,6 +145,26 @@ def test_cli_workflow_instances_lists_a_real_started_instance():
         assert "in_progress" in output
 
 
+def test_cli_workflow_list_shows_each_template_s_version():
+    """Checkpoint 87: `WorkflowTemplate.version` (workflows.py, default 1)
+    was a real dataclass field on every registered template with zero
+    readers anywhere - `workflow list` named `template_id`, `name`, and
+    step count by hand but never `version`, the same gap shape
+    /api/workflow-templates had (fixed alongside this in web_server.py).
+    Proven live before this fix: `grep -rn "\\.version\\b"` across the repo,
+    including every test file, returned nothing at all."""
+    print_section("5. CLI `workflow list` Shows Each Template's Version")
+
+    with IsolatedCwd():
+        _, output = _captured(main_v2.workflow_list)
+        print(output)
+
+        for template_id, factory in main_v2.WORKFLOW_TEMPLATES.items():
+            template = factory()
+            assert template_id in output
+            assert f"v{template.version}" in output
+
+
 def main():
     print("\n" + "=" * 60)
     print("  WORKFLOW list_instances() / `workflow instances` CLI TESTS")
@@ -154,6 +174,7 @@ def main():
     test_list_instances_returns_every_instance_newest_first()
     test_cli_workflow_instances_reports_no_instances_cleanly()
     test_cli_workflow_instances_lists_a_real_started_instance()
+    test_cli_workflow_list_shows_each_template_s_version()
 
     print("\n" + "=" * 60)
     print("  [OK] All workflow-list-instances tests passed!")

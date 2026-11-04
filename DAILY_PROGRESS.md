@@ -1,3 +1,70 @@
+# Daily Progress Report - November 4, 2026
+
+## 🧮 CHECKPOINT 87: `WorkflowTemplate.version` HAD EXISTED SINCE THE FIRST COMMIT, READ BY NOTHING
+
+**Session opened on a detached `HEAD`, one commit ahead of the local `main` ref but already present on `origin/main`** (`8b0d15d`/checkpoint 86's own commit) - the same stale-local-ref shape checkpoints 53-86 have each hit, not unpushed work. `git fetch origin main` confirmed `origin/main` already carried it; fast-forwarded local `main` to match (`git checkout -B main origin/main`), no push needed for the reconciliation. Full `tests/test_*.py` suite (70 files) ran clean before starting new work, confirming checkpoint 86 is intact.
+
+### No self-contained lead was named last session
+
+Checkpoint 86's own Next Steps said explicitly that no new non-policy gap was spotted and deliberately left - the two production callers of `TaskExecutor.execute()` both already had their real task id threaded through, and everything else open was a policy question for the owner. Per CLAUDE.md's instruction to prove a defect before fixing it, this session searched fresh for a new non-policy gap in the same "computed/declared but never consumed" shape as checkpoints 45-86, rather than touching any of the named policy items.
+
+### 🐛 Proven live before touching anything
+
+`workflows.py:144`'s `WorkflowTemplate` dataclass has carried a real `version: int = 1` field since the project's first commit - but `grep -rn "\.version\b" --include=*.py --include=*.html .` across the entire repo, including all 70 test files, returned **nothing at all**. Both of the system's two template-listing surfaces construct their output by hand, naming only `template_id`/`name`/step count:
+
+- `main_v2.workflow_list()` (CLI `workflow list`)
+- `web_server.build_workflow_templates_payload()` (`/api/workflow-templates`) - its own docstring says it mirrors that CLI command's fields, and it did: `template_id`, `name`, `steps`, never `version`.
+
+Confirmed live against the real module-level `WORKFLOW_TEMPLATES`/`workflow_engine` (no mocks, no temp dir needed - read-only, nothing touches `data/*.json`):
+```
+feature_request: name='Feature Request Process' version=1
+bug_fix: name='Bug Fix Workflow' version=1
+
+--- workflow_list() CLI output (before fix) ---
+  feature_request    Feature Request Process (7 steps)
+  bug_fix             Bug Fix Workflow (4 steps)
+
+--- /api/workflow-templates JSON payload (before fix) ---
+[{"template_id": "feature_request", "name": "...", "steps": 7}, {"template_id": "bug_fix", "name": "...", "steps": 4}]
+
+version key present in any payload entry? False
+```
+A human has never had any way to see a workflow template's version anywhere in this system - not the CLI, not the API, not the dashboard. Neither of the two real templates (`create_feature_request_workflow()`/`create_bug_fix_workflow()`) sets `version=` explicitly either, so both sit at the untouched default of `1` - this is a pure display/read-side gap, not a case where a meaningful non-default value was silently hidden.
+
+### 🔧 Fix
+
+**`web_server.py`**: `build_workflow_templates_payload()`'s dict comprehension now includes `"version": factory().version` alongside the existing `template_id`/`name`/`steps` keys.
+
+**`main_v2.py`**: `workflow_list()`'s print line now appends `, v{template.version}` after the step count.
+
+**`static/dashboard.html`**: `loadWorkflowTemplates()`'s `<option>` text now shows `({t.steps} steps, v{t.version})`, matching the API payload field 1:1.
+
+All three changes are purely additive - no existing caller of any touched function needed updating, and nothing about which templates exist, how many steps they have, or how a workflow instance runs changed.
+
+### 🧪 Validation
+
+Extended `tests/test_web_server.py`'s `test_workflow_templates_endpoint_lists_the_real_registered_templates()` with `assert feature["version"] == 1`, and added a `t.version` assertion to `test_dashboard_html_wires_up_the_workflow_action_controls()` pinning that the dropdown's option text actually reads the new field rather than a hand-typed literal.
+
+Added `test_cli_workflow_list_shows_each_template_s_version()` to `tests/test_workflow_list_instances.py` (section 5) - runs the real `main_v2.workflow_list()` inside the file's existing `IsolatedCwd()` harness and asserts every registered template's real `template.version` value appears in the captured output as `v{version}`, derived from `main_v2.WORKFLOW_TEMPLATES` itself rather than a hard-coded `"v1"` literal, so this would still catch a regression if either template's version is ever bumped.
+
+Ran both touched test files individually (`test_workflow_list_instances.py`, `test_web_server.py` - all sections/36 web-server checks green) and the full 70-file suite (`for f in tests/test_*.py; do python3 "$f"; done`) twice back-to-back, zero failures both times. `python3 -m py_compile` clean on every touched file.
+
+Beyond the unit tests: re-ran the live CLI repro above after the fix in an isolated temp directory (own `config.json`, own `data/`) - `python main_v2.py workflow list` now prints `(7 steps, v1)` / `(4 steps, v1)`. Separately started the real `main_v2.py serve` dashboard server in its own isolated temp directory and `curl`'d `GET /api/workflow-templates` directly - the live JSON payload now includes `"version": 1` on every entry. `data/agent_states.json`/`data/performance_metrics.json` restored and `data/budgets.json`/`data/workflows.json` removed afterward, including after every ad-hoc live check.
+
+### Behavior change: none to how workflows run, one more already-existing field now visible
+
+No template behavior, step ordering, approval gate, or budget charge changed - `version` has never been read by any decision-making code, only displayed. The only observable change is that `workflow list`, `/api/workflow-templates`, and the dashboard's "start a workflow" template dropdown now show a version number that existed on the data since commit one but was invisible everywhere a human could look.
+
+### 📝 Next Steps
+
+- All policy-question items from checkpoints 42-86's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()`'s zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default) - unchanged, still open.
+- The escalated-branch task `"metrics"` key gap named by checkpoint 81 - unchanged, still open. Design question for the owner (does an escalated, not-executed task's result carry the agent's running metrics at all?).
+- `version` is still never *incremented* by anything - nothing in this system changes a template's steps and bumps its version to match. Whether template edits should auto-bump it, and whether `WorkflowInstance` should snapshot the template version it was created from (so an in-flight instance isn't silently reinterpreted if the template changes under it later), is a design question for the owner, not folded into this display-only fix.
+- No new non-policy, self-contained gap was spotted and deliberately left this session beyond the one above. The next session should look for a new non-policy gap the way checkpoints 45-87 each did, or get an owner decision on one of the policy questions above.
+
+---
+
+
 # Daily Progress Report - November 3, 2026
 
 ## 🔗 CHECKPOINT 86: `workflows.execute_step()` HAD THE IDENTICAL `task_id` GAP CHECKPOINT 85 FIXED FOR `main_v2.py` - NAMED, NOT FIXED, LAST SESSION

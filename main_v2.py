@@ -368,7 +368,7 @@ def workflow_list():
     print("\n📋 Available Workflow Templates:")
     for template_id, factory in WORKFLOW_TEMPLATES.items():
         template = factory()
-        print(f"  {template_id:<18} {template.name} ({len(template.steps)} steps)")
+        print(f"  {template_id:<18} {template.name} ({len(template.steps)} steps, v{template.version})")
 
 
 def workflow_instances():

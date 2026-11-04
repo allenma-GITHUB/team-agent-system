@@ -645,7 +645,7 @@ async function loadReport() {
 async function loadWorkflowTemplates() {
   const templates = await api("/api/workflow-templates");
   $("#wf-template").innerHTML = templates.map(t =>
-    `<option value="${escapeHtml(t.template_id)}">${escapeHtml(t.name)} (${t.steps} steps)</option>`
+    `<option value="${escapeHtml(t.template_id)}">${escapeHtml(t.name)} (${t.steps} steps, v${t.version})</option>`
   ).join("");
 }
 

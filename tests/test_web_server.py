@@ -829,7 +829,13 @@ def test_workflow_templates_endpoint_lists_the_real_registered_templates():
     real ones (feature_request, bug_fix), but had zero web consumers, the
     same gap shape /api/workflows itself had before checkpoint 19/20 above.
     Confirms the route reflects main_v2.WORKFLOW_TEMPLATES itself, not a
-    hand-typed copy that could drift from it."""
+    hand-typed copy that could drift from it.
+
+    Also pins `version`: a real WorkflowTemplate dataclass field
+    (workflows.py, default 1) that had zero readers anywhere - CLI or web -
+    until this fix; both real templates leave it at the untouched default,
+    so this only proves it's actually threaded through, not that either
+    template bumped it."""
     print_section("23. GET /api/workflow-templates Lists The Real Templates")
 
     with RunningServer() as server:
@@ -841,6 +847,7 @@ def test_workflow_templates_endpoint_lists_the_real_registered_templates():
         feature = next(t for t in templates if t["template_id"] == "feature_request")
         assert feature["name"] == "Feature Request Process"
         assert feature["steps"] == 7
+        assert feature["version"] == 1
 
 
 def test_workflow_start_endpoint_creates_a_real_instance():
@@ -1040,6 +1047,9 @@ def test_dashboard_html_wires_up_the_workflow_action_controls():
         assert 'id="wf-input"' in body
         assert 'id="wf-start-btn"' in body
         assert "/api/workflow-templates" in body
+        # t.version (checkpoint 87): the template select option text shows
+        # it alongside step count, not just dropped on the floor.
+        assert "t.version" in body
         assert "/api/workflow/start" in body
         assert "/api/workflow/next" in body
         assert "/api/workflow/complete" in body

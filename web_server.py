@@ -144,14 +144,23 @@ def build_report_payload() -> dict:
 
 def build_workflow_templates_payload() -> list:
     """Every registered workflow template main_v2.py's `workflow list`
-    command already prints (template_id, name, step count) - the one
-    piece of information the new POST /api/workflow/start route's caller
-    needs to know which template_ids are even valid, and had zero web
-    consumers for the same reason build_workflows_payload() below didn't
-    until it was added: nothing over the wire ever asked."""
+    command already prints (template_id, name, step count, version) - the
+    one piece of information the new POST /api/workflow/start route's
+    caller needs to know which template_ids are even valid, and had zero
+    web consumers for the same reason build_workflows_payload() below
+    didn't until it was added: nothing over the wire ever asked.
+
+    `version` was a real WorkflowTemplate field with no reader anywhere
+    (CLI or web) until this fix - included here so it's visible somewhere
+    at least once, not just defaulted and silently dropped."""
     main_v2.init_workflows()
     return [
-        {"template_id": template_id, "name": factory().name, "steps": len(factory().steps)}
+        {
+            "template_id": template_id,
+            "name": factory().name,
+            "steps": len(factory().steps),
+            "version": factory().version,
+        }
         for template_id, factory in main_v2.WORKFLOW_TEMPLATES.items()
     ]
 
