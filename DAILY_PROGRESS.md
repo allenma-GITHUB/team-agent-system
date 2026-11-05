@@ -1,3 +1,72 @@
+# Daily Progress Report - November 5, 2026
+
+## 🎯 CHECKPOINT 88: `DecisionResult.confidence` WAS COMPUTED ON EVERY DECISION SINCE PHASE 1, SEEN ONLY BY A TRACE THAT DIES WITH THE PROCESS
+
+**Session opened on a detached `HEAD`, five commits ahead of the local `main` ref.** This looked different from the usual checkpoint 53-87 shape at first - `git rev-parse origin/main` (no fetch) showed `c79a9eb`, five commits *behind* `HEAD` (`9c753a2`/checkpoint 83, `b957d8d`/84, `a4a5a8a`/85, `8b0d15d`/86, `f42183a`/87's own commits), which briefly looked like four straight sessions' work had never reached the remote at all. A real `git fetch origin main` resolved it immediately: `origin/main` updated to `f42183a` on the fetch, matching `HEAD` exactly - the stale `c79a9eb` was this container's own initial shallow-clone snapshot, never refreshed this session, not the remote's real state. Everything was already pushed, exactly as checkpoints 85-87 each said. Fast-forwarded local `main` to the freshly-fetched `origin/main` (`git checkout -B main origin/main`); no push needed. Full `tests/test_*.py` suite (70 files) ran clean twice back-to-back before starting new work, confirming checkpoint 87 is intact. Noted for whichever session hits this next: always `git fetch` before trusting a cached `origin/main` ref's absolute position, not just its relationship to `HEAD`.
+
+### No self-contained lead was named last session
+
+Checkpoint 87's Next Steps said explicitly that no new non-policy gap was spotted and deliberately left. Per CLAUDE.md's instruction to prove a defect before fixing it, this session searched fresh for a new gap in the same "computed/declared but never consumed" shape as checkpoints 45-87, rather than touching any of the accumulated policy-question items (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()`'s zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the escalated-branch task `"metrics"` key gap).
+
+Checked the three least-touched modules first (`strategy.py`, `visualization.py`, one commit each since Phase 3/the first commit) on the theory that a module nobody has revisited since might still hide an unwired field - both turned out to already be fully wired end-to-end (CLI `strategy`/dashboard panel/`/api/strategy`; `render_bar`/`bar_chart` used by both `main_v2.py` and `performance.py`'s reports), confirmed by grepping every one of their public names across the whole tree before moving on. `core.py`'s `agent_registry`/`skill_registry` and `tools.py`'s `build_delegation_tool` were the next candidates and also already fully wired (the latter into `task_executor_v2.py`'s real tool loop, with its own dedicated test file). The actual gap was in `task_executor_v2.py` itself, hiding behind code checkpoints 84-86 had just finished threading `task_id` through.
+
+### 🐛 Proven live before touching anything
+
+`agent_decisions.py`'s `AgentDecisionEngine.decide()` has computed a real `DecisionResult.confidence` (0.6 for an engine-level escalation, 0.75/0.8 for a delegation, up to 0.95 for an execution - scaled by the deciding agent's own `skill_level`) on every single decision since this project's first commit. `task_executor_v2.py`'s `decide_on_task()` even puts it in the dict it returns: `{"decision":..., "assigned_agent_id":..., "requires_approval":..., "confidence": decision.confidence, "context":..., "raw_decision":...}`. But `grep -n 'decision_info\['` against `_run_locked()` - `decide_on_task()`'s only caller - showed it reads back exactly two keys, `"raw_decision"` and `"context"`, never `"confidence"`. From there, `decision.confidence` only ever reached the `"agent_decision"` trace event (`self._emit(...)`, `core.py`'s `EventBus`, which exists only for the lifetime of one process run) - not any of the four dicts `_run_locked()` actually returns as the task's result (escalate-no-delegate, escalate-budget-denied, iteration-exhausted, completed), and not `_DelegationRequest` either, so a delegation lost it entirely at the hand-off.
+
+Confirmed live with the real CLI, in an isolated temp directory (own `data/`, copied `config.json`):
+```
+$ python main_v2.py submit "Write a routine status update for the engineering team" --department engineering --hours 2
+$ python main_v2.py process
+$ python main_v2.py show 0001
+...
+  Quality Score: 4.0
+  Agent Metrics: avg_quality=4.00, ...
+=== raw result JSON keys ===
+['agent_id', 'analysis', 'approved', 'department', 'details', 'execution_steps', 'llm_provider',
+ 'metrics', 'quality_score', 'staff_contributions', 'staff_count', 'status', 'summary',
+ 'token_budget_note', 'token_cost', 'token_cost_charged', 'tokens_used', 'tool_call_errors',
+ 'tool_calls', 'tool_calls_failed', 'used_tools']
+confidence in r? False
+```
+A human watching this system - via the CLI, the dashboard, or the API - had no way to see how confident the decision engine was in ANY decision it made: executed, delegated, or escalated. The only place that number ever appeared was a trace event printed to one terminal during one `process` run, gone the moment the process exited.
+
+### 🔧 Fix
+
+**`task_executor_v2.py`**: every result dict `_run_locked()` builds now carries `"confidence": decision.confidence` - the engine-level escalate path, the budget-denied escalate path, the iteration-exhausted path, and the normal completed path, all four purely additive (no existing key removed or renamed). `_DelegationRequest` gained a new optional `confidence: Optional[float] = None` field, set from `decision.confidence` at the one engine-driven delegate call site. `_dispatch_delegation()` threads it onward as `result.setdefault("delegation_confidence", request.confidence)`, guarded so a `None` (the mid-reasoning `delegate_to` TOOL path, which never runs through `AgentDecisionEngine.decide()` and so has no `DecisionResult` to read a confidence from) is never written as a fabricated key - same `setdefault`-not-assignment reasoning `delegation_reasoning` already uses one line above it, so an A->B->C chain keeps B's own delegation confidence rather than having A's outer frame clobber it on the way back up. Kept under its own key rather than overwriting `"confidence"` deliberately: that key belongs to whichever agent's decision actually produced the result (the delegate's, recursively) - "how sure was the agent who did the work" and "how sure was the agent who passed it along" are two different numbers about two different decisions, the same reason `delegation_reasoning` has never overwritten the executing agent's own `reasoning`-derived fields.
+
+**`main_v2.py`**'s `show_task()`: two new `.get()`-guarded lines, `Decision Confidence` (checked right after `Analysis`, since it's present for every decision outcome, not just completed ones) and `Delegation Confidence` (placed directly after the existing `Delegation Reasoning` line). Both use `is not None` rather than truthiness, since `0.0` is never a real value here but the convention elsewhere in this function already distinguishes "computed" from "merely falsy."
+
+**`static/dashboard.html`**'s `renderTaskDetail()`: the same two entries, same placement, same `!= null` guard, formatted as a percentage to match the CLI's `:.0%`.
+
+**Left out of scope, deliberately**: `web_server.py` needed no change - `GET /api/tasks/<id>` already returns the task dict unmodified (confirmed first at checkpoint 72, re-pinned by `test_delegation_detail_visibility.py` for the delegation fields), so both new keys reach the API for free. `_task_summary()` (the `/api/tasks` list view) was deliberately left alone: `quality_score`/`token_cost` are pulled to that summary's top level because the dashboard's Tasks table already has a "Result" column that renders them - `confidence` has no such column today, and adding one is a UI design decision, not part of proving today's defect.
+
+### 🧪 Validation
+
+New file `tests/test_decision_confidence_visibility.py`, six tests, each driving the real production code path (no mocks of `AgentDecisionEngine` itself):
+
+1. A plain completed task (real `submit_task`/`process_tasks`/`show_task`) - asserts `result["confidence"]` is persisted and `show_task()`'s captured stdout contains `Decision Confidence: {value:.0%}`.
+2. A real engine-level escalation: a one-agent registry with that sole agent already at its concurrency limit, so `can_execute()` refuses for capacity and `find_best_delegate()` has no other candidate to find - asserts `confidence == 0.6` (the engine's own hardcoded value for that branch) and that it reaches `show_task()`'s output, distinguishing this from `_dispatch_delegation()`'s separate cycle/depth-limit `escalate()` closure, which has no `DecisionResult` in scope and correctly stays untouched.
+3. A real two-department delegation (engineering dislikes its own work, design is the only candidate) - asserts the delegate's own `confidence` (0.95, design's skill_level 5) and the delegator's `delegation_confidence` (0.75, engineering's own should-execute-false branch) are both present, both correct, and different from each other - pinning that the fix keeps two agents' confidence separate rather than one clobbering the other.
+4. A real mid-reasoning `delegate_to` tool call (same provider-scripting shape as `tests/test_delegate_to_tool.py`) - asserts the executing delegate's own `confidence` is present while `delegation_confidence` is absent entirely (not `None`-valued, not zero) - pinning that this path's lack of a `DecisionResult` is honestly represented, not papered over with a fabricated default.
+5. Regex-checks `static/dashboard.html` for both new guarded blocks and both new labels.
+6. A real delegation injected into an isolated task store, served by the actual `DashboardRequestHandler` over a real HTTP request to `/api/tasks/0001` - asserts both new keys arrive in the JSON response unmodified.
+
+Ran the new file individually (all 6 sections green, real computed values logged - `0.9`, `0.6`, `0.95`/`0.75`, `0.9`/absent) and the full 71-file suite (`for f in tests/test_*.py; do python3 "$f"; done`) twice back-to-back, zero failures both times. `python3 -m py_compile` clean on every touched file. Beyond the unit tests: re-ran the live CLI repro above after the fix - `show 0001` now prints `Decision Confidence: 90%` and the persisted JSON's `result` dict contains `"confidence": 0.9`.
+
+### Behavior change: none to any decision, budget charge, or approval outcome - one more already-computed number now visible
+
+Nothing about which decision gets made, what gets billed, or what gets approved changed - `decision.confidence` has driven zero branching logic anywhere in this codebase since Phase 1 and still doesn't; `OrganizationDecisionMaker.approve_decision()`/`resolve_conflict()` are the only code that ever reads a `DecisionResult.confidence` to decide anything, and both remain dead (named in the policy-question list above, not touched here). The only observable change is that a task's result - via `show`/`list`'s detail view, the dashboard, or `/api/tasks/<id>` - now shows the same confidence number the `agent_decision` trace event already printed during `process`, instead of that number existing nowhere once the process exits.
+
+### 📝 Next Steps
+
+- All policy-question items from checkpoints 42-87's Next Steps (listed in full above) - unchanged, still open.
+- `/api/tasks` (the list view) and its `_task_summary()` helper do not surface `confidence` - deliberately left out this session (see Fix above). Whether the Tasks table should gain a per-row confidence indicator, and if so what it should look like next to the existing quality/cost badge, is a UI design question for the owner, not folded into this display-only fix.
+- No new non-policy, self-contained gap was spotted and deliberately left this session beyond the one above. The next session should look for a new non-policy gap the way checkpoints 45-88 each did, or get an owner decision on one of the policy questions above.
+
+---
+
+
 # Daily Progress Report - November 4, 2026
 
 ## 🧮 CHECKPOINT 87: `WorkflowTemplate.version` HAD EXISTED SINCE THE FIRST COMMIT, READ BY NOTHING

@@ -220,6 +220,13 @@ def show_task(task_id: str):
         print(f"\nResult:")
         print(f"  Summary: {result.get('summary', 'N/A')}")
         print(f"  Analysis: {result.get('analysis', 'N/A')[:100]}...")
+        # Decision confidence is computed by every decision the engine makes
+        # (execute, delegate, or escalate), not just completed ones, so it's
+        # checked with its own `is not None` rather than folded into the
+        # execution-only block below - an escalated or budget-denied task
+        # has this but none of the fields that follow.
+        if result.get('confidence') is not None:
+            print(f"  Decision Confidence: {result['confidence']:.0%}")
         # These fields (tokens_used, token_cost, quality_score, used_tools,
         # delegation_chain, ...) come straight from DepartmentHeadAgent.run() -
         # TaskExecutor.execute() used to discard all of them before reaching
@@ -255,6 +262,8 @@ def show_task(task_id: str):
             print(f"  Delegated From: {result['delegated_from']}")
         if result.get('delegation_reasoning'):
             print(f"  Delegation Reasoning: {result['delegation_reasoning']}")
+        if result.get('delegation_confidence') is not None:
+            print(f"  Delegation Confidence: {result['delegation_confidence']:.0%}")
         if result.get('delegation_declined'):
             print(f"  Delegation Declined: {result['delegation_declined']} "
                   f"(intended: {result.get('intended_delegate', 'unknown')})")

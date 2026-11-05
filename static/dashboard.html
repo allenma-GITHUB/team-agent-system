@@ -423,6 +423,12 @@ function renderTaskDetail(task) {
     </dl>`);
 
     const extra = [];
+    // Computed by every decision (execute, delegate, or escalate), not
+    // just completed ones - checked on its own rather than folded into
+    // the execution-only fields below, same reasoning as main_v2.show_task().
+    if (result.confidence != null) {
+      extra.push(`<dt>Decision Confidence</dt><dd>${(result.confidence * 100).toFixed(0)}%</dd>`);
+    }
     if (result.llm_provider) {
       extra.push(`<dt>LLM Provider</dt><dd>${escapeHtml(result.llm_provider)}</dd>`);
     }
@@ -460,6 +466,9 @@ function renderTaskDetail(task) {
     }
     if (result.delegation_reasoning) {
       extra.push(`<dt>Delegation Reasoning</dt><dd>${escapeHtml(result.delegation_reasoning)}</dd>`);
+    }
+    if (result.delegation_confidence != null) {
+      extra.push(`<dt>Delegation Confidence</dt><dd>${(result.delegation_confidence * 100).toFixed(0)}%</dd>`);
     }
     if (result.delegation_declined) {
       extra.push(`<dt>Delegation Declined</dt><dd>${escapeHtml(result.delegation_declined)} (intended: ${escapeHtml(result.intended_delegate || "unknown")})</dd>`);

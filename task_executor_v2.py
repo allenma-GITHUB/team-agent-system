@@ -39,6 +39,13 @@ class _DelegationRequest:
     task result - run() always converts it into one."""
     agent_id: str
     reasoning: str
+    # The delegator's own confidence in ITS decision to hand this off - set
+    # only when a real AgentDecisionEngine decision produced it (the
+    # should_execute()-driven delegate path below). The mid-reasoning
+    # delegate_to tool path has no DecisionResult to read one from, so it
+    # stays None there, same "absence means never computed" rule every
+    # other optional result field in this module follows.
+    confidence: Optional[float] = None
 
 
 class DepartmentHeadAgent(BaseAgent):
@@ -388,6 +395,17 @@ class DepartmentHeadAgent(BaseAgent):
         result.setdefault("delegated_from", self.agent_id)
         result.setdefault("delegation_chain", list(new_chain))
         result.setdefault("delegation_reasoning", request.reasoning)
+        # The delegator's own confidence in its decision to hand off, kept
+        # under its own key rather than overwriting "confidence" - that key
+        # already belongs to whichever agent's decision actually produced
+        # this result (the delegate's, recursively), and conflating "how
+        # sure was the agent who did the work" with "how sure was the agent
+        # who passed it along" would silently drop one of the two. None for
+        # the mid-reasoning delegate_to tool path (no DecisionResult exists
+        # there to read a confidence from), matching every other optional
+        # field's absence-means-never-computed convention in this module.
+        if request.confidence is not None:
+            result.setdefault("delegation_confidence", request.confidence)
         return result
 
     def _effective_staff_count(self, capacity: CapacitySnapshot) -> int:
@@ -461,6 +479,16 @@ class DepartmentHeadAgent(BaseAgent):
         # synthetic) reaches the budget charges below either way.
         task_id = decision_info["context"].task_id
 
+        # decision.confidence (AgentDecisionEngine.decide()'s own 0-1 score
+        # for how sure it is in this particular decision) has been computed
+        # on every decision since Phase 1, emitted into the "agent_decision"
+        # trace event, and discarded there - decide_on_task()'s own returned
+        # dict carries a "confidence" key too, but _run_locked() only ever
+        # reads "raw_decision"/"context" back out of it (see above). Every
+        # return below now carries the real value through to the task's own
+        # persisted result, the same way quality_score/reasoning already do,
+        # instead of a human having no way to see it outside a trace that
+        # only exists for the lifetime of one process run.
         if decision.decision == "escalate":
             self._emit("task_escalated", {"reasoning": decision.reasoning})
             return {
@@ -468,7 +496,8 @@ class DepartmentHeadAgent(BaseAgent):
                 "department": self.department,
                 "agent_id": self.agent_id,
                 "status": "escalated",
-                "approved": False
+                "approved": False,
+                "confidence": decision.confidence,
             }
 
         # Delegation is decided here but dispatched by run(), after this
@@ -485,6 +514,7 @@ class DepartmentHeadAgent(BaseAgent):
             return _DelegationRequest(
                 agent_id=decision.assigned_agent_id,
                 reasoning=decision.reasoning,
+                confidence=decision.confidence,
             )
 
         # Every task draws on the department budget, not just the ones big
@@ -511,7 +541,8 @@ class DepartmentHeadAgent(BaseAgent):
                 "department": self.department,
                 "agent_id": self.agent_id,
                 "status": "escalated",
-                "approved": False
+                "approved": False,
+                "confidence": decision.confidence,
             }
 
         # Check workload
@@ -775,6 +806,7 @@ class DepartmentHeadAgent(BaseAgent):
                 "agent_id": self.agent_id,
                 "status": "escalated",
                 "approved": False,
+                "confidence": decision.confidence,
                 "llm_provider": provider_used,
                 "tokens_used": tokens_used,
                 "token_cost": mock_cost,
@@ -793,6 +825,7 @@ class DepartmentHeadAgent(BaseAgent):
             "agent_id": self.agent_id,
             "status": "completed",
             "approved": True,
+            "confidence": decision.confidence,
             "llm_provider": provider_used,
             "tokens_used": tokens_used,
             "token_cost": mock_cost,
