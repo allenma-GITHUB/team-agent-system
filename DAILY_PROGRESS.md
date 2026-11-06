@@ -1,3 +1,75 @@
+# Daily Progress Report - November 6, 2026
+
+## 🏭 CHECKPOINT 89: THE CAPACITY READING THAT PICKED `staff_count` NEVER REACHED THE TASK IT PICKED FOR
+
+**Session opened on a detached `HEAD`, six commits ahead of the local `main` ref** - the same stale-cached-`origin/main`-ref shape checkpoints 53-88 have each hit. `git rev-parse origin/main` (no fetch) showed `c79a9eb`, six commits *behind* `HEAD` (checkpoints 83-88's own commits: `9c753a2`/`b957d8d`/`a4a5a8a`/`8b0d15d`/`f42183a`/`a1073a6`), which briefly looked like six straight sessions' work had never reached the remote. A real `git fetch origin main` resolved it immediately: `origin/main` updated to `a1073a6` on the fetch, matching `HEAD` exactly - everything was already pushed, exactly as checkpoints 83-88 each said, and the stale `c79a9eb` was this container's own unrefreshed shallow-clone snapshot, not the remote's real state. Fast-forwarded local `main` to the freshly-fetched `origin/main` (`git checkout -B main origin/main`); no push needed for the reconciliation. Full `tests/test_*.py` suite (71 files) ran clean twice back-to-back before starting new work, confirming checkpoint 88 is intact.
+
+### No self-contained lead was named last session
+
+Checkpoint 88's own Next Steps said explicitly that no new non-policy gap was spotted and deliberately left beyond the one it fixed. Per CLAUDE.md's instruction to prove a defect before fixing it, this session searched fresh rather than touching any of the accumulated policy-question items (unchanged list, still open - see below). Checked `budgets.py`'s `CapacityManager`/`CapacitySnapshot` end-to-end first (`utilization_pct()`, `slack()`, `.snapshot()`, `.organization_report()`, `.is_over_capacity()` - all fully wired into `web_server.py`, `tools.py`, `main_v2.py`, `performance.py`, and `strategy.py`, confirmed by grepping every public name across the whole tree), then `agent_loop.py`'s `AgentRunResult`/`ToolCallRecord` (also fully wired - `.messages`, `.successful_tool_calls()` both consumed by `main_v2.py`/`task_executor_v2.py`), then `agent_state.py`'s `RelationshipScore` (`trust_score` already wired by the trust-feedback checkpoint; `collaboration_count`/`last_collaboration` already fixed at commit `425e594`).
+
+### 🐛 Proven live before touching anything
+
+One field inside `CapacitySnapshot` *was* still a genuine gap: `budgets.py:398`'s `timestamp: str = field(default_factory=...)` has existed since `CapacitySnapshot` itself was first added, and `grep -rn "\.timestamp\b"` across every `.py`/`.html` file in the repo, including all 71 test files, showed it had zero consumers anywhere - unlike `ExpenseRecord.timestamp`, which the CLI, the dashboard, and a dedicated test all already display.
+
+That alone looked like another `WorkflowTemplate.version`-shaped "nobody set a non-default value yet" gap - until tracing *why* nobody had reached for it turned up something more concrete. `task_executor_v2.py`'s `DepartmentHeadAgent._run_locked()` takes a `CapacitySnapshot` once, near the top of the method, and uses it twice: once to emit the `capacity_check` trace event (`utilization`/`agent_count`/`slack`/`over_capacity`), and once - over 300 lines later, after the LLM call, after budget charges, after quality scoring - to pick `staff_count` via `_effective_staff_count(capacity)` (idle departments flex toward the department head's declared `staff_range` floor, busy ones toward its ceiling; see that method's own docstring). `staff_count` becomes `staff_contributions`' own length, and `staff_contributions` **is** persisted, shown by `show`/the dashboard/`/api/tasks/<id>`. But the capacity reading that produced that count was not - only the ephemeral `capacity_check` trace event ever saw it.
+
+Confirmed live with the real CLI, in an isolated temp directory (own `data/`, copied `config.json`):
+```
+$ python main_v2.py submit "Write a routine status update for the engineering team" --department engineering --hours 2
+$ python main_v2.py process
+   ...
+   [9.942136] capacity_check  {"utilization": 0.0, "agent_count": 1, "slack": 4, "over_capacity": false}
+$ python main_v2.py show 0001
+...
+  Staff Contributions:
+    - Engineering Staff 1: Task component 1
+    (... 5 entries total)
+
+=== persisted result keys (before fix) ===
+['agent_id', 'analysis', 'approved', 'confidence', 'department', 'details', 'execution_steps',
+ 'llm_provider', 'metrics', 'quality_score', 'staff_contributions', 'staff_count', 'status',
+ 'summary', 'token_budget_note', 'token_cost', 'token_cost_charged', 'tokens_used',
+ 'tool_call_errors', 'tool_calls', 'tool_calls_failed', 'used_tools']
+any capacity/utilization/staffing key present? False
+```
+A human reading that result - via `show`, the dashboard, or the API - sees 5 staff contributions with no way to tell whether that reflects an idle department (and would've been fewer if the department head's `staff_range` floor were higher) or one running hot, let alone *when* that reading was taken relative to right now. The only place the real number (`utilization: 0.0`) ever appeared was one terminal's trace output during one `process` run, gone the moment the process exited - the exact same "trace that dies with the process" shape as checkpoint 88's `decision.confidence`, one method and 300 lines further down in the same file.
+
+### 🔧 Fix
+
+**`task_executor_v2.py`**: `_run_locked()`'s `capacity_check` block now computes `over_capacity` into a local variable once and reuses it for both the trace event and the new result field, instead of calling `is_over_capacity()` a second time later - a small, purely internal simplification that also guarantees the persisted reading can never diverge from the trace event's own verdict (both would otherwise independently re-snapshot the registry). The completed-task return dict gains one new key, `"staffing_capacity"`, placed directly alongside `"staff_contributions"` since it explains that field's own count: `{"utilization_pct", "agent_count", "slack", "over_capacity", "as_of"}`, where `as_of` is `capacity.timestamp` - `CapacitySnapshot`'s own long-dead field, given its first real consumer and, with it, actual meaning: *when this specific task's staffing math was computed*, not confused with "right now" on a live-refreshing dashboard view.
+
+**`main_v2.py`**'s `show_task()`: one new `.get()`-guarded line, `Staffing Capacity`, placed directly before the existing `Staff Contributions` block since it explains that block's count. Shows utilization as a percentage, agent count, slack, an `[OVER CAPACITY]` flag when the persisted `over_capacity` is true, and the `as_of` timestamp.
+
+**`static/dashboard.html`**'s `renderTaskDetail()`: the same entry, same placement (in the `extra` list, right before the `execution_steps` block), same `OVER CAPACITY` flag reusing the existing `.not-charged` warning style already used for `[NOT CHARGED: ...]`.
+
+**Left out of scope, deliberately**: both escalate-before-staffing return paths (`can_execute()`-false/no-delegate, and budget denial) return long before `capacity` or `staff_count` are ever computed in `_run_locked()` - there is nothing to attach, and `staffing_capacity` correctly stays absent there, pinned by test 2 below. The iteration-exhausted path *does* compute `staff_count` (for the workload bookkeeping that follows it) but, like `staff_contributions` itself, was already deliberately excluded from that smaller return dict before this session - a task that never finished has no staffing figure worth dating, the same reasoning that already keeps `staff_contributions` out of it. `web_server.py` needed no change: `GET /api/tasks/<id>` already returns the task dict unmodified (confirmed first at checkpoint 72), so the new key reaches the API for free - pinned by test 5.
+
+### 🧪 Validation
+
+New file `tests/test_staffing_capacity_visibility.py`, five tests, each driving the real production code path (no mocks of `CapacityManager` itself):
+
+1. A plain completed task (real `submit_task`/`process_tasks`/`show_task`) - asserts `result["staffing_capacity"]` has all five keys with sane types/ranges, and `show_task()`'s captured stdout contains the formatted `Staffing Capacity:` line built from those exact values.
+2. A real engine-level escalation (one agent, already at its concurrency limit, no delegate candidate) - asserts `staffing_capacity` is absent entirely, not a fabricated zeroed dict, matching `staff_contributions`' own absence on this path.
+3. A department at 90% utilization (over the 0.85 default threshold) - asserts the persisted `over_capacity` is `True` and agrees *both* with a fresh `is_over_capacity()` call *and* with the `capacity_check` trace event emitted during the same run (proving one snapshot drives all three, not three independent reads that could disagree), and that `show_task()` prints `[OVER CAPACITY]`.
+4. Regex-checks `static/dashboard.html` for the new guarded block and both new labels.
+5. A real completed task injected into an isolated task store, served by the actual `DashboardRequestHandler` over a real HTTP request to `/api/tasks/0001` - asserts the new key arrives in the JSON response unmodified.
+
+Ran the new file individually (all 5 sections green, real computed values logged - `43%`/2 agents/4 slack for a shared department, `90%`/`[OVER CAPACITY]` for the busy one) and the full 72-file suite (`for f in tests/test_*.py; do python3 "$f"; done`) twice back-to-back, zero failures both times. `python3 -m py_compile` clean on every touched file. Beyond the unit tests: re-ran the live CLI repro above after the fix - `show 0001` now prints `Staffing Capacity: 43% utilized, 2 agent(s), 4 slack (as of ...)` and the persisted JSON's `result` dict contains a real `"staffing_capacity"` dict.
+
+### Behavior change: none to staffing, cost, or approval - one more already-computed reading now visible, and `is_over_capacity()` called once instead of twice per task
+
+`_effective_staff_count()`'s own math is untouched - same inputs, same clamped `staff_range` formula, same `staff_count`. The only semantic change is that `_run_locked()` no longer re-snapshots the registry a second time to compute `over_capacity` for the trace event; it reuses the one read already taken for staffing, which cannot observably differ within one synchronous call but removes a redundant registry scan. The only user-visible change is that a completed task's result - via `show`/`list`'s detail view, the dashboard, or `/api/tasks/<id>` - now shows the same capacity reading the `capacity_check` trace event already printed during `process`, instead of that reading existing nowhere once the process exits.
+
+### 📝 Next Steps
+
+- All policy-question items from checkpoints 42-88's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()`'s zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the escalated-branch task `"metrics"` key gap, `/api/tasks`'s `_task_summary()` not surfacing `confidence`) - unchanged, still open.
+- `/api/tasks` (the list view) and its `_task_summary()` helper do not surface `staffing_capacity` either, for the same reason `confidence` was left off it at checkpoint 88: the Tasks table has no column for it today, and adding one is a UI design decision for the owner, not folded into this display-only fix.
+- No new non-policy, self-contained gap was spotted and deliberately left this session beyond the one above. The next session should look for a new non-policy gap the way checkpoints 45-89 each did, or get an owner decision on one of the policy questions above.
+
+---
+
+
 # Daily Progress Report - November 5, 2026
 
 ## 🎯 CHECKPOINT 88: `DecisionResult.confidence` WAS COMPUTED ON EVERY DECISION SINCE PHASE 1, SEEN ONLY BY A TRACE THAT DIES WITH THE PROCESS

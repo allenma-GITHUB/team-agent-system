@@ -267,6 +267,12 @@ def show_task(task_id: str):
         if result.get('delegation_declined'):
             print(f"  Delegation Declined: {result['delegation_declined']} "
                   f"(intended: {result.get('intended_delegate', 'unknown')})")
+        if result.get('staffing_capacity'):
+            sc = result['staffing_capacity']
+            flag = " [OVER CAPACITY]" if sc.get('over_capacity') else ""
+            print(f"  Staffing Capacity: {sc.get('utilization_pct', 0):.0%} utilized, "
+                  f"{sc.get('agent_count', 0)} agent(s), {sc.get('slack', 0)} slack{flag} "
+                  f"(as of {sc.get('as_of', 'unknown')})")
         if result.get('execution_steps'):
             print(f"  Staff Contributions:")
             for step in result.get('execution_steps', []):

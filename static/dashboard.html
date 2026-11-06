@@ -473,6 +473,11 @@ function renderTaskDetail(task) {
     if (result.delegation_declined) {
       extra.push(`<dt>Delegation Declined</dt><dd>${escapeHtml(result.delegation_declined)} (intended: ${escapeHtml(result.intended_delegate || "unknown")})</dd>`);
     }
+    if (result.staffing_capacity) {
+      const sc = result.staffing_capacity;
+      const flag = sc.over_capacity ? ` <span class="not-charged">[OVER CAPACITY]</span>` : "";
+      extra.push(`<dt>Staffing Capacity</dt><dd>${(Number(sc.utilization_pct || 0) * 100).toFixed(0)}% utilized, ${sc.agent_count || 0} agent(s), ${sc.slack || 0} slack${flag} <span class="muted">(as of ${escapeHtml(sc.as_of || "unknown")})</span></dd>`);
+    }
     if (extra.length) parts.push(`<dl>${extra.join("")}</dl>`);
 
     if (result.execution_steps && result.execution_steps.length) {

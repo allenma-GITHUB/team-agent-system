@@ -463,11 +463,12 @@ class DepartmentHeadAgent(BaseAgent):
         # computed nowhere this trace could use it, leaving a reader to re-derive the
         # threshold from the raw utilization number instead of being told outright.
         capacity = self.capacity_manager.snapshot(self.department)
+        over_capacity = self.capacity_manager.is_over_capacity(self.department)
         self._emit("capacity_check", {
             "utilization": capacity.utilization_pct(),
             "agent_count": capacity.agent_count,
             "slack": capacity.slack(),
-            "over_capacity": self.capacity_manager.is_over_capacity(self.department)
+            "over_capacity": over_capacity
         })
 
         decision_info = self.decide_on_task(task, estimated_hours=estimated_hours, task_id=task_id)
@@ -842,6 +843,25 @@ class DepartmentHeadAgent(BaseAgent):
                 "error_rate": self.agent_state.metrics.error_rate,
                 "avg_cost_per_task": self.agent_state.metrics.avg_cost_per_task,
                 "avg_completion_time_hours": self.agent_state.metrics.avg_completion_time_hours
+            },
+            # The department-load reading _effective_staff_count() actually
+            # used to pick staff_count above, previously only visible in the
+            # "capacity_check" trace event emitted earlier in this method -
+            # a trace that dies with the process, same shape as checkpoint
+            # 88's decision.confidence. Without this, a human reading
+            # staff_contributions days later (via show/the dashboard) has no
+            # way to tell whether that count reflects an idle department or
+            # one at 90% utilization - the two numbers that actually produced
+            # it. capacity.timestamp (CapacitySnapshot's own field, never
+            # consumed anywhere before this) is included as "as_of" so the
+            # reading is dated to the moment this task was staffed, not
+            # confused with current/live department load.
+            "staffing_capacity": {
+                "utilization_pct": capacity.utilization_pct(),
+                "agent_count": capacity.agent_count,
+                "slack": capacity.slack(),
+                "over_capacity": over_capacity,
+                "as_of": capacity.timestamp,
             },
             "staff_contributions": [
                 {"role": f"{self.department.title()} Staff {i + 1}", "contribution": f"Task component {i + 1}"}
