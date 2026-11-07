@@ -666,6 +666,18 @@ class WorkflowEngine:
             "progress": instance.get_progress(),
             "current_step": instance.current_step,
             "step_statuses": {k: v.value for k, v in instance.step_status.items()},
+            # Every step execution's real result (summary, quality_score,
+            # token_cost, ... - the same dict TaskExecutor.execute() returns
+            # for a submitted task) has always been persisted into
+            # instance.step_results (complete_step()/execute_step() above,
+            # round-tripped by save()/load()), but this dict - the one
+            # surface main_v2.py's `workflow status` CLI command, the
+            # dashboard's workflow cards, and /api/workflows both read -
+            # never included it. Once the one-shot print inside
+            # workflow_complete() (main_v2.py) scrolled past, a step's own
+            # result was invisible everywhere else, forever, even though it
+            # was sitting on disk the whole time.
+            "step_results": instance.step_results,
             "error": instance.error,
             "created_at": instance.created_at,
             "started_at": instance.started_at,

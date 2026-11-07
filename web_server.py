@@ -169,7 +169,7 @@ def build_workflows_payload() -> list:
     """Every live workflow instance's status, in the exact per-instance shape
     WorkflowEngine.get_status() has always computed for main_v2.py's CLI
     `workflow status <id>` command - status, progress, current_step,
-    step_statuses, error. That command requires already knowing an
+    step_statuses, step_results, error. That command requires already knowing an
     instance_id (printed once, at `workflow start` time, and nowhere else);
     there has never been a way to list running instances at all, in the CLI
     or over the wire - workflows.py has had zero consumers outside main_v2.py

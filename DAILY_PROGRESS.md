@@ -1,3 +1,73 @@
+# Daily Progress Report - November 7, 2026
+
+## 🧾 CHECKPOINT 90: A WORKFLOW STEP'S REAL RESULT WAS PERSISTED, BUT `get_status()` ONLY EVER SHOWED ITS STATUS WORD
+
+**Session opened with a clean, up-to-date `main`** - `git status` showed nothing pending and `git log` matched the remote at `aa52709` (checkpoint 89's own commit). No stale-ref reconciliation needed this time. Full `tests/test_*.py` suite (73 files) ran clean before starting new work, confirming checkpoint 89 is intact.
+
+### No self-contained lead was named last session
+
+Checkpoint 89's own Next Steps said explicitly that no new non-policy gap was spotted and deliberately left beyond the one it fixed. Per CLAUDE.md's instruction to prove a defect before fixing it, this session searched fresh rather than touching any of the accumulated policy-question items (unchanged list, still open - see below). Audited every `@dataclass` in the repo end-to-end first: `performance.py`'s `AgentMetrics`/`DepartmentMetrics`/`SystemMetrics` (`get_quality_trend()`, `bottleneck_agent`/`bottleneck_department` - all already wired into `generate_report()` and the dashboard), `strategy.py`'s `ReallocationProposal` (fully wired - CLI `strategy` command, `/api/strategy`, dashboard panel), `workflows.py`'s `WorkflowStep`/`WorkflowTemplate` fields (`input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries` are already on the open policy list; `version` fixed at checkpoint 87) - all dead ends. The actual gap was one level deeper: not a field nobody reads, but a field only one caller ever reads, at only one moment.
+
+### 🐛 Proven live before touching anything
+
+`workflows.py`'s `complete_step()`/`execute_step()` have always stored a step's real execution result - the exact dict `TaskExecutor.execute()` returns for a submitted task (`summary`, `quality_score`, `tokens_used`, `token_cost`, `status`, ...) - into `instance.step_results[step_id]` (lines 349 and 441), and `save()`/`load()` have always round-tripped that dict to disk on every save (confirmed in `to_dict`/`from_dict`-equivalent blocks at lines ~218/238). But `get_status()` - the one shape `main_v2.py`'s `workflow status <id>` CLI command, `static/dashboard.html`'s workflow cards, and `web_server.py`'s `/api/workflows` route (`build_workflows_payload()`, which returns `get_status()`'s dict unmodified) all read - never included it, only `step_statuses` (the bare status word: `"completed"`, `"pending"`, ...).
+
+Confirmed live with the real CLI, in an isolated temp directory (own `data/`, copied `config.json`):
+```
+$ python main_v2.py workflow start bug_fix severity=high
+✓ Started 'Bug Fix Workflow' -> instance bug_fix_1794060201_5168
+$ python main_v2.py workflow complete bug_fix_1794060201_5168 triage
+✓ Step 'triage' executed and marked complete
+  Support team completed task in 0.00s
+$ python main_v2.py workflow status bug_fix_1794060201_5168
+...
+Steps:
+  triage               completed
+  fix                  pending
+  verify               pending
+  deploy               pending
+
+=== get_status() keys ===
+['completed_at', 'created_at', 'current_step', 'error', 'instance_id',
+ 'progress', 'started_at', 'status', 'step_statuses', 'workflow_name']
+'step_results' in get_status()? False
+```
+`triage`'s real result - a genuine summary, a quality score, a token cost, charged against the support department's budget - was sitting on `instance.step_results["triage"]` and in `data/workflows.json` on disk the entire time. The only place it was ever printed was `workflow complete`'s own one-shot `result.get("summary")` line (`main_v2.py:474`), gone the instant that command's process exits. Running `workflow status` on the exact same instance immediately afterward - the command whose entire purpose is reporting an instance's status, including to come back to later - showed nothing but the word "completed." Same blind spot for the dashboard's workflow cards and `/api/workflows`: a step past the moment it finished had no visible trace of what it actually did, cost, or how it scored, only a status badge.
+
+### 🔧 Fix
+
+**`workflows.py`**: `get_status()` now returns `"step_results": instance.step_results` alongside the existing `"step_statuses"` - the same dict already sitting on the `WorkflowInstance` object and already round-tripped by `save()`/`load()`, not a second, possibly-divergent read.
+
+**`main_v2.py`**'s `workflow_status()`: each step's status line gains an indented detail line directly underneath it when `step_results` has a result with a `summary` for that step - the summary text, plus `quality_score` and `token_cost` when present, same `.get()`-guarded "no value yet" convention every other optional field in this function already follows. A step with no result yet (pending, or in-progress with nothing stored) renders exactly as before - no fabricated line.
+
+**`static/dashboard.html`**'s `loadWorkflows()`: the per-step summary string (`stepId: status`) gains the same detail, appended as a `<br>`-separated muted line, same guard.
+
+**Left out of scope, deliberately**: `web_server.py`'s route handler needed no code change - `build_workflows_payload()` already returns `get_status()`'s dict unmodified, so `/api/workflows` picks up the new key for free. Only its docstring, which names the exact keys `get_status()` returns, was corrected to mention `step_results` so it stays accurate. The escalated-step path (`execute_step()` line 441, which stores a result but leaves the step `IN_PROGRESS` rather than `COMPLETED`) was not special-cased: its stored result also has a `summary`-shaped `analysis`/`status` dict in practice, but genuinely has no `summary` key today (confirmed by reading `TaskExecutor.execute()`'s escalation-branch return shape), so the existing `result.get("summary")` guard correctly renders nothing extra for it rather than a fabricated line - consistent with, not a workaround for, the same convention.
+
+### 🧪 Validation
+
+New file `tests/test_workflow_step_results_visibility.py`, five tests, each driving the real production code path (no mocks of `WorkflowEngine` itself):
+
+1. A directly-constructed `WorkflowEngine`/`complete_step()` call with a real result dict - asserts `get_status()["step_results"]` matches the live object's own `step_results` exactly, including the injected `summary`/`quality_score`.
+2. A real `bug_fix` instance driven through `main_v2.workflow_start()`/`workflow_complete()` (the exact CLI path) - asserts `workflow_status()`'s captured stdout, run as a *separate* command afterward, still contains the step's real summary text, not just its status word.
+3. The same instance before any step has run - asserts `workflow_status()` prints no fabricated detail line under a step with no result yet (`pending`).
+4. Regex/substring-checks `static/dashboard.html`'s `loadWorkflows()` section for the new `step_results`/`summary`/`quality_score` references.
+5. A real completed step served by the actual `DashboardRequestHandler` over a real HTTP request to `/api/workflows` - asserts the returned `step_results` for that instance matches the live object's own dict exactly.
+
+Ran the new file individually (all 5 sections green, real computed values logged - a genuine `"Support team completed task in 0.00s"` summary with `quality 4.0`/`$0.00124`) and the full 73-file suite (`for f in tests/test_*.py; do python3 "$f"; done`) twice back-to-back, zero failures both times. `python3 -m py_compile` clean on every touched file. Beyond the unit tests: re-ran the live CLI repro above after the fix - `workflow status` now prints the step's summary and cost directly under its status word, and the persisted `data/workflows.json`'s `step_results` already held exactly what now surfaces.
+
+### Behavior change: none to any workflow transition, budget charge, or approval outcome - one more already-persisted field now visible
+
+`complete_step()`/`execute_step()`'s own logic is untouched - same inputs, same status transitions, same result dict. The only change is that `get_status()` - and everything built on it (`workflow status`, the dashboard's workflow cards, `/api/workflows`) - now shows the same result a step's own execution already produced and already saved to disk, instead of that result existing only in one command's scrollback the moment it ran.
+
+### 📝 Next Steps
+
+- All policy-question items from checkpoints 42-89's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()`'s zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the escalated-branch task `"metrics"` key gap, `/api/tasks`'s `_task_summary()` not surfacing `confidence`/`staffing_capacity`) - unchanged, still open.
+- The escalated-step branch's stored result (`execute_step()` line 441) has no `summary` key today, so it renders no detail line under this fix - consistent with the existing guard, but means an escalated step's own reason for stopping is still only visible via `instance.error` (already surfaced), not via its stored result. Whether that branch's result shape should gain a human-readable summary of its own is a small follow-up, not a defect this session's fix needs to cover.
+- No new non-policy, self-contained gap was spotted and deliberately left this session beyond the one above. The next session should look for a new non-policy gap the way checkpoints 45-90 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 6, 2026
 
 ## 🏭 CHECKPOINT 89: THE CAPACITY READING THAT PICKED `staff_count` NEVER REACHED THE TASK IT PICKED FOR

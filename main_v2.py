@@ -521,6 +521,18 @@ def workflow_status(instance_id: str):
     print("Steps:")
     for step_id, step_status in status["step_statuses"].items():
         print(f"  {step_id:<20} {step_status}")
+        # step_results carries the real result dict execute_step() stored for
+        # this step (same shape as a submitted task's result) - absent for
+        # any step not yet run, present forever after, same "no value yet"
+        # convention as the created/started/completed lines above.
+        result = status["step_results"].get(step_id)
+        if result and result.get("summary"):
+            detail = f"    {result['summary']}"
+            if result.get("quality_score"):
+                detail += f" (quality {result['quality_score']})"
+            if result.get("tokens_used"):
+                detail += f" (${result.get('token_cost', 0):.5f})"
+            print(detail)
 
 
 def show_strategy(apply: bool):

@@ -675,8 +675,24 @@ async function loadWorkflows() {
   $("#workflow-empty").hidden = workflows.length > 0;
 
   $("#workflow-list").innerHTML = workflows.map(w => {
+    // w.step_results (added alongside w.step_statuses - workflows.py's
+    // get_status()) carries each step's real result dict once it has run,
+    // same shape as a task's own result. Only the status word used to be
+    // visible here; a step's summary (and quality/cost, when present) is
+    // appended on its own line, same "no value yet" omission every other
+    // optional field in this card already follows.
     const steps = Object.entries(w.step_statuses)
-      .map(([stepId, status]) => `${escapeHtml(stepId)}: ${escapeHtml(status)}`)
+      .map(([stepId, status]) => {
+        const result = (w.step_results || {})[stepId];
+        let line = `${escapeHtml(stepId)}: ${escapeHtml(status)}`;
+        if (result && result.summary) {
+          let extra = escapeHtml(result.summary);
+          if (result.quality_score) extra += ` (quality ${result.quality_score})`;
+          if (result.tokens_used) extra += ` ($${(result.token_cost || 0).toFixed(5)})`;
+          line += `<br><span class="muted">&nbsp;&nbsp;${extra}</span>`;
+        }
+        return line;
+      })
       .join(" · ");
     const errorLine = w.error ? `<div class="alert">⚠ ${escapeHtml(w.error)}</div>` : "";
     return `<div class="workflow-card" data-instance="${escapeHtml(w.instance_id)}">
