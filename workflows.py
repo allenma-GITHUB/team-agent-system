@@ -357,6 +357,29 @@ class WorkflowEngine:
         # successful progress past that point, implying it's still blocked
         # when it isn't.
         instance.error = None
+        # retry_blocked_step() already resets instance.status back to
+        # IN_PROGRESS once its one path (a BLOCKED budget reservation) is
+        # resolved - but execute_step()'s OTHER escalation path (the decision
+        # engine/budget check inside the executor itself, set at the
+        # "escalated" branch below) sets instance.status = ESCALATED too, and
+        # until now nothing ever reset it back, on this path, no matter what
+        # happened next. Confirmed live: start a bug_fix instance, drain
+        # engineering's budget so the 'fix' step's execute_step() call
+        # escalates (status -> ESCALATED), top the budget back up, then call
+        # `workflow complete <id> fix` again directly - it genuinely
+        # re-executes and completes (step_status 'fix' -> 'completed'), but
+        # instance.status stayed 'escalated' forever after, even once every
+        # remaining step was completed the same way: get_next_step() refuses
+        # to run for a non-IN_PROGRESS instance (its own first line), so
+        # `workflow next` could never reach 'verify'/'deploy' again, and
+        # check_complete() below - gated on instance.status == IN_PROGRESS -
+        # could never fire either, so a workflow that finished every single
+        # step would still report status "escalated", not "completed". Any
+        # step completing for real is proof the instance isn't stuck any
+        # more, on either escalation path - same reasoning as the error-clear
+        # just above, extended to the status it was paired with.
+        if instance.status == WorkflowStatus.ESCALATED:
+            instance.status = WorkflowStatus.IN_PROGRESS
         self.save()
         # This step might be the last one the workflow needed - check_complete()
         # is the only code that ever performs the in_progress -> completed
@@ -438,6 +461,27 @@ class WorkflowEngine:
             # for visibility but leave the step's status as IN_PROGRESS,
             # so get_next_step()'s already-in-progress check keeps handing
             # this same step back instead of the workflow silently moving on.
+            #
+            # This comment described the intent since execute_step() was
+            # first added, but nothing here ever enforced it - a step is
+            # only ever actually IN_PROGRESS if get_next_step() happened to
+            # set it first, which neither of this method's two real callers
+            # (main_v2.py's `workflow complete <id> <step>`, the dashboard's
+            # matching "Complete Step" button - both name a step_id and call
+            # this directly, with no requirement to have called `workflow
+            # next` on it first) ever does. Confirmed live: calling this on
+            # a step still at its initial PENDING left it reading "pending"
+            # in `workflow status` even after a real execution attempt was
+            # made and a real result stored - indistinguishable from
+            # 'verify'/'deploy', two steps genuinely never touched. Setting
+            # both explicitly here, rather than trusting whatever the step
+            # already happened to be, makes the comment above actually true
+            # instead of true-if-you-got-here-a-certain-way; current_step
+            # mirrors the same field get_next_step()'s own BLOCKED branch
+            # already sets when IT stalls a step, so one escalated step is
+            # named the same way regardless of which path stalled it.
+            instance.step_status[step_id] = StepStatus.IN_PROGRESS
+            instance.current_step = step_id
             instance.step_results[step_id] = result
             instance.status = WorkflowStatus.ESCALATED
             instance.error = f"Step '{step.name}' escalated: {result.get('analysis', '')}"

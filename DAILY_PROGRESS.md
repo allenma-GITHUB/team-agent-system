@@ -1,3 +1,75 @@
+# Daily Progress Report - November 8, 2026
+
+## 🧯 CHECKPOINT 91: A WORKFLOW ESCALATED VIA `execute_step()` COULD NEVER REPORT "COMPLETED" AGAIN, EVEN AFTER EVERY REMAINING STEP SUCCEEDED
+
+**Session opened on a detached `HEAD`, one commit ahead of the local `main` ref** - `git log --oneline origin/main` (no fetch) showed `aa52709`, one commit *behind* `HEAD` (checkpoint 90's own commit `12dda79`), the same stale-cached-ref shape checkpoints 53-89 have each hit. A real `git fetch origin main` resolved it immediately: `origin/main` was already at `12dda79`, matching `HEAD` exactly - checkpoint 90 was already pushed, and the stale `aa52709` was this container's own unrefreshed snapshot. Fast-forwarded local `main` to it (`git checkout main && git merge --ff-only 12dda79`); no push needed for the reconciliation. Re-ran `tests/test_workflow_step_results_visibility.py` and the full 74-file suite to confirm checkpoint 90 is intact before starting new work.
+
+### The named follow-up turned out not to be a bug - a deeper one was, next to it
+
+Checkpoint 90's own Next Steps flagged one lead by name: an escalated step's stored result has no `summary` key, so its per-step detail line stays empty. Tracing it before touching anything (per CLAUDE.md's "prove the defect first") disproved it: `workflows.py execute_step()` always calls `executor.execute()`, and in every production path that executor is `task_executor_v2.TaskExecutor`, whose `execute()` *already* synthesizes a `summary` for the escalated case too (`f"{department.title()} team escalated task after {duration:.2f}s: {result.get('analysis', '')}"`, confirmed at `task_executor_v2.py:989-991`) - confirmed live, the detail line already prints correctly. The named lead was stale; checkpoint 90's own investigation of it had read `DepartmentHeadAgent.run()`'s raw return shape (which genuinely has no `summary`), not what the duck-typed `executor.execute()` actually hands to `execute_step()` one layer up.
+
+### 🐛 Proven live before touching anything
+
+Chasing that repro turned up two real, compounding bugs in the same branch of `execute_step()` instead. Isolated temp directory, own `data/`, copied `config.json`, real CLI, real `TaskExecutor`:
+
+```
+$ python main_v2.py workflow start bug_fix severity=high
+✓ Started 'Bug Fix Workflow' -> instance bug_fix_1794146950_2624
+$ python main_v2.py workflow complete bug_fix_1794146950_2624 triage
+✓ Step 'triage' executed and marked complete
+# (drained engineering's budget to $0.01 remaining in data/budgets.json)
+$ python main_v2.py workflow complete bug_fix_1794146950_2624 fix
+⚠ Step 'fix' escalated, not completed: ... Insufficient budget: $210.00 requested, $0.01 available
+$ python main_v2.py workflow status bug_fix_1794146950_2624
+...
+Steps:
+  triage               completed
+    Support team completed task in 0.00s (quality 4.0) ($0.00124)
+  fix                  pending
+    Engineering team escalated task after 0.00s: Escalated, not executed: ...
+```
+**Bug 1**: `fix` reads `pending` - identical to `verify`/`deploy`, two steps genuinely never touched - directly above a detail line proving a real attempt just happened. `execute_step()`'s escalation branch has always left a comment saying the step's status should stay `IN_PROGRESS`, but never actually set it; that was only ever true by accident, when something had already called `get_next_step()` on this step first. Neither of this method's two real callers ever does: `main_v2.py`'s `workflow complete <id> <step>` and the dashboard's matching "Complete Step" button (a free-text `step_id` field next to the button - `static/dashboard.html:708`) both name a step_id and call `execute_step()` directly.
+
+Topping the budget back up and retrying surfaced the second, worse bug:
+```
+$ python main_v2.py workflow complete bug_fix_1794146950_2624 fix   # budget restored
+✓ Step 'fix' executed and marked complete
+$ python main_v2.py workflow status bug_fix_1794146950_2624
+Status: escalated          # <- still, after a real success
+Current step: fix
+```
+**Bug 2**: `instance.status` never leaves `ESCALATED` once `execute_step()`'s escalation branch sets it - not `complete_step()`, not `check_complete()` (gated on `status == IN_PROGRESS`, so it never even evaluates whether the workflow just finished), not `retry_blocked_step()` (that one only resets status for the *other* escalation path - a BLOCKED budget *reservation* inside `get_next_step()` - not this one, which fires inside the executor itself). Completing every remaining step the same direct way (`verify`, `deploy`) left `step_status` showing all four `completed`/`awaiting_approval` while `instance.status` stayed `"escalated"` forever - **a workflow that finished every step could never report `status: completed`**, and `get_next_step()`'s own first line (`if instance.status != WorkflowStatus.IN_PROGRESS: return None`) meant `workflow next` could never walk the instance forward through its normal path again either, forcing a human to keep guessing step_ids and calling `complete <id> <step>` blind. `tests/test_workflow_execution_escalation.py`'s own second test had already worked around exactly this by hand (`refreshed.status = WorkflowStatus.IN_PROGRESS  # operator/CLI re-arms after noticing the issue`) - there was no code anywhere that actually did that re-arming.
+
+### 🔧 Fix
+
+**`workflows.py execute_step()`**'s escalation branch now explicitly sets `instance.step_status[step_id] = StepStatus.IN_PROGRESS` and `instance.current_step = step_id`, instead of trusting whatever they already happened to be - `current_step` mirrors the same field `get_next_step()`'s own BLOCKED branch already sets when *that* path stalls a step, so one escalated step is named the same way regardless of which mechanism stalled it.
+
+**`workflows.py complete_step()`** now resets `instance.status` from `ESCALATED` back to `IN_PROGRESS` whenever a step actually completes - right next to the existing "clear a stale `instance.error`" line, same reasoning extended to the status it was set alongside: a step completing for real is proof the instance isn't stuck any more, on either escalation path (this one, or the pre-existing BLOCKED one `retry_blocked_step()` already un-stuck this same way). This one change makes `check_complete()` reachable again, so a fully-finished instance now correctly reaches `status: completed`, and makes `get_next_step()`/`workflow next` usable again for every later step instead of only the direct-by-name path.
+
+**Left as-is, deliberately**: the checkpoint-90 `summary`-key lead itself needed no fix, per the disproof above - fixing a non-bug would have been exactly the "convenient fiction" CLAUDE.md warns against.
+
+### 🧪 Validation
+
+New file `tests/test_workflow_escalated_step_recovery.py`, three tests against the real `WorkflowEngine` (a `FakeExecutor` stands in for the department, same pattern `test_workflow_execution_escalation.py` already uses, so this is a pure engine-mechanics test, not a budget/LLM integration one):
+
+1. `execute_step()` called directly on a step still at its initial `PENDING` (no `get_next_step()` first) - escalates it, then asserts `step_status` reads `IN_PROGRESS` (not the stale `PENDING`) and `current_step` names it.
+2. The same step escalated, then retried with a `FakeExecutor` returning success on the second call - asserts `instance.status` is back to `IN_PROGRESS` (not stuck at `ESCALATED`) and `instance.error` is `None`.
+3. A two-step template: first step completes normally, second escalates then recovers (confirming `get_next_step()` genuinely refuses while still escalated) - asserts the instance reaches `status: COMPLETED` with `completed_at` set once both steps are genuinely done.
+
+Ran the new file individually (all three green) and the full `tests/test_*.py` suite (74 files, including the pre-existing `test_workflow_execution_escalation.py` and `test_workflow_retry.py`, both still green and unmodified) twice back-to-back - zero failures either time. `python3 -m py_compile` clean on every touched file. Re-ran the full live CLI repro above after the fix: `fix` now reads `in_progress` while escalated, and after the budget top-up and retry, `workflow status` reads `Status: in_progress` (not stuck at `escalated`) and `workflow next` correctly resumes, finding `verify` as the next step - confirmed separately in `DAILY_PROGRESS.md`'s own session transcript, reproduced again here for the record.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+An instance that escalates via `execute_step()` and is later resolved by re-running the same step now correctly returns to `IN_PROGRESS` (and, once every step is genuinely done, to `COMPLETED`) instead of reporting `ESCALATED` forever. No change to what any step actually does, what gets charged, or any approval outcome - only to the instance-level status word reported once a real resolution has already happened. An instance that is *still* genuinely stuck reports exactly as before (`ESCALATED`, with `instance.error` set); only the already-resolved case changes.
+
+### 📝 Next Steps
+
+- All policy-question items from checkpoints 42-90's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()`'s zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the escalated-branch task `"metrics"` key gap, `/api/tasks`'s `_task_summary()` not surfacing `confidence`/`staffing_capacity`) - unchanged, still open.
+- New, noticed but not chased this session: the default `config.json` declares `approval_role="tech_lead"` on the `bug_fix` template's `verify` step, but no agent in `config.json`'s `agents` section has agent_id or agent_type `"tech_lead"` (only `*_head` ids, type `ManagerAgent`/`LeaderAgent`) - `_approver_qualifies()` can never match it, so that step may be genuinely unapprovable by any real registered agent today. Not confirmed as a live-impact bug (no session has reported trying and failing to approve a real `verify` step), and fixing it is a config/policy call (what role name is right, or whether a `tech_lead`-typed agent should exist) rather than a code defect - left for an owner decision rather than guessed at.
+- No new non-policy, self-contained gap was spotted and deliberately left this session beyond the one above. The next session should look for a new non-policy gap the way checkpoints 45-91 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 7, 2026
 
 ## 🧾 CHECKPOINT 90: A WORKFLOW STEP'S REAL RESULT WAS PERSISTED, BUT `get_status()` ONLY EVER SHOWED ITS STATUS WORD
