@@ -1,3 +1,77 @@
+# Daily Progress Report - November 9, 2026
+
+## 🎭 CHECKPOINT 92: `decide()` SILENTLY EXECUTED TASKS IT HAD JUST DECIDED NOT TO EXECUTE
+
+**Session opened on a detached `HEAD`, two commits ahead of the local `main` ref** - the same stale-cached-ref shape checkpoints 53-91 have each hit. `git fetch origin main` showed `origin/main` already at `64c5c69`, matching `HEAD` exactly: checkpoint 91 was already pushed, and the local `main` ref was this container's own unrefreshed snapshot. Fast-forwarded (`git checkout main && git merge --ff-only origin/main`); no push needed for the reconciliation. Ran the full 74-file suite to confirm checkpoint 91 is intact before starting new work - all green.
+
+### 🐛 Proven live before touching anything
+
+Checkpoint 91's own Next Steps named no fresh non-policy lead, so this session looked for a new one the way checkpoints 45-91 each did, in `agent_decisions.py` - a file no checkpoint has touched since confidence-visibility work (checkpoint 72) and urgency-wiring (a prior session). `AgentDecisionEngine.decide()`'s should-execute branch:
+
+```python
+if not self.should_execute(context):
+    delegate = self.find_best_delegate(context)
+    if delegate:
+        return DecisionResult(decision="delegate", ...)
+    # no else - execution falls through to the code below regardless
+
+needs_approval = self.requires_approval(context)
+return DecisionResult(decision="execute", ...)
+```
+
+`should_execute()` returns `False` for exactly two real reasons: the agent rates this task type below -0.5 (disliked), or the agent is near-full (>=80% of `max_concurrent_tasks`) on an urgent (`urgency >= 0.5`) task - both documented as "hand this off if you can." If `find_best_delegate()` can't find anyone, the `if not self.should_execute(...)` block has no `else` and nothing returns from it, so the method falls straight into the same "We're executing" code a freely-chosen task uses. Confirmed live, direct engine call, no mocking:
+
+```
+>>> state.learned_preferences["code_review"] = -0.9   # strongly disliked
+>>> registry has only this one agent                  # find_best_delegate() -> None
+>>> engine.can_execute(context)    -> (True, "Ready to execute")
+>>> engine.should_execute(context) -> False
+>>> engine.find_best_delegate(context) -> None
+>>> engine.decide(context)
+DecisionResult(decision='execute', assigned_agent_id='solo_engineer',
+               reasoning='Executing with skill level 4/5, affinity: -0.9',
+               confidence=0.9, approval_required=False, recommended_deadline=2.0)
+```
+
+`confidence=0.9` and a reasoning string identical in shape to the happy path - nothing in the returned `DecisionResult` distinguishes "the engine decided this agent shouldn't do this and had no choice" from "the agent gladly took this on." This is the exact silent-fallback shape `task_executor_v2._dispatch_delegation`'s own docstring names as the bug it exists to prevent ("never a silent fallback that lets the trace keep claiming the work went somewhere it didn't") - one layer upstream, in the decision itself rather than its dispatch. The parallel branch just above it (`can_execute()=False` with no delegate) already gets this right: it escalates with a flat `confidence=0.6` and a reasoning string naming both facts. The `should_execute()=False` branch had no equivalent for its own no-delegate case - it just forgot to handle it at all.
+
+Per CLAUDE.md's "prove the defect before fixing it," also checked whether `OrganizationDecisionMaker.approve_decision()` (the only other reader of `DecisionResult.confidence` anywhere in the codebase) is reachable from this path: it is not - `task_executor_v2.py` calls `BudgetManager.approve_decision()`, an unrelated same-named method, and `OrganizationDecisionMaker` has no caller in production at all. So the live impact of the old `confidence=0.9` was confined to what a human or trace reader would see, not to any approval math - still worth fixing (CLAUDE.md: "prefer an honest limitation to a convenient fiction"), just not a budget-correctness bug on top of a disclosure one.
+
+### 🔧 Fix
+
+**`agent_decisions.py` `decide()`** now sets a `forced_despite_preference` flag when `should_execute()` is `False` and `find_best_delegate()` returns `None`, and branches on it before falling into the shared "We're executing" return:
+
+- `decision` stays `"execute"` - the task still gets done, by the only agent that can do it; there is nowhere else for it to go, same as the `can_execute()=False` branch's own fallback-to-escalate logic reflects "no alternative exists," not "pretend this didn't happen."
+- `confidence` is now a flat `0.6`, matching the `can_execute()=False`/no-delegate escalation just above it - the uncertainty here is in the decision (this agent didn't want the task and had no choice), not in its skill at performing it, so the skill-scaled formula (up to 0.95) would keep overstating confidence in a decision the engine had just said it wouldn't prefer.
+- `reasoning` now names the override explicitly: `"should_execute() said this task should have been delegated (affinity: X or workload too high), but no suitable delegate was available - executing anyway with skill level N/5"`.
+- `approval_required` is untouched - still `requires_approval()`'s own call, so this fix changes what the record *says*, not what triggers approval. That's a policy question (should a forced execution always need sign-off?) this session is leaving alone rather than settling inside a bug fix.
+
+One concrete, positive side effect: `task_executor_v2.py`'s budget charge for a normal execution already passes `decision.reasoning` as the labor expense's `description` (line 532) - so a forced execution's budget-ledger entry now reads as a forced execution too, instead of looking identical to a task the agent wanted.
+
+### 🧪 Validation
+
+New file `tests/test_forced_execution_disclosure.py`, four tests against the real `AgentDecisionEngine`/`AgentState`/`AgentRegistry` (no mocking - these are pure decision-engine mechanics, same pattern `test_urgency_wiring.py` already uses):
+
+1. Disliked task (-0.9), solo agent (no possible delegate) - asserts `decision="execute"`, `confidence==0.6` exactly, and both "no suitable delegate" and the actual affinity value appear in `reasoning`.
+2. Full (4/5 concurrent slots) and urgent (0.9), same solo-agent setup - the *other* `should_execute()=False` branch - asserts the identical disclosure.
+3. `approval_required` still tracks `requires_approval()`'s own complexity threshold (0.9 complexity -> `True`, 0.2 complexity -> `False`) under the new forced-execution path, pinning that this fix did not fold approval policy into itself.
+4. The untouched paths: neutral-affinity execution keeps the original skill-scaled confidence formula and never mentions "no suitable delegate"; and with a real delegate available, the pre-existing `decision="delegate"`/`confidence=0.75` path still wins outright, unreached by any of this fix's new code.
+
+Ran the new file individually (all four green, confirmed via printed output) and twice back-to-back for idempotency (byte-identical output both runs - these tests only read agent state they themselves just set, consistent with the project convention of resetting `metrics`/`current_workload`/`learned_preferences` after `register()` rather than trusting a clean file). Ran the full `tests/test_*.py` suite (75 files, including this new one) - zero failures. `python3 -m py_compile` clean on `agent_decisions.py` and the new test file; `import main_v2, agent_decisions, agent_state, task_executor_v2, workflows, web_server, budgets, departments, performance` clean. Re-ran a real CLI `submit`/`process`/`list` cycle in an isolated temp directory with the real `config.json` to confirm the overwhelmingly common (`should_execute()=True`) path is untouched - unchanged `completed` result, unchanged trace shape. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed the generated `data/budgets.json`/`data/workflows.json` after every suite run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+A task whose decision engine determines it should be delegated (disliked, or the agent is near-full on an urgent task) but has no available delegate now reports `confidence=0.6` and a reasoning string naming the override, instead of the skill-scaled confidence (up to 0.95) and happy-path reasoning it reported before. `decision` is still `"execute"` and `approval_required` is computed exactly as before - no change to what gets executed, what gets charged, or any approval outcome. Only the honesty of the confidence/reasoning fields for this one previously-undistinguished fallback path changes. The normal, overwhelmingly common paths (preferred execution, successful delegation, `can_execute()=False` escalation) are byte-for-byte unchanged, pinned by test 4 above.
+
+### 📝 Next Steps
+
+- All policy-question items from checkpoints 42-91's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()`'s zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the escalated-branch task `"metrics"` key gap, `/api/tasks`'s `_task_summary()` not surfacing `confidence`/`staffing_capacity`, checkpoint 91's `bug_fix` template's unapprovable `tech_lead` `approval_role`) - unchanged, still open.
+- New, noticed but not chased this session: `DecisionResult.decision`'s own docstring documents four values (`"execute"`, `"delegate"`, `"escalate"`, `"reject"`), but `decide()` never returns `"reject"` anywhere - it is dead, unreachable, and no caller branches on it either (`task_executor_v2.py` only ever checks for `"escalate"` and `"delegate"`, falling through to execute otherwise - the same shape this checkpoint's own bug exploited). Whether a "reject" outcome should exist at all, and what would trigger it, is a design/policy call this session is surfacing rather than guessing at.
+- `OrganizationDecisionMaker` (noted above) remains entirely unreached from any production code path - confirmed again this session. Whether it should be wired in, or removed as dead code, is also a policy call rather than something to decide inside this fix.
+- No new non-policy, self-contained gap was spotted and deliberately left this session beyond the "reject" dead-branch note above. The next session should look for a new non-policy gap the way checkpoints 45-92 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 8, 2026
 
 ## 🧯 CHECKPOINT 91: A WORKFLOW ESCALATED VIA `execute_step()` COULD NEVER REPORT "COMPLETED" AGAIN, EVEN AFTER EVERY REMAINING STEP SUCCEEDED

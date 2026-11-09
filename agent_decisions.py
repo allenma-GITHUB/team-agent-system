@@ -205,6 +205,21 @@ class AgentDecisionEngine:
                 )
 
         # We can do it - should we?
+        #
+        # should_execute()=False with no delegate used to fall straight
+        # through to the "We're executing" return below, with nothing to
+        # show that should_execute() had just said no - confirmed live: a
+        # solo agent given a task with affinity -0.9 (strongly disliked)
+        # and no other registered agent to hand it to got back
+        # decision="execute", confidence=0.9, reasoning="Executing with
+        # skill level 4/5, affinity: -0.9" - byte-for-byte what a happily
+        # chosen execution produces, with no trace that should_execute()
+        # had already determined this agent shouldn't be the one doing it.
+        # The same silent-fallback shape task_executor_v2._dispatch_delegation's
+        # docstring calls out and exists specifically to avoid, one layer
+        # up: the record must say a decision was overridden by necessity,
+        # not quietly present it as the agent's preferred choice.
+        forced_despite_preference = False
         if not self.should_execute(context):
             # Try to delegate to someone who likes it more
             delegate = self.find_best_delegate(context)
@@ -218,9 +233,28 @@ class AgentDecisionEngine:
                     confidence=0.75,
                     approval_required=False
                 )
+            forced_despite_preference = True
 
         # We're executing
         needs_approval = self.requires_approval(context)
+
+        if forced_despite_preference:
+            return DecisionResult(
+                decision="execute",
+                assigned_agent_id=self.agent.profile.agent_id,
+                reasoning=(f"should_execute() said this task should have been delegated "
+                           f"(affinity: {self.agent.learned_preferences.get(context.task_type, 0):.1f} "
+                           f"or workload too high), but no suitable delegate was available - "
+                           f"executing anyway with skill level {self.agent.profile.skill_level}/5"),
+                # Lower and flat, like the can_execute()=False/no-delegate escalation
+                # above (0.6): the uncertainty here is in the decision itself (this
+                # agent didn't want the task and had no choice), not in its skill at
+                # performing it, so the skill-scaled formula below would overstate
+                # confidence in a decision the engine just said it wouldn't prefer.
+                confidence=0.6,
+                approval_required=needs_approval,
+                recommended_deadline=context.estimated_hours
+            )
 
         return DecisionResult(
             decision="execute",
