@@ -291,11 +291,23 @@ class AgentRegistry:
         """Get all agents."""
         return self.agents
 
-    def available_agents(self, skill_required: Optional[str] = None) -> List[AgentState]:
-        """Get agents available for work, optionally filtered by skill."""
+    def available_agents(self, skill_required: Optional[str] = None,
+                          task_hours: float = 1.0) -> List[AgentState]:
+        """Get agents available for work, optionally filtered by skill.
+
+        `task_hours` reaches `is_available()` unchanged - it used to be
+        hardcoded to `1.0` here regardless of the real task, so a delegate
+        already carrying 38 of their 40 weekly hours still came back
+        "available" for a task that would need 10 more. `is_available()`
+        itself has checked `task_hours` against the weekly cap correctly
+        since it was fixed (see its own docstring); this call site just
+        never passed the real number through. The default of `1.0`
+        preserves every caller that doesn't know or care about the task's
+        actual size (e.g. tests/test_agent_decisions.py's demo).
+        """
         available = [
             state for state in self.agents.values()
-            if state.is_available(1.0)  # Simplified: check capacity
+            if state.is_available(task_hours)
         ]
 
         if skill_required:

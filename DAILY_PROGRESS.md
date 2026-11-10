@@ -1,3 +1,81 @@
+# Daily Progress Report - November 10, 2026
+
+## 🧮 CHECKPOINT 93: `find_best_delegate()` COULD HAND A TASK TO AN AGENT THE SYSTEM'S OWN CAPACITY CHECK SAYS CANNOT TAKE IT
+
+**Session opened on a detached `HEAD`, three commits ahead of the local `main` ref** - the same stale-cached-ref shape checkpoints 53-92 have each hit. `git log origin/main..HEAD` (cached ref, no fetch) showed checkpoints 90-92's own commits (`12dda79`, `64c5c69`, `84d7efd`) all missing from `origin/main`, which would have meant three full days of merged, tested work were never actually pushed - worth treating as a real possibility, not waving off as "probably the same stale-ref thing again." A real `git fetch origin main` resolved it: `origin/main` landed exactly on `84d7efd`, matching `HEAD` - all three were pushed, and the discrepancy was purely this container's unrefreshed snapshot of `origin/main` from clone time, confirmed by the *fetch* actually changing the ref (`aa52709..84d7efd`), not just by re-reading an already-current one. Fast-forwarded local `main` to it (`git checkout main && git merge --ff-only origin/main`); no push needed for the reconciliation. Ran the full 75-file suite to confirm checkpoint 92 is intact before starting new work - all green.
+
+### 🐛 Proven live before touching anything
+
+Checkpoint 92's own Next Steps named no fresh non-policy lead (every item was tagged a standing policy question). Rather than re-read those again, this session looked one level away from where checkpoint 92 had just worked: `agent_decisions.py`'s `find_best_delegate()`, the method both of `decide()`'s delegation attempts call, and its one real collaborator, `agent_state.py`'s `AgentRegistry.available_agents()`:
+
+```python
+# agent_state.py (before this fix)
+def available_agents(self, skill_required: Optional[str] = None) -> List[AgentState]:
+    available = [
+        state for state in self.agents.values()
+        if state.is_available(1.0)  # Simplified: check capacity
+    ]
+    ...
+
+# agent_decisions.py find_best_delegate() (before this fix)
+candidates = [
+    candidate for candidate in self.registry.available_agents()
+    if candidate.profile.agent_id != self.agent.profile.agent_id
+    and (not required_skills or required_skills & set(candidate.profile.expertise_areas))
+]
+```
+
+`AgentState.is_available(task_hours)` has correctly checked `task_hours` against `max_hours_per_week` since an earlier checkpoint fixed its body (its own docstring documents that fix). But `available_agents()` never forwarded a real task's size into that check - it hardcoded `1.0` regardless of caller, and `find_best_delegate()` called it with no arguments at all, even though the real number was sitting right there on `context.estimated_hours`. Confirmed live, direct import, no mocking, isolated registry file:
+
+```
+>>> delegate.active_hours = 38.0  # already at 38 of 40 weekly hours
+>>> delegate.is_available(10.0)   # the task really needs 10 more hours
+False
+>>> delegate.is_available(1.0)    # what available_agents() actually checked
+True
+>>> engine.find_best_delegate(context)   # context.estimated_hours == 10.0
+<AgentState delegate_head>
+>>> engine.decide(context)
+DecisionResult(decision='delegate', assigned_agent_id='delegate_head',
+                reasoning='Delegating to Delegate: SpecialistAgent. (Own reason: ...)',
+                confidence=0.8, approval_required=False, ...)
+```
+
+A 10-hour task got delegated, at `confidence=0.8`, to an agent the system's own `is_available()` says cannot take it - indistinguishable in the returned `DecisionResult` from delegating to someone with real room. Checked downstream: `task_executor_v2._dispatch_delegation` (the only real caller that acts on a `"delegate"` decision) never calls `is_available()` itself - confirmed by grep, no hit anywhere near dispatch - so nothing re-validates the delegate's capacity before committing to them. This is independent of the `skill_required` filtering checkpoints 38-40 hardened; it's the capacity axis, not the skill axis, and `available_agents()`'s skill filter was never touched here.
+
+A background research fork spent real effort ruling out several near-misses before landing on this one, for the record: `strategy.py apply_reallocations()`'s silent `continue` on a missing department (dead code - its only real caller always applies proposals it just generated against the same live `budgets` dict, so `get_budget()` can't actually return `None` there); `core.py EventBus.print_trace()`'s unconditional `"..."` truncation suffix (cosmetic, not a "reported done" bug); and `llm_provider.py`'s docstring typo (`"tokens_estimated"` vs. the real `"tokens_estimate"` key) that no real reader is ever affected by.
+
+### 🔧 Fix
+
+**`agent_state.py` `AgentRegistry.available_agents()`** now takes a `task_hours: float = 1.0` parameter and checks `state.is_available(task_hours)` instead of the hardcoded literal. The default preserves the one other real caller (`tests/test_agent_decisions.py`'s demo, which calls it with no `task_hours` at all) and anything else indifferent to the task's real size.
+
+**`agent_decisions.py` `find_best_delegate()`** now calls `self.registry.available_agents(task_hours=context.estimated_hours)` instead of `self.registry.available_agents()` - the only change at this call site. Both of `decide()`'s delegation attempts (the `can_execute()=False` branch and checkpoint 92's `should_execute()=False` branch) go through this one method, so both are fixed by the same change; `decide()` itself is untouched.
+
+Re-verified live after the fix: the same over-capacity delegate is now excluded (`available_agents(task_hours=10.0)` returns `[]`, `find_best_delegate()` returns `None`, `decide()` returns `decision="escalate"`), while a task sized to fit the delegate's real remaining capacity (1 hour, not 10) still finds and delegates to them exactly as before (`confidence=0.8`, unchanged).
+
+### 🧪 Validation
+
+New file `tests/test_delegate_capacity_check.py`, four tests against the real `AgentDecisionEngine`/`AgentRegistry`/`AgentState` (no mocking):
+
+1. A candidate at 38/40 weekly hours, given a 10-hour task: `is_available(10.0)` directly confirms `False`, `available_agents(task_hours=10.0)` returns `[]`, `find_best_delegate()` returns `None`, and `decide()` returns `decision="escalate"` with `assigned_agent_id=None` - pinning that the fix actually changes the outcome, not just an intermediate value.
+2. The identical delegate, given a 1-hour task instead: still found and still delegated to, at the pre-existing `confidence=0.8` - pinning that a genuinely-fitting delegate is unaffected.
+3. Checkpoint 92's `should_execute()=False` branch, with the only other registered agent over capacity for the task: `decide()` now correctly falls through to `forced_despite_preference` execution (`confidence=0.6`, override named in `reasoning`) instead of confidently "delegating" to someone who cannot take it - proving the fix covers both of `decide()`'s call sites, not just the one this session traced first.
+4. `available_agents()` called with no `task_hours` argument at all (the one other real caller's exact usage) behaves identically to an explicit `task_hours=1.0`, and a larger explicit value still correctly excludes a near-capacity agent - pinning the default didn't silently change that caller's behavior.
+
+Ran the new file individually (all four green, confirmed via printed output) and twice back-to-back for idempotency (byte-identical output both runs). Ran the full `tests/test_*.py` suite (76 files, including this new one) twice back-to-back - zero failures both times. `python3 -m py_compile` clean on `agent_state.py`, `agent_decisions.py`, and the new test file; `import main_v2, agent_decisions, agent_state, task_executor_v2, workflows, web_server, budgets, departments, performance` clean. Re-ran a real CLI `submit`/`process`/`list` cycle in an isolated temp directory with the real `config.json` to confirm the overwhelmingly common (solo-agent, no delegation needed) path is untouched - unchanged `completed` result, unchanged trace shape, unchanged `agent_decision` event. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json`/`data/test_delegate_capacity_*.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+A task whose size would push a would-be delegate over their weekly-hours cap is no longer delegated to them - `decide()` now returns `"escalate"` (if no other delegate qualifies, `can_execute()=False` branch) or forces the original agent to execute with disclosure (`should_execute()=False` branch, checkpoint 92's `forced_despite_preference` path) instead of confidently reporting `"delegate"` to someone the system's own capacity check would refuse. No change to tasks whose estimated hours actually fit the chosen delegate's remaining weekly capacity - the overwhelmingly common case, since most registered agents in the shipped `config.json` start each run with `active_hours=0.0`. No change to any already-dispatched or in-flight task; this only affects the decision made for a *new* task going forward.
+
+### 📝 Next Steps
+
+- All policy-question items from checkpoints 42-92's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()`'s zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the escalated-branch task `"metrics"` key gap, `/api/tasks`'s `_task_summary()` not surfacing `confidence`/`staffing_capacity`, checkpoint 91's `bug_fix` template's unapprovable `tech_lead` `approval_role`, and `DecisionResult.decision`'s dead `"reject"` branch noted in checkpoint 92) - unchanged, still open.
+- New, noticed but not chased this session: `rank_candidate()`'s `workload_factor` axis (`agent_decisions.py:159`) still ranks purely by *task-slot* workload (`current_workload` vs. `max_concurrent_tasks`), with no equivalent hours-based factor now that `available_agents()` has one. Two candidates who both clear the new capacity filter but have very different remaining weekly hours (one nearly full, one wide open) still rank identically on this axis - not a correctness bug like today's (both candidates genuinely *can* take the task), but a possible ranking-quality gap. Left alone rather than folded into this fix, since this checkpoint's job was "can this candidate take the task at all," not "how should capacity affect who wins among those who can."
+- No new non-policy, self-contained gap beyond the ranking-quality note above was spotted and deliberately left this session. The next session should look for a new non-policy gap the way checkpoints 45-93 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 9, 2026
 
 ## 🎭 CHECKPOINT 92: `decide()` SILENTLY EXECUTED TASKS IT HAD JUST DECIDED NOT TO EXECUTE

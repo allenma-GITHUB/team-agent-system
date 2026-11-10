@@ -120,10 +120,29 @@ class AgentDecisionEngine:
         scoring identically, because rank_candidate()'s skill axis only
         looked at skill_level - a coverage factor now scores the fraction
         of required_skills each candidate actually has.
+
+        available_agents() is now called with context.estimated_hours
+        instead of no argument at all. It used to default to checking every
+        candidate's capacity against a hardcoded 1.0 hours regardless of the
+        real task - confirmed live: a candidate already at 38 of their 40
+        weekly hours still came back "available" for a 10-hour task, so a
+        decide() caller with no willing/fitting delegate silently got one
+        who could not actually take the work on. is_available() itself
+        already checked task_hours against the weekly cap correctly; this
+        was the one real call site that never passed the real number in.
         """
         required_skills = set(context.required_skills)
         candidates = [
-            candidate for candidate in self.registry.available_agents()
+            # available_agents() used to be called with no task_hours at all,
+            # so it checked every candidate's capacity against a hardcoded
+            # 1.0 hours regardless of context.estimated_hours - confirmed
+            # live: a candidate at 38 of 40 weekly hours came back
+            # "available" for a 10-hour task that is_available(10.0) itself
+            # correctly refuses. Passing the real estimate through means a
+            # candidate who cannot actually fit this task is excluded before
+            # ranking, not just theoretically disqualified by a method
+            # nothing here called with the right number.
+            candidate for candidate in self.registry.available_agents(task_hours=context.estimated_hours)
             if candidate.profile.agent_id != self.agent.profile.agent_id
             and (not required_skills or required_skills & set(candidate.profile.expertise_areas))
         ]
