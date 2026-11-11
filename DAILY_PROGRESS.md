@@ -1,3 +1,61 @@
+# Daily Progress Report - November 11, 2026
+
+## 📉 CHECKPOINT 94: AN ESCALATED-AFTER-ATTEMPTING TASK'S METRICS AND STAFFING CAPACITY WERE COMPUTED, RECORDED, AND THEN DROPPED
+
+**Session opened on a detached `HEAD`, two commits ahead of the local `main` ref** - the same stale-cached-ref shape checkpoints 53-93 have each hit. A real `git fetch origin main` showed `origin/main` already at `7312c2c`, matching `HEAD` exactly: checkpoint 93 was already pushed, and the local `main` ref was purely this container's unrefreshed snapshot from clone time. Fast-forwarded (`git checkout main && git merge --ff-only origin/main`); no push needed for the reconciliation. Ran the full 76-file suite to confirm checkpoint 93 is intact before starting new work - all green.
+
+### 🐛 Proven live before touching anything
+
+Checkpoint 93's own Next Steps named one lead (`rank_candidate()`'s `workload_factor` axis never factoring in weekly hours) but flagged it itself as "not a correctness bug... a possible ranking-quality gap" - exactly the kind of debatable improvement CLAUDE.md says to leave alone rather than fold into a fix. A background research fork was sent looking for a genuine correctness defect elsewhere instead, and found one in `task_executor_v2.py`'s `_run_locked()`.
+
+That method has two different shapes of `"escalated"` return. The early ones (decision-engine escalation at line ~493, budget denial at line ~538) happen *before* any work is attempted - no LLM call, no `record_performance()`, nothing to show, and `main_v2.py`'s own comment above its `metrics`/`staffing_capacity` print blocks already says so explicitly. Those are correct and untouched by this fix.
+
+The `incomplete_reason` return (hit when the agent exhausts `AGENT_MAX_ITERATIONS`, or the LLM call raises) is different. By the time it executes, `self.agent_state.add_task()`, `self.agent_state.record_performance()`, and `self.analytics.record_task()` have *all* already run unconditionally (lines 760-774), and `capacity`/`over_capacity` (lines 465-466) and `staff_count` (line 787) were computed earlier in the same call. The attempt genuinely happened and was genuinely recorded. But this branch's return dict (lines 801-821, pre-fix) carried only `analysis`/`department`/`agent_id`/`status`/`approved`/`confidence`/`llm_provider`/`tokens_used`/`token_cost(...)`/`quality_score`/`used_tools`/`tool_calls(...)` - it never included `metrics`, `staffing_capacity`, or `staff_contributions`, even though the sibling "completed" return eleven lines below computes those exact three keys from the exact same already-in-scope values.
+
+Confirmed live, direct import, no mocking, isolated registry/budget files:
+
+```
+ExplodingLLM.generate_with_tools raises RuntimeError -> incomplete_reason path
+status: escalated
+has 'metrics' key in result: False
+has 'staffing_capacity' key in result: False
+has 'staff_contributions' key in result: False
+agent_state.metrics.tasks_completed recorded: 1   <- really recorded
+agent_state.metrics.avg_quality_score recorded: 2.0
+```
+
+`main_v2.py:247`/`main_v2.py:270` already have `if result.get('metrics'): ...` / `if result.get('staffing_capacity'): ...` print blocks that would render these for an escalated-after-attempting task too - they're dead code on this one path only because the keys never arrive, not because there is nothing real to print. Same shape as checkpoints 72/88/90 (a value computed and persisted, never surfaced to a human) - this was the one path those checkpoints' own fixes didn't reach, because none of them specifically exercised the exception/iteration-exhaustion branch.
+
+Candidates ruled out by the research fork, for the record: `web_server.py`'s `_task_summary()` dropping `confidence`/`staffing_capacity` from the list view (weaker case - already visible via detail-view click-through, and the summary/detail split is the function's own documented design, not an oversight); `performance.py`'s `get_quality_trend()` overlapping-window math (dampens the trend signal in a narrow band, but no constructed case flipped its direction vs. the true signal - "could be nicer," not provably wrong); the `workload_factor` ranking-quality note itself (both candidates it's about genuinely *can* take the task - a ranking-quality question, not a correctness one).
+
+### 🔧 Fix
+
+**`task_executor_v2.py` `_run_locked()`**'s `incomplete_reason` return now includes `metrics`, `staffing_capacity`, and `staff_contributions`, built from the exact same expressions (`self.agent_state.metrics.*`, `capacity.*`/`over_capacity`, `staff_count`) the completed-path return a few lines below already uses. No other file changed: `main_v2.py`'s print blocks and `task_executor_v2.py`'s own `execute()` (which spreads `**result` before layering its own derived keys, per checkpoint ~45's comment there) already handle these keys arriving or not - this was purely a producer-side gap.
+
+### 🧪 Validation
+
+New file `tests/test_incomplete_result_metrics_visibility.py`, four tests against the real `DepartmentHeadAgent`/`AgentRegistry`/`CapacityManager` (no mocking):
+
+1. An exploding provider (`generate_with_tools` raises): `metrics`/`staffing_capacity`/`staff_contributions` are all present and match the registry's/capacity manager's real post-call state exactly (not just "present" - each value is cross-checked against the live `AgentState`/`CapacitySnapshot`).
+2. A provider that always requests tools (iteration-exhaustion): same cross-checks, pinning both of `incomplete_reason`'s two triggers are covered, not just the exception one.
+3. The early escalation shape (no budget at all, decision never reaches execution): `metrics`/`staffing_capacity`/`staff_contributions` are asserted *absent* - pinning the fix didn't leak these fields onto a task that was genuinely never attempted, which would misrepresent a before-the-fact budget denial as having consumed real agent time.
+4. `main_v2.py` already gates its print blocks on `result.get('metrics')`/`result.get('staffing_capacity')` - pinning the fix needed no new consumer code, only the missing producer-side keys.
+
+Ran the new file individually (all four green) and twice back-to-back for idempotency (byte-identical output both runs, including the exact `metrics`/`staffing_capacity` dict contents). Ran the full `tests/test_*.py` suite (77 files, including this new one) - zero failures. `python3 -m py_compile` clean on `task_executor_v2.py`, the new test file, and every other top-level module; `import main_v2, agent_decisions, agent_state, task_executor_v2, workflows, web_server, budgets, departments, performance, core, strategy, tools, llm_provider, visualization` clean. Re-ran a real CLI `submit`/`process`/`list` cycle in an isolated temp directory with the real `config.json` to confirm the overwhelmingly common (completed, non-escalated) path is byte-for-byte unchanged. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json`/`data/test_wagmv_*.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+A task that exhausted its iteration budget or hit an LLM-call exception now reports the same `metrics`/`staffing_capacity`/`staff_contributions` a completed task does, on top of the fields it already reported (`llm_provider`, `tokens_used`, `quality_score`, etc.) - the CLI and dashboard will now print an agent-metrics line and a staffing-capacity line for these escalations where they previously printed nothing for either. No change to the early escalations (decision-engine escalation, budget denial) - those correctly still carry none of these fields, since no attempt was made. No change to any completed task's result shape at all.
+
+### 📝 Next Steps
+
+- All policy-question items from checkpoints 42-93's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()`'s zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the escalated-branch task `"metrics"` key gap - now closed by this checkpoint for the incomplete_reason shape specifically, see below, `/api/tasks`'s `_task_summary()` not surfacing `confidence`/`staffing_capacity`, checkpoint 91's `bug_fix` template's unapprovable `tech_lead` `approval_role`, and `DecisionResult.decision`'s dead `"reject"` branch noted in checkpoint 92) - unchanged, still open.
+- Checkpoint 93's `rank_candidate()`/`workload_factor` ranking-quality note (`agent_decisions.py:178` - ranks purely by task-slot workload, no equivalent hours-based factor now that `available_agents()` has one) remains open; still a ranking-quality question, not a correctness bug, so left for an owner call rather than folded into this session's fix.
+- New, noticed but not chased this session: `web_server.py`'s `_task_summary()` omits `confidence`/`staffing_capacity` from the `/api/tasks` list view (both are present in the full per-task detail). Ruled out as this session's own fix because the summary/detail split appears to be the function's deliberate design, not an oversight - but worth an owner call on whether the list view should surface either field directly, especially `staffing_capacity.over_capacity` as an at-a-glance flag.
+- No new non-policy, self-contained gap beyond the `_task_summary()` note above was spotted and deliberately left this session. The next session should look for a new non-policy gap the way checkpoints 45-94 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 10, 2026
 
 ## 🧮 CHECKPOINT 93: `find_best_delegate()` COULD HAND A TASK TO AN AGENT THE SYSTEM'S OWN CAPACITY CHECK SAYS CANNOT TAKE IT

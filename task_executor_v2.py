@@ -818,6 +818,37 @@ class DepartmentHeadAgent(BaseAgent):
                 "tool_calls": tool_calls_made,
                 "tool_calls_failed": tool_calls_failed,
                 "tool_call_errors": tool_call_errors,
+                # record_performance()/analytics.record_task() above ran
+                # unconditionally, before this incomplete_reason check -
+                # same for capacity/over_capacity (top of this method) and
+                # staff_count (just above). All three were already computed
+                # and persisted to agent_states.json/performance_metrics.json
+                # on this path; only this return dict forgot to carry them
+                # out, leaving main_v2.py's own
+                # `if result.get('metrics')`/`if result.get('staffing_capacity')`
+                # print blocks dead here even though the data they'd show is
+                # real. Same shape as checkpoints 72/88/90 (computed,
+                # recorded, never surfaced) - confirmed live: an exploding
+                # provider left tasks_completed/avg_quality_score genuinely
+                # updated in the registry while this dict carried none of it.
+                "metrics": {
+                    "avg_quality": self.agent_state.metrics.avg_quality_score,
+                    "tasks_completed": self.agent_state.metrics.tasks_completed,
+                    "error_rate": self.agent_state.metrics.error_rate,
+                    "avg_cost_per_task": self.agent_state.metrics.avg_cost_per_task,
+                    "avg_completion_time_hours": self.agent_state.metrics.avg_completion_time_hours
+                },
+                "staffing_capacity": {
+                    "utilization_pct": capacity.utilization_pct(),
+                    "agent_count": capacity.agent_count,
+                    "slack": capacity.slack(),
+                    "over_capacity": over_capacity,
+                    "as_of": capacity.timestamp,
+                },
+                "staff_contributions": [
+                    {"role": f"{self.department.title()} Staff {i + 1}", "contribution": f"Task component {i + 1}"}
+                    for i in range(staff_count)
+                ]
             }
 
         return {
