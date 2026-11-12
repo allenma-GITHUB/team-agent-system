@@ -1,3 +1,62 @@
+# Daily Progress Report - November 12, 2026
+
+## 🏆 CHECKPOINT 95: `get_top_performers("cost"/"success", ...)` RANKED AGENTS CORRECTLY AND THEN REPORTED A FABRICATED 0 FOR EVERY ONE OF THEM
+
+**Session opened on a detached `HEAD`, three commits ahead of the local `main` ref** - the same stale-cached-ref shape checkpoints 53-94 have each hit. A real `git fetch origin main` showed `origin/main` already at `c74b0ce`, matching `HEAD` exactly: checkpoint 94 was already pushed, and the local `main` ref was purely this container's unrefreshed snapshot from clone time. Fast-forwarded (`git checkout main && git merge --ff-only origin/main`); no push needed for the reconciliation. Ran the full 77-file suite to confirm checkpoint 94 is intact before starting new work - all green; restored the two seed files and removed the two generated data files the run dirtied.
+
+### 🐛 Proven live before touching anything
+
+A background research fork was sent looking for a fresh, non-policy correctness defect, with checkpoint 94's two ruled-out candidates (the `workload_factor` ranking-quality note, `_task_summary()`'s list/detail split) explicitly excluded so they wouldn't be re-proposed. It surveyed every top-level module against the git log and converged on `performance.py`'s `PerformanceAnalytics.get_top_performers()` - a public method with four documented metric branches (`"quality"`, `"speed"`, `"cost"`, `"success"`), but only ever called with `"quality"` anywhere in this codebase (`web_server.py:136`, `generate_report()`'s own internal call) and never once tested with the other three.
+
+Before this fix, the value each entry reported was computed as:
+
+```python
+return [(a.name, getattr(a, f"avg_{metric}", 0) if metric != "speed" else a.avg_duration_hours)
+        for a in ranked[:limit]]
+```
+
+`"quality"` happens to match a real attribute (`avg_quality`). `"speed"` was hand-cased to `avg_duration_hours` because `AgentMetrics` has no `avg_speed`. But `"cost"` and `"success"` were never hand-cased, and `AgentMetrics` has no `avg_cost` or `avg_success` either - the real fields are `cost_per_task` and `success_rate`. `getattr()`'s `default=0` silently covered the miss. The *ranking* itself was correct the whole time (`sorted(agents, key=lambda a: a.cost_per_task)` / `a.success_rate` - both read the real field directly), so this wasn't a sort bug; it was a reporting bug sitting right next to a correct sort, which is exactly the shape that hides from casual testing.
+
+Confirmed live, direct import, no mocking, isolated `data_file`, three agents with deliberately distinct real values:
+
+```
+Real cost_per_task: {'Cheap Agent': 10.0, 'Mid Agent': 50.0, 'Expensive Agent': 200.0}
+get_top_performers("cost", 3)    -> [('Cheap Agent', 0), ('Mid Agent', 0), ('Expensive Agent', 0)]
+get_top_performers("success", 3) -> [('Cheap Agent', 0), ('Mid Agent', 0), ('Expensive Agent', 0)]
+```
+
+Correct names, correct order, every value a lie: a caller reading `get_top_performers("cost", ...)` would see three agents tied at $0 - indistinguishable from "no cost data exists" - when real, varying cost data was sitting on each `AgentMetrics` object the whole time. Same shape as checkpoint 88's `avg_cost_per_task`/`avg_completion_time_hours` gap and the `bottleneck_department` fix inside checkpoint 93's own session: a real value computed and already reachable, dropped one hop before a human would see it - just this time by a wrong attribute-name guess instead of a missing assignment.
+
+Candidates ruled out by the research fork, for the record: nothing else in `agent_state.py`, `agent_decisions.py`, `agent_loop.py`, `budgets.py`, `core.py`, `main_v2.py`, `strategy.py`, `task_executor_v2.py`, `tools.py`, `visualization.py`, `web_server.py`, `workflows.py`, `llm_provider.py`, or `static/dashboard.html` produced a provable correctness gap this pass - `departments.py`'s `get_staff_range()`/`staff_range` band (checkpoint 91) and `performance.py`'s own `get_quality_trend()`/`bottleneck_department` (checkpoints 94/93) are already wired through; `get_staff_count()` and `get_staff_range()` can disagree in principle (a department's flat `staff` number need not sit inside its head's declared band) but no config entry in this repo actually does, so there was no live case to show a wrong number - a config-authoring risk to flag, not a demonstrated bug.
+
+### 🔧 Fix
+
+**`performance.py`**: `get_top_performers()` now looks up a fixed `_METRIC_ATTR` class-level dict (`{"quality": "avg_quality", "speed": "avg_duration_hours", "cost": "cost_per_task", "success": "success_rate"}`) instead of guessing `f"avg_{metric}"` and silently defaulting to `0` on a miss. The four `if/elif` ranking branches (and their sort direction - ascending for cost/speed, descending for quality/success) are untouched; only the value each tuple reports changed. An unrecognized `metric` string still returns `[]` exactly as before (that branch returns early and never reaches the lookup).
+
+### 🧪 Validation
+
+New file `tests/test_top_performers_metric_value.py`, four tests against the real `PerformanceAnalytics` (no mocking, isolated `data/test_top_performers_metrics.json`):
+
+1. `get_top_performers("cost", 3)` on three agents with real, distinct `cost_per_task` (10.0/50.0/200.0) returns them in the correct ascending order with each one's *real* value - not just "nonzero," cross-checked field-by-field against the live `AgentMetrics` objects.
+2. `get_top_performers("success", 3)` likewise for `success_rate`, including asserting the one agent with a real failure reports strictly less success than the two agents with none - pinning that a real difference actually shows up, not just three equal non-zero numbers.
+3. `"quality"` and `"speed"` - the two metrics that already worked - are pinned unchanged against the live attributes, so the fix provably didn't alter the paths that were already correct.
+4. An unrecognized metric name still returns `[]`, pinning that switching the lookup from an f-string guess to a dict didn't turn a bad metric name into a `KeyError`.
+
+Ran the new file individually (all four green) and twice back-to-back for idempotency (byte-identical stdout both runs). Ran the full `tests/test_*.py` suite (78 files including this new one) - zero failures. `python3 -m py_compile` clean on every top-level `.py` file and the new test file; `import main_v2, agent_decisions, agent_state, task_executor_v2, workflows, web_server, budgets, departments, performance, core, strategy, tools, llm_provider, visualization` clean. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json`/`data/test_top_performers_metrics.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+`get_top_performers("cost", ...)` and `get_top_performers("success", ...)` now report each agent's real `cost_per_task`/`success_rate` instead of a fabricated `0` for every entry. No existing caller in this codebase passes either metric today (both are dead branches in practice, reachable only by a future web route, CLI flag, or test that asks for them) - so this session changes no currently-observable output, but fixes the value any such future caller would get. `get_top_performers("quality", ...)` and `get_top_performers("speed", ...)` - the two paths every real caller uses today - are provably unchanged.
+
+### 📝 Next Steps
+
+- All standing policy-question items from checkpoints 42-94's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()`'s zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, checkpoint 91's `bug_fix` template's unapprovable `tech_lead` `approval_role`, `DecisionResult.decision`'s dead `"reject"` branch, and `web_server.py`'s `_task_summary()` list/detail split) - unchanged, still open.
+- Checkpoint 93's `rank_candidate()`/`workload_factor` ranking-quality note remains open; still a ranking-quality question, not a correctness bug.
+- New, noticed but not chased this session: `departments.py`'s `get_staff_count()` (reads `config.json`'s flat `departments.<dept>.staff`) and `get_staff_range()` (reads `config.json`'s `agents.<dept>_head.staff_range`) are two independent numbers with no validation tying them together - a department whose `staff` sits outside its own head's declared `staff_range` band would silently use the out-of-band flat number wherever `get_staff_count()` is read, with nothing to flag the mismatch. No config entry in this repo currently disagrees, so there's no live case to point to yet - worth either a startup-time consistency check or an owner call on which number should win if they ever diverge.
+- No new non-policy, self-contained gap beyond the `get_staff_count()`/`get_staff_range()` note above was spotted and deliberately left this session. The next session should look for a new non-policy gap the way checkpoints 45-95 each did, wire a consumer to `get_top_performers("cost"/"success", ...)` if the owner wants one (dashboard panel or CLI flag), or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 11, 2026
 
 ## 📉 CHECKPOINT 94: AN ESCALATED-AFTER-ATTEMPTING TASK'S METRICS AND STAFFING CAPACITY WERE COMPUTED, RECORDED, AND THEN DROPPED

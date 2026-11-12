@@ -223,6 +223,26 @@ class PerformanceAnalytics:
 
         return self.system_metrics
 
+    # Maps each supported `metric` to the AgentMetrics attribute it both
+    # ranks by and reports. get_top_performers() used to derive this name
+    # as f"avg_{metric}" and fall back to 0 via getattr()'s default - which
+    # happened to match for "quality" (avg_quality) and was hand-cased for
+    # "speed" (avg_duration_hours, not avg_speed), but silently fell
+    # through to that 0 default for "cost" and "success": AgentMetrics has
+    # no avg_cost or avg_success field, only cost_per_task/success_rate.
+    # Confirmed live - three agents at real cost_per_task 10.0/50.0/200.0
+    # ranked in the correct order but every reported value was 0 - a
+    # fabricated tie that looks like "no cost data", not the fix of a
+    # ranking that was already right. Both branches are unexercised by any
+    # existing caller (web_server.py and this module's own generate_report()
+    # only ever request "quality") or test, which is why this survived.
+    _METRIC_ATTR = {
+        "quality": "avg_quality",
+        "speed": "avg_duration_hours",
+        "cost": "cost_per_task",
+        "success": "success_rate",
+    }
+
     def get_top_performers(self, metric: str = "quality", limit: int = 5) -> List[Tuple[str, float]]:
         """Get top performing agents by metric."""
         agents = list(self.agent_metrics.values())
@@ -238,8 +258,8 @@ class PerformanceAnalytics:
         else:
             return []
 
-        return [(a.name, getattr(a, f"avg_{metric}", 0) if metric != "speed" else a.avg_duration_hours)
-                for a in ranked[:limit]]
+        attr = self._METRIC_ATTR[metric]
+        return [(a.name, getattr(a, attr)) for a in ranked[:limit]]
 
     def get_recommendations(self, budgets=None, rollover_forfeiture_threshold: float = 0.5) -> List[Dict[str, str]]:
         """Get AI-powered recommendations for optimization."""
