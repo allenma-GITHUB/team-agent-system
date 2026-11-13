@@ -285,16 +285,25 @@ def show_status():
 
     tasks = json.loads(TASKS_FILE.read_text())
 
+    # A task's status is one of four values (see _task_status_for_result()):
+    # "queued", "completed", "escalated", "failed". This used to count only
+    # the first two, so an escalated or failed task vanished from the total -
+    # web_server.py's build_status_payload() ("Mirrors main_v2.show_status()")
+    # already counted all four; this mirrors it back.
     stats = {
         "total": len(tasks),
         "queued": len([t for t in tasks if t["status"] == "queued"]),
         "completed": len([t for t in tasks if t["status"] == "completed"]),
+        "escalated": len([t for t in tasks if t["status"] == "escalated"]),
+        "failed": len([t for t in tasks if t["status"] == "failed"]),
     }
 
     print(f"\n📊 System Status")
     print(f"{'Total Tasks':<20} {stats['total']}")
     print(f"{'Queued':<20} {stats['queued']}")
     print(f"{'Completed':<20} {stats['completed']}")
+    print(f"{'Escalated':<20} {stats['escalated']}")
+    print(f"{'Failed':<20} {stats['failed']}")
 
     llm = LLMProvider()
     print(f"\n🧠 LLM Provider: {llm.get_status()}")

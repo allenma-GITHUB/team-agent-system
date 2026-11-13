@@ -1,3 +1,66 @@
+# Daily Progress Report - November 13, 2026
+
+## 📊 CHECKPOINT 96: `show_status()` DROPPED ESCALATED AND FAILED TASKS FROM ITS OWN COUNT, LEAVING THE TOTAL UNRECONCILED
+
+Session opened clean on `main`, up to date with `origin/main` at `fcb9c8c` (checkpoint 95) - no stale-ref reconciliation needed this time. Ran the full 78-file suite to confirm checkpoint 95 is intact before starting new work - all green; restored the two seed files and removed the two generated data files the run dirtied.
+
+### 🐛 Proven live before touching anything
+
+A background research fork was sent looking for a fresh, non-policy correctness defect, with checkpoint 95's own list of ruled-out/standing-policy items excluded so they wouldn't be re-proposed. It surveyed every top-level module and converged on `main_v2.py`'s `show_status()` (lines 282-297 before this fix).
+
+A task's `status` field (`_task_status_for_result()`, main_v2.py:91-103) takes one of four values: `"queued"`, `"completed"`, `"escalated"`, `"failed"`. `show_status()`'s `stats` dict counted only two of them:
+
+```python
+stats = {
+    "total": len(tasks),
+    "queued": len([t for t in tasks if t["status"] == "queued"]),
+    "completed": len([t for t in tasks if t["status"] == "completed"]),
+}
+```
+
+`web_server.py`'s `build_status_payload()` - whose own docstring says it "Mirrors `main_v2.show_status()`" - already computed all four keys (plus `total`) from the exact same task list, proving the right numbers and the right shape already existed one file away; `show_status()` simply never asked for them.
+
+Confirmed live, direct import, no mocking, isolated tempdir with the real `config.json`: drained `engineering`'s budget to $0, submitted two tasks to it, ran `process_tasks()` so both were escalated through the real budget-denial path (not injected):
+
+```
+REAL STATUSES ON DISK: ['escalated', 'escalated']
+----- show_status() output (before fix) -----
+Total Tasks          2
+Queued               0
+Completed            0
+```
+
+Two real escalations - this system's own budget-safety gate doing exactly what it's supposed to do - were completely invisible in the primary CLI status view: `2 = 0 + 0` with no third line and no indication anything happened to the other two tasks. A human running `status` saw a total that didn't reconcile with queued+completed and had no clue why. Same shape as this project's named "signature bug" (budget escalations hidden behind "completed"-equivalent reporting, checkpoints 27/28/34/36) and the repeated "computed in one place, dropped before reaching a human" pattern (checkpoints 72/88/90/94/95) - except here the correct computation was already sitting in the sibling function, so there was no ambiguity about what to copy.
+
+Candidates ruled out by the research fork, for the record: `agent_state.py`'s `available_agents(skill_required=...)` sort-key vocabulary mismatch (real but unreachable - the one production caller never passes `skill_required`, an already-documented, deliberately single-skill test/one-off path); `departments.py`'s `route_task()` `max(scores.values())` on a theoretically-empty `departments` dict (no config state in this repo produces that today - a config-authoring risk, not a demonstrated bug, same shape as checkpoint 95's own `get_staff_count()`/`get_staff_range()` note); nothing else in `budgets.py`, `workflows.py`, `performance.py`, `agent_decisions.py`, `tools.py`, `core.py`, `strategy.py`, or `visualization.py` produced a fresh, self-contained correctness gap this pass.
+
+### 🔧 Fix
+
+**`main_v2.py` `show_status()`**: `stats` now also counts `"escalated"` and `"failed"` (identical list-comprehension shape to the existing two keys), and prints an `Escalated` / `Failed` line for each - the exact same five keys and counting logic `build_status_payload()` already uses, so the two views can no longer silently drift on what a status means. `queued`/`completed`'s own counting, and every other section of `show_status()` (LLM provider, departments, budget/capacity, over-budget flag), are untouched.
+
+### 🧪 Validation
+
+New file `tests/test_status_escalated_failed_counts.py`, three tests against the real `main_v2`/`web_server` (no mocking):
+
+1. `show_status()` counts two tasks real-escalated through the live budget-denial path (not injected) - `Escalated` reads `2`, and `Total Tasks` reconciles exactly with `Queued + Completed + Escalated + Failed`.
+2. A `"failed"` task (injected directly into `tasks.json`, the same idiom several existing tests use, since the only *live* path to `"failed"` is a worker-thread crash) is counted correctly alongside a real completed one.
+3. A full four-status mix (`queued`, `completed`, `escalated`, `failed`) is run through both `main_v2.show_status()`'s printed output and `web_server.build_status_payload()`, and every one of the five counts is asserted equal between the two - pinning the actual invariant this fix restores: the sibling views can't drift apart on what a status means.
+
+Ran the new file individually (all three green) and twice back-to-back for idempotency (identical computed counts both runs; only non-deterministic event-trace timestamps differed, as expected). Ran the full `tests/test_*.py` suite (79 files including this new one) - zero failures. `python3 -m py_compile` clean on `main_v2.py`, `web_server.py`, the new test file, and every other top-level module; `import main_v2, agent_decisions, agent_state, task_executor_v2, workflows, web_server, budgets, departments, performance, core, strategy, tools, llm_provider, visualization` clean. Re-ran a real CLI `submit`/`process`/`status` cycle in an isolated temp directory with the real `config.json` to confirm the overwhelmingly common (nothing escalated, nothing failed) case prints `Escalated 0` / `Failed 0` and is otherwise byte-for-byte unchanged. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+`show_status()` now prints two additional lines, `Escalated` and `Failed`, with real counts - on top of the existing `Total Tasks`/`Queued`/`Completed` lines, which are computed exactly as before and unchanged in value. Any task queue with at least one escalated or failed task will now show that in the CLI's `status` command where it previously showed nothing; a queue with none of either (the common case today, since no caller currently drives tasks to those statuses in day-to-day use beyond the budget/capacity gates checkpoints 27/28/34/36 added) prints `Escalated 0` / `Failed 0` and is otherwise identical. No change to `/api/status`, `build_status_payload()`, or `static/dashboard.html` - those already had the correct counts; no change to `list`/`show`/task persistence.
+
+### 📝 Next Steps
+
+- All standing policy-question items from checkpoints 42-95's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()`'s zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, checkpoint 91's `bug_fix` template's unapprovable `tech_lead` `approval_role`, `DecisionResult.decision`'s dead `"reject"` branch, and `web_server.py`'s `_task_summary()` list/detail split) - unchanged, still open.
+- Checkpoint 93's `rank_candidate()`/`workload_factor` ranking-quality note, and checkpoint 95's `departments.py` `get_staff_count()`/`get_staff_range()` band-mismatch note, remain open; both still ranking-quality/config-authoring questions, not correctness bugs.
+- New, noticed but not chased this session: `agent_state.py`'s `AgentRegistry.available_agents(skill_required=...)` ranks candidates by `learned_preferences.get(skill_required, 0)`, but `skill_required` is a skill tag (e.g. `"architecture"`) while `learned_preferences` is keyed by `task_type` (e.g. `"bug_fix"`) - the affinity tiebreak is structurally a no-op whenever this parameter is actually passed. Not chased because the one production caller (`find_best_delegate()`) never passes `skill_required`, so there's no live caller to show a wrong real-world outcome - worth either retiring the parameter's affinity tiebreak or wiring a real skill-keyed preference store, as an owner call.
+- No new non-policy, self-contained gap beyond the `available_agents(skill_required=...)` note above was spotted and deliberately left this session. The next session should look for a new non-policy gap the way checkpoints 45-96 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 12, 2026
 
 ## 🏆 CHECKPOINT 95: `get_top_performers("cost"/"success", ...)` RANKED AGENTS CORRECTLY AND THEN REPORTED A FABRICATED 0 FOR EVERY ONE OF THEM
