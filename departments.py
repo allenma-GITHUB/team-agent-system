@@ -66,6 +66,36 @@ HIGH_URGENCY = 0.9
 DEFAULT_URGENCY = 0.5
 LOW_URGENCY = 0.2
 
+
+def _keyword_pattern(keywords: List[str]) -> "re.Pattern":
+    """Compile a \\b-bounded alternation, same approach as route_task()'s
+    inline re.search() and _SKILL_KEYWORD_PATTERN below.
+
+    estimate_hours()/estimate_complexity()/estimate_urgency() used to check
+    these tiers with plain `kw in desc_lower` substring containment, on the
+    documented claim that their keywords are "long enough that an accidental
+    substring hit is implausible" - false for real English words: "typo" is
+    a substring of "typography"/"typology", "migration" is a substring of
+    "immigration", "critical" is a substring of "uncritical". Found live
+    (checkpoint 97): "Update the typography ... marketing site" estimated
+    as a 0.5h/0.2-complexity typo fix, and "Review the new immigration
+    policy ..." estimated as a 16h/0.9-complexity platform migration -
+    neither task mentions a typo or a migration. Reusing the word-boundary
+    fix already applied to route_task()/infer_required_skills() (checkpoint
+    38) closes the same bug shape here.
+    """
+    return re.compile(
+        r"\b(" + "|".join(re.escape(k) for k in sorted(keywords, key=len, reverse=True)) + r")\b"
+    )
+
+
+_HIGH_EFFORT_PATTERN = _keyword_pattern(HIGH_EFFORT_KEYWORDS)
+_LOW_EFFORT_PATTERN = _keyword_pattern(LOW_EFFORT_KEYWORDS)
+_HIGH_COMPLEXITY_PATTERN = _keyword_pattern(HIGH_COMPLEXITY_KEYWORDS)
+_LOW_COMPLEXITY_PATTERN = _keyword_pattern(LOW_COMPLEXITY_KEYWORDS)
+_HIGH_URGENCY_PATTERN = _keyword_pattern(HIGH_URGENCY_KEYWORDS)
+_LOW_URGENCY_PATTERN = _keyword_pattern(LOW_URGENCY_KEYWORDS)
+
 # Seniority a task's approver needs, by complexity tier. Compared against the
 # deciding agent's own skill_level in requires_approval(), so the same task
 # can need sign-off from a skill-3 support head and not from a skill-4
@@ -122,14 +152,14 @@ SKILL_KEYWORDS = {
     "cost": "cost_estimation", "expense": "cost_estimation", "spend": "cost_estimation",
 }
 
-# Matched with \b word boundaries, not plain substring "in" like the
-# estimate_hours()/estimate_complexity() keyword lists above get away with -
-# their keywords ("migration", "typo", ...) are long enough that an
-# accidental substring hit is implausible. "ui" is not: naive substring
+# Matched with \b word boundaries, not plain substring "in": naive substring
 # matching flagged "Build a thing" as requiring ui_design, because "build"
 # contains "ui" - found live via the test suite (test_delegation.py's
 # "Build a thing" silently stopped delegating, because that phantom
 # requirement got threaded into find_best_delegate()'s candidate filter).
+# (The estimate_hours()/estimate_complexity()/estimate_urgency() keyword
+# tiers above had the same "long enough to be safe" claim and the same bug -
+# see _keyword_pattern()'s docstring and checkpoint 97.)
 _SKILL_KEYWORD_PATTERN = re.compile(
     r"\b(" + "|".join(re.escape(k) for k in sorted(SKILL_KEYWORDS, key=len, reverse=True)) + r")\b"
 )
@@ -202,9 +232,9 @@ class DepartmentManager:
         """
         desc_lower = description.lower()
 
-        if any(kw in desc_lower for kw in HIGH_EFFORT_KEYWORDS):
+        if _HIGH_EFFORT_PATTERN.search(desc_lower):
             return HIGH_EFFORT_HOURS
-        if any(kw in desc_lower for kw in LOW_EFFORT_KEYWORDS):
+        if _LOW_EFFORT_PATTERN.search(desc_lower):
             return LOW_EFFORT_HOURS
         return DEFAULT_EFFORT_HOURS
 
@@ -225,9 +255,9 @@ class DepartmentManager:
         """
         desc_lower = description.lower()
 
-        if any(kw in desc_lower for kw in HIGH_COMPLEXITY_KEYWORDS):
+        if _HIGH_COMPLEXITY_PATTERN.search(desc_lower):
             return HIGH_COMPLEXITY
-        if any(kw in desc_lower for kw in LOW_COMPLEXITY_KEYWORDS):
+        if _LOW_COMPLEXITY_PATTERN.search(desc_lower):
             return LOW_COMPLEXITY
         return DEFAULT_COMPLEXITY
 
@@ -245,9 +275,9 @@ class DepartmentManager:
         """
         desc_lower = description.lower()
 
-        if any(kw in desc_lower for kw in HIGH_URGENCY_KEYWORDS):
+        if _HIGH_URGENCY_PATTERN.search(desc_lower):
             return HIGH_URGENCY
-        if any(kw in desc_lower for kw in LOW_URGENCY_KEYWORDS):
+        if _LOW_URGENCY_PATTERN.search(desc_lower):
             return LOW_URGENCY
         return DEFAULT_URGENCY
 

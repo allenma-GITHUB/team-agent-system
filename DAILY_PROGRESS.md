@@ -1,3 +1,62 @@
+# Daily Progress Report - November 14, 2026
+
+## 🐛 CHECKPOINT 97: `estimate_hours()`/`estimate_complexity()`/`estimate_urgency()` MATCHED KEYWORDS AS SUBSTRINGS, FLAGGING "TYPOGRAPHY" AS A TYPO FIX AND "IMMIGRATION" AS A PLATFORM MIGRATION
+
+Session opened with `HEAD` detached on checkpoint 96's commit (`1a20ec8`), one commit ahead of the locally-cached `main` ref - the same stale-ref shape checkpoints 53-95 have each hit. A real `git fetch origin main` showed `origin/main` already at `1a20ec8`, matching `HEAD` exactly: checkpoint 96 was already pushed, and the local `main` ref was purely this container's unrefreshed snapshot. Fast-forwarded (`git checkout main && git merge --ff-only 1a20ec8`); no push was needed for the reconciliation itself. Ran the full 80-file suite to confirm checkpoint 96 is intact before starting new work - all green; restored the two seed files and removed the two generated data files the run dirtied.
+
+### 🐛 Proven live before touching anything
+
+A background research fork surveyed every top-level module for a fresh, non-policy correctness defect, with all of checkpoints 42-96's ruled-out/standing-policy items (listed in checkpoint 96's Next Steps) explicitly excluded. It converged on `departments.py`'s `estimate_hours()`, `estimate_complexity()`, and `estimate_urgency()` (lines 194-252 before this fix).
+
+`route_task()` and `infer_required_skills()` were already fixed in checkpoint 38 to match their keyword vocabularies with `\b`-bounded regexes instead of plain substring containment, after "Build a thing" was found to falsely require `ui_design` because `"build"` contains `"ui"`. The three effort/complexity/urgency estimators next to them were left on the old substring check, on a documented claim (departments.py's block comment, now corrected) that their keywords are "long enough that an accidental substring hit is implausible." That claim is false for ordinary English:
+
+- `"typo"` (`LOW_EFFORT_KEYWORDS`/`LOW_COMPLEXITY_KEYWORDS`) is a substring of **"typography"** and **"typology"**.
+- `"migration"` (`HIGH_EFFORT_KEYWORDS`/`HIGH_COMPLEXITY_KEYWORDS`) is a substring of **"immigration"**.
+
+Confirmed live, direct import, no mocking, before the fix:
+
+```
+>>> DepartmentManager.estimate_hours("Update the typography and font sizes across the marketing site")
+0.5                                                                      # should be 1.0 (DEFAULT)
+>>> DepartmentManager.estimate_hours("Review the new immigration policy document for the support team")
+16.0                                                                     # should be 1.0 (DEFAULT)
+>>> DepartmentManager.estimate_complexity("Update the typography and font sizes across the marketing site")
+0.2                                                                      # should be 0.5 (DEFAULT)
+>>> DepartmentManager.estimate_complexity("Review the new immigration policy document for the support team")
+0.9                                                                      # should be 0.5 (DEFAULT)
+```
+
+Both functions run on every real task's live description on the production call path, not a side path: `estimate_hours()` feeds `main_v2.py:72`'s default `--hours`, which becomes the budget charge; `estimate_complexity()`/`estimate_urgency()` feed `task_executor_v2.py:170/182`'s `decide_on_task()`, which drives `cannot_execute_alone`, `requires_approval()`'s complexity trigger, and `should_execute()`'s urgency branch (checkpoints 24/39 wired these to read real, varying values). A design-system task about typography was silently billed and measured as a trivial 0.5h typo fix; a support/policy-review task about immigration was silently treated as a 16-hour, approval-gated platform migration - neither task mentions a typo or a migration. Same bug shape as checkpoint 38, in the three sibling functions checkpoint 38 didn't touch.
+
+Candidates ruled out by the research fork, for the record: `agent_state.py`'s `AgentRegistry.available_agents(skill_required=...)` affinity no-op (already flagged last session as an owner policy call, excluded per instructions); negation handling for the urgency tiers (e.g. `"not urgent"` still matches `HIGH_URGENCY_KEYWORDS`'s `"urgent"` even after this fix, since `"urgent"` is a real standalone word inside that phrase) - a different, harder semantic problem, explicitly out of scope for this substring-boundary fix and left as a Next Step below.
+
+### 🔧 Fix
+
+**`departments.py`**: added `_keyword_pattern()`, the same `\b`-bounded-alternation builder `_SKILL_KEYWORD_PATTERN` already uses, and six module-level compiled patterns (`_HIGH_EFFORT_PATTERN`, `_LOW_EFFORT_PATTERN`, `_HIGH_COMPLEXITY_PATTERN`, `_LOW_COMPLEXITY_PATTERN`, `_HIGH_URGENCY_PATTERN`, `_LOW_URGENCY_PATTERN`) - one per keyword tier. `estimate_hours()`/`estimate_complexity()`/`estimate_urgency()` now call `.search()` against the matching compiled pattern instead of `any(kw in desc_lower for kw in ...)`. Corrected the stale block comment that claimed substring matching was safe for these tiers. No change to the keyword lists themselves, the tier values, `approval_level_for_complexity()`, `route_task()`, or `infer_required_skills()`.
+
+### 🧪 Validation
+
+New file `tests/test_estimate_keyword_boundaries.py`, four tests against the real `departments`/`main_v2` (no mocking):
+
+1. The exact false positives proven above (`"typography"`, `"immigration"`, plus `"typology"`) no longer trip the wrong tier for `estimate_hours()`/`estimate_complexity()`.
+2. Real standalone keyword matches (`"typo"`, `"migration"`, `"refactor"`, `"rename"`, `"asap"`/`"outage"`, `"no rush"`/`"whenever"`) are preserved across all three functions - the fix closes false positives without losing true positives.
+3. Multi-word phrase keywords (`"copy change"`, `"no hurry"`) still match as whole phrases under the `\b`-bounded pattern.
+4. A live `main_v2.submit_task()` call (no explicit `--hours`, isolated tempdir with the real `config.json`) for a typography-description task persists `estimated_hours: 1.0`, not the old false-positive `0.5` - proving the fix through the actual CLI call path, not just the unit function.
+
+Ran the new file individually (all four green) and twice back-to-back for idempotency (byte-identical output both runs). Ran the full `tests/test_*.py` suite (80 files including this new one) - zero failures. `python3 -m py_compile` clean on every top-level module and the new test file; `import main_v2, agent_decisions, agent_state, task_executor_v2, workflows, web_server, budgets, departments, performance, core, strategy, tools, llm_provider, visualization` clean. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+Task descriptions that merely *contain* a tier keyword as a substring of a longer, unrelated word (`"typography"`, `"typology"`, `"immigration"`, and any other English word that happens to contain `"typo"`, `"migration"`, `"redesign"`, `"overhaul"`, `"rewrite"`, `"rearchitect"`, `"platform"`, `"architecture"`, `"security"`, `"compliance"`, `"scale"`, `"refactor"`, `"integration"`, `"small"`, `"minor"`, `"tweak"`, `"trivial"`, `"rename"`, `"urgent"`, `"asap"`, `"emergency"`, `"critical"`, `"immediately"`, `"outage"`, `"blocking"`, `"hotfix"`, `"deadline"`, `"whenever"`, `"eventually"`) now get the `DEFAULT` hours/complexity/urgency instead of the falsely-triggered tier. A task whose description contains the keyword as a real standalone word, or one of the listed multi-word phrases, is completely unaffected - same tier, same value, as before. No change to `route_task()`, `infer_required_skills()`, `approval_level_for_complexity()`, or anything downstream of a correctly-estimated value.
+
+### 📝 Next Steps
+
+- All standing policy-question items from checkpoints 42-96's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()` zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the `bug_fix` template's unapprovable `tech_lead` `approval_role`, `DecisionResult.decision`'s dead `"reject"` branch, `web_server.py`'s `_task_summary()` list/detail split, `rank_candidate()`/`workload_factor` ranking-quality note, `departments.py`'s `get_staff_count()`/`get_staff_range()` band-mismatch note, and `agent_state.py`'s `available_agents(skill_required=...)` key-mismatch) - unchanged, still open.
+- New, noticed but not chased this session: the urgency tiers have no negation handling - `"not urgent"`, `"non-critical"`, `"isn't blocking"` etc. still match `HIGH_URGENCY_KEYWORDS`'s real standalone words (`"urgent"`, `"critical"`, `"blocking"`) even after this fix, because the words genuinely are present, just negated. This is a different, harder problem (semantic negation, not substring boundaries) - worth a real NLP-lite negation scan as a future owner-prioritized increment, not a one-line fix like this session's.
+- No new non-policy, self-contained gap beyond the negation note above was spotted and deliberately left this session. The next session should look for a new non-policy gap the way checkpoints 45-97 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 13, 2026
 
 ## 📊 CHECKPOINT 96: `show_status()` DROPPED ESCALATED AND FAILED TASKS FROM ITS OWN COUNT, LEAVING THE TOTAL UNRECONCILED
