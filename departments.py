@@ -96,6 +96,62 @@ _LOW_COMPLEXITY_PATTERN = _keyword_pattern(LOW_COMPLEXITY_KEYWORDS)
 _HIGH_URGENCY_PATTERN = _keyword_pattern(HIGH_URGENCY_KEYWORDS)
 _LOW_URGENCY_PATTERN = _keyword_pattern(LOW_URGENCY_KEYWORDS)
 
+# Literal negation cues checked by _is_negated() below (checkpoint 98).
+# Checkpoint 97's \b-boundary fix closed the "keyword as substring of a
+# longer word" gap but left every tier blind to negation: "urgent", "critical",
+# "blocking", and "migration" are real standalone words in "not urgent",
+# "non-critical", "isn't blocking", and "no platform migration needed" too,
+# so they still tripped HIGH_URGENCY/HIGH_EFFORT after that fix. Confirmed
+# live before this change: estimate_urgency("This is not urgent, take your
+# time") returned 0.9 (HIGH), not the LOW_URGENCY_KEYWORDS phrase "not
+# urgent" already sitting right there in the tier list above, unreachable
+# because HIGH's bare "urgent" match ran first.
+#
+# Deliberately narrow scope, same spirit as _keyword_pattern()'s own
+# boundary fix: only literal, local negation - a cue word within the same
+# clause and within _NEGATION_WINDOW_WORDS words immediately before the
+# matched keyword. Double negation ("not un-urgent"), sarcasm, and negation
+# that spans a clause the cue isn't in ("Not sure, but this migration is
+# critical" - "not" must not suppress "migration") are explicitly out of
+# scope and left as a named gap below, not silently mishandled.
+_NEGATION_WORDS = {
+    "not", "no", "non", "never", "without", "lacking", "lacks", "lack",
+    "isn't", "isnt", "aren't", "arent", "wasn't", "wasnt", "weren't", "werent",
+    "doesn't", "doesnt", "don't", "dont", "didn't", "didnt",
+    "won't", "wont", "wouldn't", "wouldnt",
+    "can't", "cant", "cannot", "couldn't", "couldnt",
+    "shouldn't", "shouldnt",
+}
+_NEGATION_WINDOW_WORDS = 4
+_CLAUSE_BOUNDARY_CHARS = ".,;:!?"
+
+
+def _is_negated(desc_lower: str, match_start: int) -> bool:
+    """True if a negation cue sits within the same clause and within the
+    last _NEGATION_WINDOW_WORDS words directly before a tier keyword match.
+
+    Clause-bounded so negation in an earlier clause doesn't leak into this
+    one (e.g. "Not sure, but this migration is critical" - the comma stops
+    "not" from suppressing "migration"). Word-windowed, not just
+    adjacent, so "not a major overhaul" and "no platform migration needed"
+    are caught, not only "not overhaul"/"no migration".
+    """
+    preceding = desc_lower[:match_start]
+    boundary = max((preceding.rfind(c) for c in _CLAUSE_BOUNDARY_CHARS), default=-1)
+    clause = preceding[boundary + 1:]
+    tokens = re.findall(r"[a-z']+", clause)
+    return any(t in _NEGATION_WORDS for t in tokens[-_NEGATION_WINDOW_WORDS:])
+
+
+def _matches_non_negated(pattern: "re.Pattern", desc_lower: str) -> bool:
+    """True if `pattern` has at least one match in desc_lower that isn't
+    negated - i.e. a real, un-negated hit for that tier, not just any hit.
+    """
+    return any(
+        not _is_negated(desc_lower, match.start())
+        for match in pattern.finditer(desc_lower)
+    )
+
 # Seniority a task's approver needs, by complexity tier. Compared against the
 # deciding agent's own skill_level in requires_approval(), so the same task
 # can need sign-off from a skill-3 support head and not from a skill-4
@@ -232,9 +288,9 @@ class DepartmentManager:
         """
         desc_lower = description.lower()
 
-        if _HIGH_EFFORT_PATTERN.search(desc_lower):
+        if _matches_non_negated(_HIGH_EFFORT_PATTERN, desc_lower):
             return HIGH_EFFORT_HOURS
-        if _LOW_EFFORT_PATTERN.search(desc_lower):
+        if _matches_non_negated(_LOW_EFFORT_PATTERN, desc_lower):
             return LOW_EFFORT_HOURS
         return DEFAULT_EFFORT_HOURS
 
@@ -255,9 +311,9 @@ class DepartmentManager:
         """
         desc_lower = description.lower()
 
-        if _HIGH_COMPLEXITY_PATTERN.search(desc_lower):
+        if _matches_non_negated(_HIGH_COMPLEXITY_PATTERN, desc_lower):
             return HIGH_COMPLEXITY
-        if _LOW_COMPLEXITY_PATTERN.search(desc_lower):
+        if _matches_non_negated(_LOW_COMPLEXITY_PATTERN, desc_lower):
             return LOW_COMPLEXITY
         return DEFAULT_COMPLEXITY
 
@@ -275,9 +331,9 @@ class DepartmentManager:
         """
         desc_lower = description.lower()
 
-        if _HIGH_URGENCY_PATTERN.search(desc_lower):
+        if _matches_non_negated(_HIGH_URGENCY_PATTERN, desc_lower):
             return HIGH_URGENCY
-        if _LOW_URGENCY_PATTERN.search(desc_lower):
+        if _matches_non_negated(_LOW_URGENCY_PATTERN, desc_lower):
             return LOW_URGENCY
         return DEFAULT_URGENCY
 

@@ -1,3 +1,60 @@
+# Daily Progress Report - November 15, 2026
+
+## 🐛 CHECKPOINT 98: `estimate_hours()`/`estimate_complexity()`/`estimate_urgency()` HAD NO NEGATION HANDLING - "NOT URGENT" STILL SCORED AS URGENT
+
+Session opened with the local `main` ref behind `origin/main`'s detached-work state again (the stale-ref shape checkpoints 53-97 have each hit, most recently described in checkpoint 97's own opening): `HEAD` was detached two commits ahead of the cached `main` branch, on checkpoint 97's commit (`632bd79`). A real `git fetch origin main` showed `origin/main` already at `632bd79` too - checkpoints 96 and 97 were already pushed; the local `main` ref was purely this container's unrefreshed snapshot, same reconciliation as every prior session. Fast-forwarded (`git checkout main && git merge --ff-only 632bd79`); push was a no-op, confirming `origin/main` already matched. Ran the full 80-file suite to confirm checkpoints 96/97 are intact before starting new work - all green; restored the two seed files and removed the two generated data files the run dirtied.
+
+### 🐛 Proven live before touching anything
+
+A background research fork surveyed the codebase for a fresh, non-policy correctness defect, starting from checkpoint 97's own flagged-but-deferred candidate: checkpoint 97 fixed `estimate_hours()`/`estimate_complexity()`/`estimate_urgency()`'s substring-containment bug (`"typo"` inside `"typography"`) with `\b`-bounded regex patterns, but explicitly noted in its Next Steps that the tiers still have "no negation handling - `'not urgent'`, `'non-critical'`, `'isn't blocking'` etc. still match `HIGH_URGENCY_KEYWORDS`'s real standalone words... because the words genuinely are present, just negated," and deferred it as "a different, harder problem."
+
+Confirmed live, direct import, no mocking, before this fix:
+
+```
+>>> DepartmentManager.estimate_urgency("This is not urgent, take your time")
+0.9                                                           # HIGH - the task says the opposite
+>>> DepartmentManager.estimate_urgency("This is a non-critical fix, no rush")
+0.9                                                           # HIGH
+>>> DepartmentManager.estimate_urgency("This isn't blocking anything, whenever is fine")
+0.9                                                           # HIGH
+>>> DepartmentManager.estimate_complexity("This is not a major overhaul, just a small tweak")
+0.9                                                           # HIGH
+>>> DepartmentManager.estimate_hours("No platform migration needed here")
+16.0                                                           # HIGH_EFFORT_HOURS
+```
+
+Reaches the exact same real call path checkpoint 97 documented: `estimate_hours()` feeds `main_v2.py:72`'s default `--hours`, which becomes the budget charge; `estimate_complexity()`/`estimate_urgency()` feed `task_executor_v2.py`'s `decide_on_task()`, driving `cannot_execute_alone`, `requires_approval()`'s complexity trigger, and `should_execute()`'s urgency branch. A task explicitly described as *not* urgent, *non*-critical, needing *no* migration, and *not* a major overhaul was billed, gated, and routed exactly as if it were urgent, critical, a migration, and an overhaul. Notably, `LOW_URGENCY_KEYWORDS` already lists `"not urgent"` and `"no hurry"` as their own LOW-urgency phrases (and `LOW_COMPLEXITY_KEYWORDS` already has `"tweak"`) - they were simply unreachable, because `HIGH_URGENCY`'s bare `"urgent"`/`"blocking"`/`"critical"` word match ran first and returned before LOW was ever checked.
+
+Scope check against CLAUDE.md's "leave policy questions to the owner": this is not a threshold or vocabulary judgement call - the tier values, keyword lists, and `>`/`<=` cutoffs are all unchanged. It's the same class of fix as checkpoint 97's own `\b`-boundary correction: an occurrence that shouldn't count as a real match of its tier. The genuinely hard, judgement-laden parts of negation (double negation, sarcasm, negation whose scope spans a clause boundary) are deliberately left unhandled and named below, not quietly mishandled.
+
+### 🔧 Fix
+
+**`departments.py`**: added `_NEGATION_WORDS` (a fixed set of literal negation cues - `"not"`, `"non"`, `"no"`, `"never"`, `"isn't"`, `"doesn't"`, `"won't"`, `"without"`, `"lacking"`, and their contraction variants), `_is_negated(desc_lower, match_start)`, and `_matches_non_negated(pattern, desc_lower)`. `_is_negated()` looks at the text before a match, **clause-bounded** (stops at the nearest `. , ; : ! ?` so negation in an earlier clause - `"Not sure about scope, but this platform migration is critical"` - can't suppress a real match in a later one) and **word-windowed** (the last 4 words of that clause, not just the immediately-adjacent token, so `"not a major overhaul"` and `"no platform migration needed"` are caught, not only `"not overhaul"`/`"no migration"`). `estimate_hours()`/`estimate_complexity()`/`estimate_urgency()` now call `_matches_non_negated()` instead of `pattern.search()` for both their HIGH and LOW tier checks, so a negated match of either tier is skipped and the next check (LOW, then DEFAULT) runs on what's left - no change to the tier values, keyword lists, `approval_level_for_complexity()`, `route_task()`, or `infer_required_skills()`.
+
+### 🧪 Validation
+
+New file `tests/test_negation_keyword_tiers.py`, five tests against the real `departments` module (no mocking):
+
+1. The exact live false positives proven above no longer return their wrong HIGH value.
+2. Once HIGH is correctly suppressed, each case resolves to the real LOW signal already present in the same text (`"not urgent"`/`"no rush"`/`"whenever"`/`"tweak"`) - proving the fix makes the tier design's own existing LOW phrases reachable, not just removing a wrong answer.
+3. A negated match with no other keyword present falls through all the way to DEFAULT (`1.0`h), never a fabricated tier.
+4. Every real, un-negated keyword match checkpoint 97 pinned (`"urgent"`, `"platform migration"`, `"security overhaul"`, `"typo"`) is unaffected.
+5. Negation does not cross a clause boundary - `"Not sure about scope, but this platform migration is critical"` still returns the real HIGH values for both `estimate_hours()` and `estimate_urgency()`.
+
+Ran the new file individually (all five green) and twice back-to-back for idempotency (byte-identical output both runs). Ran the full `tests/test_*.py` suite (81 files including this new one) - zero failures. `python3 -m py_compile` clean on every top-level module and the new test file; `import main_v2, agent_decisions, agent_state, task_executor_v2, workflows, web_server, budgets, departments, performance, core, strategy, tools, llm_provider, visualization` clean. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+A task description where a HIGH- or LOW-tier keyword is immediately preceded (within the same clause, within 4 words) by a literal negation cue (`"not"`, `"non"`, `"no"`, `"never"`, `"isn't"`, `"doesn't"`, `"won't"`, `"without"`, `"lacking"`/`"lacks"`/`"lack"`, and their contraction spellings) no longer counts that occurrence toward that tier - it falls through to the next tier's check (LOW, then DEFAULT) exactly as if the keyword weren't there, and any other real, un-negated keyword in the same description is still found normally. Negation that crosses a clause boundary (separated by `. , ; : ! ?`), spans more than 4 words, or is doubled/sarcastic is unaffected by this fix - those cases keep today's existing (potentially wrong) behavior, same as before. No change to any description with no negation cue in it.
+
+### 📝 Next Steps
+
+- All standing policy-question items from checkpoints 42-97's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()` zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the `bug_fix` template's unapprovable `tech_lead` `approval_role`, `DecisionResult.decision`'s dead `"reject"` branch, `web_server.py`'s `_task_summary()` list/detail split, `rank_candidate()`/`workload_factor` ranking-quality note, `departments.py`'s `get_staff_count()`/`get_staff_range()` band-mismatch note, and `agent_state.py`'s `available_agents(skill_required=...)` key-mismatch) - unchanged, still open.
+- New, noticed but not chased this session: `_is_negated()`'s 4-word window and clause-boundary stop are a deliberately conservative heuristic, not real NLP. Known residual gaps, left exactly as checkpoint 97 left its own residual negation note: double negation (`"not un-urgent"`), negation whose scope spans a clause the cue isn't literally in on the "wrong" side of this heuristic's boundary choice, and sarcasm/implicature (`"oh sure, no rush at all"` meaning the opposite) are all unhandled by design. If a real false case surfaces from production descriptions, widening `_NEGATION_WORDS` or the window is a one-line change; redesigning the boundary logic itself would need a real tokenizer, not a quick fix.
+- No new non-policy, self-contained gap beyond the residual negation notes above was spotted and deliberately left this session. The next session should look for a new non-policy gap the way checkpoints 45-98 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 14, 2026
 
 ## 🐛 CHECKPOINT 97: `estimate_hours()`/`estimate_complexity()`/`estimate_urgency()` MATCHED KEYWORDS AS SUBSTRINGS, FLAGGING "TYPOGRAPHY" AS A TYPO FIX AND "IMMIGRATION" AS A PLATFORM MIGRATION
