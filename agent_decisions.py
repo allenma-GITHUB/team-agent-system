@@ -174,7 +174,22 @@ class AgentDecisionEngine:
                 if required_skills else 1.0
             )
 
-            affinity = (candidate.learned_preferences.get(context.task_type, 0) + 1) / 2  # 0-1
+            # context.task_type is always the *delegator's* own department
+            # (task_executor_v2.py sets task_type=self.department on every
+            # DecisionContext it builds) - candidate.learned_preferences is
+            # only ever written keyed by the candidate's *own* department
+            # (learn_preference(self.department, ...) in _run_locked()). A
+            # candidate always sits in a different department than the
+            # delegator (one head per department), so this lookup's key can
+            # never be present in a candidate's dict - it misses every time
+            # and silently falls back to the hardcoded default, making this
+            # a dead, always-0.5 term in every real ranking. Keying on the
+            # candidate's own department instead asks the question this
+            # factor is meant to answer - does the candidate like their own
+            # kind of work - the same way self.agent's affinity below
+            # already correctly reads self.department (context.task_type
+            # happens to equal it for whoever currently holds the task).
+            affinity = (candidate.learned_preferences.get(candidate.profile.department, 0) + 1) / 2  # 0-1
             workload_factor = (candidate.profile.max_concurrent_tasks - candidate.current_workload) / candidate.profile.max_concurrent_tasks
             trust_factor = self.agent.relationships.get(candidate.profile.agent_id, None)
             trust = trust_factor.trust_score if trust_factor else 0.5
@@ -243,7 +258,15 @@ class AgentDecisionEngine:
             # Try to delegate to someone who likes it more
             delegate = self.find_best_delegate(context)
             if delegate:
-                affinity_diff = delegate.learned_preferences.get(context.task_type, 0) - \
+                # Same key mismatch as rank_candidate()'s affinity term:
+                # context.task_type is self.department, not delegate's -
+                # delegate.learned_preferences never has that key, so this
+                # always evaluated to `0 - self.agent's own affinity`, not
+                # an actual comparison against the delegate's affinity.
+                # Reading the delegate's own department gives the real
+                # value; self.agent's side was already correct (its own
+                # department IS context.task_type here).
+                affinity_diff = delegate.learned_preferences.get(delegate.profile.department, 0) - \
                                self.agent.learned_preferences.get(context.task_type, 0)
                 return DecisionResult(
                     decision="delegate",

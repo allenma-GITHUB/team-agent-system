@@ -1,3 +1,54 @@
+# Daily Progress Report - November 16, 2026
+
+## 🐛 CHECKPOINT 99: `rank_candidate()`'S AFFINITY TERM AND `decide()`'S `affinity_diff` BOTH READ A CANDIDATE'S LEARNED PREFERENCES UNDER THE WRONG KEY, MAKING A 25%-WEIGHTED RANKING FACTOR DEAD WEIGHT IN EVERY REAL DELEGATION
+
+Session opened already on `main`, matching `origin/main` exactly (`b325dde`) - no detached-HEAD/stale-ref reconciliation needed this time, the first session in this run's memory where that wasn't the first thing to do. Ran the full 81-file suite to confirm checkpoint 98 is intact before starting new work - all green; restored the two seed files and removed the two generated data files the run dirtied.
+
+### 🐛 Proven live before touching anything
+
+A background research fork surveyed `agent_decisions.py`, `agent_state.py`, `task_executor_v2.py`, `budgets.py`, `performance.py`, `departments.py`, `core.py`, `strategy.py`, `tools.py`, `main_v2.py`, `web_server.py`, `visualization.py`, and `llm_provider.py` for a fresh, non-policy correctness defect, with every standing policy item and every already-fixed bug from checkpoints 42-98 explicitly excluded. It converged on `agent_decisions.py`'s `AgentDecisionEngine.rank_candidate()` (nested inside `find_best_delegate()`) and the related `affinity_diff` computation inside `decide()`.
+
+`DecisionContext.task_type` is always the *delegator's own* department - every `DecisionContext` ever built in production (`task_executor_v2.py:233`) sets `task_type=self.department`, never a real task category like `"code_review"` (the field's own docstring example). `learned_preferences` is only ever written keyed the same way - `self.agent_state.learn_preference(self.department, 0.3 if quality>=3.0 else -0.2)` in `_run_locked()` (`task_executor_v2.py:777`), i.e. keyed by whichever department actually executed the task, on itself. A delegation candidate always sits in a *different* department than the delegator (one head per department in this system - confirmed against `config.json`'s seven built-in department heads), so `candidate.learned_preferences.get(context.task_type, 0)` can never find a real entry: it misses every time and silently falls back to the hardcoded default `0`.
+
+Confirmed live, direct import, isolated `AgentRegistry` (no mocking, no shared state):
+
+```
+support_pref=+0.9 sales_pref=-0.8 -> find_best_delegate() winner = support_head
+support_pref=-0.8 sales_pref=+0.9 -> find_best_delegate() winner = support_head   # unchanged!
+```
+
+Swapping which candidate held the strong, real, recorded self-affinity didn't move the winner at all - `affinity = (candidate.learned_preferences.get(context.task_type, 0) + 1) / 2` evaluated to a constant `0.5` for both candidates both times, so the 25%-weighted "3. Affinity for task type" ranking factor rank_candidate()'s own comment lists contributed nothing, ever, to a real decision. The identical key mismatch corrupts `decide()`'s should_execute()=False delegation branch too: `affinity_diff = delegate.learned_preferences.get(context.task_type, 0) - self.agent.learned_preferences.get(context.task_type, 0)` always evaluated to `0 - (delegator's own self-affinity)` - a number that happens to look plausible in the reasoning string (`"Delegating to X who has higher affinity (0.9 difference)"`) but is not a comparison against the delegate actually chosen at all.
+
+Reaches the real production delegation path both ways: `find_best_delegate()` is called from `decide()` on both the `can_execute()==False` branch and the `should_execute()==False` branch - every real task a department head can't or shouldn't execute itself. Ruled out as already covered: `rank_candidate()`'s *`workload_factor`* ranking-quality note (a different term, still an open standing policy item, untouched here) and every item in checkpoints 42-98's Next Steps.
+
+### 🔧 Fix
+
+**`agent_decisions.py`**: `rank_candidate()`'s affinity line (`candidate.learned_preferences.get(context.task_type, 0)`) now reads `candidate.learned_preferences.get(candidate.profile.department, 0)` - the candidate's own department, the same question `self.agent`'s own affinity elsewhere in this file already correctly answers by reading `self.department` (which `context.task_type` happens to equal, for whoever currently holds the task). `decide()`'s `affinity_diff` line changed the same way for its `delegate` term (`delegate.learned_preferences.get(delegate.profile.department, 0)`); its `self.agent` term was already correct and is untouched. No change to the ranking weights (`0.35/0.2/0.25/0.15/0.05`), the `> 0.5` acceptance threshold, `skill_match`, `coverage`, `workload_factor`, `trust`, `should_execute()`, `can_execute()`, or anything in `task_executor_v2.py`.
+
+### 🧪 Validation
+
+New file `tests/test_delegate_affinity_own_department.py`, three tests against the real `agent_decisions`/`agent_state` (no mocking, isolated `AgentRegistry` data files):
+
+1. The exact live false-negative proven above: two otherwise-identical candidates, differing only in their own recorded self-affinity, with the *weaker* one registered first (so a tie - the pre-fix, always-0.5 shape - would resolve to it via `max()`'s first-occurrence tie-break). The real higher-self-affinity candidate wins regardless of registration order, both ways after swapping which one holds the strong value.
+2. A decoy candidate with a strong positive entry planted under the *delegator's* department (the old buggy key) but nothing under its own, against a real candidate with a strong positive entry under its own department - the real one must win; the decoy's planted value must never be read.
+3. `decide()`'s `affinity_diff` reasoning string, pinned to the exact expected value (`1.6`, from a delegate's real `+0.7` self-affinity minus the delegator's `-0.9`) and asserted *not* to equal the old bug's value (`0.9`, from `0` minus the delegator's `-0.9`).
+
+Ran the new file individually (all three green) and twice back-to-back for idempotency (byte-identical output both runs). Ran the full `tests/test_*.py` suite (82 files including this new one) - zero failures. `python3 -m py_compile` clean on `agent_decisions.py` and the new test file; `import main_v2, agent_decisions, agent_state, task_executor_v2, workflows, web_server, budgets, departments, performance, core, strategy, tools, llm_provider, visualization` clean. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json` after every run, per CLAUDE.md.
+
+A methodological note for future sessions, not a code change: the first live-proof pass in this session used the default `AgentRegistry()` (no `data_file` argument) for a throwaway `python3 -c` repro, which - like any real `register()`/`learn_preference()` call - immediately persisted to the *real*, tracked `data/agent_states.json`. That transiently broke `tests/test_web_server.py`'s escalation test (a stray `sales_head` entry with a fabricated profile got written to the seed file and picked up by that test's shared, non-isolated registry singleton), which looked at first like a regression from this fix. `git checkout -- data/agent_states.json` before re-running confirmed it wasn't: the fix alone, verified against an isolated `data_file`, left the full suite green. Any future ad hoc live-proof script against this registry should pass an isolated `data_file` (or write under `/tmp`) from the start, never the bare default constructor.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+Any real delegation where at least one candidate has accumulated a real, nonzero self-affinity (i.e. has previously executed at least one task directly, recording `learn_preference(self.department, ...)` on itself) now scores that candidate's affinity term from their real value instead of a constant `0.5` - a candidate who has thrived in their own department's work (positive recorded affinity) now ranks higher on this factor than one who has struggled (negative), all else equal; previously every candidate scored identically here regardless. `decide()`'s delegation reasoning string's `"(N.N difference)"` affinity figure now reflects the actual delegate's own recorded affinity minus the delegator's, instead of `0` minus the delegator's. No change to any candidate with no recorded self-affinity yet (new agents, or agents that have only ever delegated, never executed) - they still score the same `0.5`/`0` default as before, since the default itself is unchanged.
+
+### 📝 Next Steps
+
+- All standing policy-question items from checkpoints 42-98's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()` zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the `bug_fix` template's unapprovable `tech_lead` `approval_role`, `DecisionResult.decision`'s dead `"reject"` branch, `web_server.py`'s `_task_summary()` list/detail split, `rank_candidate()`'s *`workload_factor`* ranking-quality note (distinct from this session's `affinity` fix), `departments.py`'s `get_staff_count()`/`get_staff_range()` band-mismatch note, the negation-handling residual limits from checkpoint 98 (double negation, clause-spanning negation, sarcasm), and `agent_state.py`'s `available_agents(skill_required=...)` key-mismatch) - unchanged, still open.
+- New, noticed but not chased this session: `decide()`'s *other* two `learned_preferences.get(context.task_type, ...)` reads (lines near the final two `DecisionResult` returns, in the `reasoning` f-strings for `self.agent`'s own forced-execution and normal-execution cases) are **not** bugged - `context.task_type` really does equal `self.department` for whichever agent currently holds the task, so those two remain correct as-is and were deliberately left untouched.
+- No new non-policy, self-contained gap beyond the items above was spotted and deliberately left this session. The next session should look for a new non-policy gap the way checkpoints 45-99 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 15, 2026
 
 ## 🐛 CHECKPOINT 98: `estimate_hours()`/`estimate_complexity()`/`estimate_urgency()` HAD NO NEGATION HANDLING - "NOT URGENT" STILL SCORED AS URGENT
