@@ -301,7 +301,10 @@ class BudgetManager:
         if not decision.approval_required:
             return True, "No approval required"
 
-        estimated_cost = (decision.recommended_deadline or 5.0) * cost_per_hour
+        # `or 5.0` would treat a legitimately-estimated 0-hour task as falsy
+        # and bill it as 5 hours; only a real absence (None) should fall back.
+        hours = decision.recommended_deadline if decision.recommended_deadline is not None else 5.0
+        estimated_cost = hours * cost_per_hour
         approved, reason = self.request_expense(
             department=department, amount=estimated_cost, category="labor",
             description=decision.reasoning, agent_id=decision.assigned_agent_id,

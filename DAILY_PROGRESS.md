@@ -1,3 +1,61 @@
+# Daily Progress Report - November 17, 2026
+
+## 🐛 CHECKPOINT 100: `approve_decision()`'S `recommended_deadline or 5.0` FALLBACK BILLED A LEGITIMATE 0-HOUR TASK AS A FABRICATED 5-HOUR ONE
+
+Session opened with `HEAD` detached on checkpoint 99's commit (`0647e62`), one commit ahead of the locally-cached `main` ref - the same stale-ref shape checkpoints 53-99 have each hit. A real `git fetch origin main` showed `origin/main` already at `0647e62`, matching `HEAD` exactly: checkpoint 99 was already pushed, and the local `main` ref was purely this container's unrefreshed snapshot. Fast-forwarded (`git checkout main && git merge --ff-only 0647e62`); no push was needed for the reconciliation itself. Ran the full 82-file suite to confirm checkpoint 99 is intact before starting new work - all green; restored the two seed files and removed the two generated data files the run dirtied.
+
+### 🐛 Proven live before touching anything
+
+A background research fork surveyed `agent_decisions.py`, `agent_state.py`, `task_executor_v2.py`, `budgets.py`, `performance.py`, `departments.py`, `core.py`, `strategy.py`, `tools.py`, `main_v2.py`, `web_server.py`, `visualization.py`, `llm_provider.py`, and `workflows.py` for a fresh, non-policy correctness defect, with every standing policy item and every already-fixed bug from checkpoints 42-99 explicitly excluded. It converged on `budgets.py`'s `BudgetManager.approve_decision()`.
+
+`DecisionResult.recommended_deadline` is documented as "hours from now" and is set by `agent_decisions.py`'s `decide()` to `context.estimated_hours` verbatim on both `execute` returns (`agent_decisions.py:298`, `:307`) - i.e. it's exactly the real `estimated_hours` a caller gave the task, never a placeholder. `submit_task()`/the CLI's `--hours` validation explicitly allow `0.0` (only negative values are rejected). But `approve_decision()` computed the labor charge as `(decision.recommended_deadline or 5.0) * cost_per_hour` - and Python's `or` treats `0.0` as falsy, so a task legitimately estimated at exactly 0 hours that also requires approval silently fell back to the 5.0h default instead of its real, correct 0.0h estimate.
+
+Confirmed live, direct import, isolated `BudgetManager` (no mocking, no shared state), both the bridge method in isolation and the full real production call path:
+
+```
+# isolated approve_decision() call, recommended_deadline=0.0, cost_per_hour=210.0
+approved: True reason: Expense approved
+spent (should be 0.0 for a 0-hour task): 1050.0
+
+# full path: real DepartmentHeadAgent("finance"), isolated registry/budget/capacity/analytics,
+# task "Conduct a security compliance review of our financial systems", estimated_hours=0.0
+# (estimate_complexity() scores it HIGH via "security"/"compliance" -> requires_approval()==True)
+allocated: 20000 spent before: 0.0
+status: completed
+approved: True
+spent after: 1050.0
+```
+
+A department was charged $1,050 (5h x $210/h) for a task declared, end to end, to need 0 hours.
+
+Reaches the real production path: `task_executor_v2.py`'s `DepartmentHeadAgent._run_locked()` calls `self.budget_manager.approve_decision(decision, department=self.department, cost_per_hour=self.cost_per_hour, task_id=task_id)` whenever `decision.approval_required` is true - every real execute-with-approval task. Ruled out as not bugged: `request_expense()`'s own direct-charge path (the `approval_required=False` branch in `_run_locked()`) multiplies `estimated_hours * self.cost_per_hour` with no `or` fallback, so a 0-hour non-approval task was always billed correctly at $0 - only the `approve_decision()` bridge had the falsy-zero bug. `recommended_deadline` is `None` (not `0.0`) on `delegate`/`escalate` decisions, which never reach `approve_decision()` at all, so the `5.0` fallback itself is not dead code - it is reachable and correct for a genuinely-unset estimate, just wrongly reachable for a genuinely-zero one too. `agent_decisions.py:57`'s task-id mismatch, `must_approve_over_100k`, and `OrganizationDecisionMaker.approve_decision()`'s own separate `# mock cost` formula are pre-existing, already-excluded items, untouched here.
+
+### 🔧 Fix
+
+**`budgets.py`**: `approve_decision()`'s cost line now reads `hours = decision.recommended_deadline if decision.recommended_deadline is not None else 5.0` before multiplying by `cost_per_hour`, replacing the `(decision.recommended_deadline or 5.0)` falsy check with an explicit `is not None` check. The 5.0h default value itself, `request_expense()`, `reserve_funds()`/`commit_reservation()`/`release_reservation()`, and every other `BudgetManager`/`DepartmentBudget` method are untouched.
+
+### 🧪 Validation
+
+New file `tests/test_budget_zero_hour_approval.py`, three tests against the real `budgets`/`agent_decisions` (no mocking, isolated `data/test_budget_zero_hour_approval.json`):
+
+1. The exact live false positive proven above: a `DecisionResult` with `recommended_deadline=0.0` and `approval_required=True` now charges exactly $0, not the $1,050 fallback.
+2. A `DecisionResult` with `recommended_deadline=None` (a genuinely-unset estimate) still charges the 5.0h default - proving the fix narrows the falsy check rather than removing the fallback outright.
+3. A normal truthy estimate (`3.0`) is charged exactly `3.0 * cost_per_hour`, unaffected by the fix.
+
+Ran the new file individually (all three green) and twice back-to-back for idempotency (identical PASS output both runs). Ran the full `tests/test_*.py` suite (83 files including this new one) - zero failures. `python3 -m py_compile` clean on `budgets.py` and the new test file; `import main_v2, agent_decisions, agent_state, task_executor_v2, workflows, web_server, budgets, departments, performance, core, strategy, tools, llm_provider, visualization` clean. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+Any real approval-required `execute` decision whose task was estimated at exactly 0 hours (`decision.recommended_deadline == 0.0`) is now billed $0 for that approval, instead of a fabricated 5-hour charge (`5.0 * cost_per_hour`) against the department's budget. A decision with a genuinely unset `recommended_deadline` (`None` - i.e. one never set by `agent_decisions.decide()`'s normal paths) is unaffected and still falls back to the same 5.0h default as before. Every other estimated-hours value, zero or not, was already passed through correctly and is unaffected.
+
+### 📝 Next Steps
+
+- All standing policy-question items from checkpoints 42-99's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()` zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the `bug_fix` template's unapprovable `tech_lead` `approval_role`, `DecisionResult.decision`'s dead `"reject"` branch, `web_server.py`'s `_task_summary()` list/detail split, `rank_candidate()`'s `workload_factor` ranking-quality note, `departments.py`'s `get_staff_count()`/`get_staff_range()` band-mismatch note, the negation-handling residual limits from checkpoint 98 (double negation, clause-spanning negation, sarcasm), and `agent_state.py`'s `available_agents(skill_required=...)` key-mismatch) - unchanged, still open.
+- New, noticed but not chased this session: `OrganizationDecisionMaker.approve_decision()` (`agent_decisions.py:326`) has its own, separate `decision.recommended_deadline * 100 if decision.recommended_deadline else 500` line with the identical falsy-zero shape as the bug fixed here - but that class is already on the standing policy list as unwired/dead code (nothing in production constructs or calls it), so it was deliberately left untouched rather than fixed as a drive-by. If `OrganizationDecisionMaker` is ever wired into a real call path, this sibling line should get the same `is not None` fix.
+- No new non-policy, self-contained gap beyond the item above was spotted and deliberately left this session. The next session should look for a new non-policy gap the way checkpoints 45-100 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 16, 2026
 
 ## 🐛 CHECKPOINT 99: `rank_candidate()`'S AFFINITY TERM AND `decide()`'S `affinity_diff` BOTH READ A CANDIDATE'S LEARNED PREFERENCES UNDER THE WRONG KEY, MAKING A 25%-WEIGHTED RANKING FACTOR DEAD WEIGHT IN EVERY REAL DELEGATION
