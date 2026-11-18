@@ -50,7 +50,23 @@ class StrategicPlanner:
         donors = []
         recipients = []
 
-        for dept, budget in self.budgets.budgets.items():
+        # Reads each department through get_budget(), not self.budgets.budgets
+        # directly - every other BudgetManager-wide read (organization_summary(),
+        # over_budget_departments(), rollover_history()) rolls a department into
+        # its next period first if the current one has already elapsed, so a
+        # reset `spent` is never scored as if it were still the old period's.
+        # This method used to read self.budgets.budgets.items() directly and
+        # skip that: a department whose period had elapsed but that no other
+        # call had touched yet still scored off its last period's stale spent/
+        # available. Confirmed live: a department at 95% utilization in an
+        # already-elapsed daily period got proposed - and, via
+        # apply_reallocations()/rebalance(), actually allocated - new budget to
+        # cover a shortfall a rollover would have reset to 0%, permanently
+        # shrinking the donor's allocation for a need that no longer existed.
+        for dept in list(self.budgets.budgets.keys()):
+            budget = self.budgets.get_budget(dept)
+            if budget is None:
+                continue
             util = budget.utilization_pct()
             if util <= low_threshold:
                 giveable = budget.available() - (budget.allocated * self.reserve_pct)

@@ -1,3 +1,59 @@
+# Daily Progress Report - November 18, 2026
+
+## 🐛 CHECKPOINT 101: `propose_reallocations()` SCORED A DEPARTMENT'S UTILIZATION OFF A STALE, ALREADY-ELAPSED BUDGET PERIOD
+
+Session opened already on `main`, matching `origin/main` exactly (`797655b`) - no detached-HEAD/stale-ref reconciliation needed this time. Ran the full 84-file suite to confirm checkpoint 100 is intact before starting new work: 83 green, one pre-existing flaky failure in `tests/test_concurrent_first_creation.py` (a threading-timing test, unrelated to budgets/strategy) that reproduces identically on a clean `git stash` of this session's own changes - confirmed not a regression from anything done here, and left untouched (out of scope for this checkpoint; noted below). Restored the two seed files and removed the two generated data files the run dirtied.
+
+### 🐛 Proven live before touching anything
+
+A background research pass surveyed `agent_decisions.py`, `agent_state.py`, `task_executor_v2.py`, `budgets.py`, `performance.py`, `departments.py`, `core.py`, `strategy.py`, `tools.py`, `main_v2.py`, `web_server.py`, `visualization.py`, `llm_provider.py`, and `workflows.py` for a fresh, non-policy correctness defect, with every standing policy item and every already-fixed bug from checkpoints 1-100 explicitly excluded. It converged on `strategy.py`'s `StrategicPlanner.propose_reallocations()`.
+
+`BudgetManager` has three other organization-wide reads that score every tracked department's utilization: `organization_summary()`, `over_budget_departments()`, and `rollover_history()`. All three call `self._roll_all_due()` first, so a department whose budget period has already elapsed (`DepartmentBudget.period_elapsed()` is True) gets rolled into its new, empty period - `spent` reset to `0.0`, logged as a `PeriodRollover` - before being read, exactly as `get_budget()` already does for a single department on every real access path. `propose_reallocations()` is a fourth organization-wide read of the same `self.budgets.budgets` dict, added later (Phase 5+), and it iterated `self.budgets.budgets.items()` directly - the raw `DepartmentBudget` objects, with no rollover check at all.
+
+Confirmed live, direct import, isolated `BudgetManager` (no mocking):
+
+```
+# "eng" allocated $1000 on a "daily" period, $950 (95%) spent, period_start
+# backdated 2 days - period_elapsed() is True, a rollover is due but nothing
+# has triggered it yet. "design" allocated $1000 "daily", $50 (5%) spent,
+# same backdating.
+PROPOSAL: ReallocationProposal(from_department='design', to_department='eng',
+  amount=117.65, reason='design at 5% utilization (underspending) ->
+  eng at 95% utilization (approaching limit)')
+eng.spent before any official roll-triggering read: 950.0
+eng.spent AFTER get_budget() (should be 0 if rollover had been due): 0.0
+```
+
+A department sitting at 95% of a period that had already run its full length - and would read as 0% the instant anything else touched it (`get_budget()`, `budget status`, the dashboard's `/api/status`) - was proposed a $117.65 transfer to cover a shortfall that no longer existed. Had that proposal been applied (`strategy --apply`, or `rebalance()`'s propose-and-apply-in-one-call convenience, both real CLI/production paths), the donor's `allocated` would have been permanently reduced to fund a need the rollover had already erased - and the recipient's `allocated` permanently inflated for the same already-moot reason, since `apply_reallocations()` mutates `allocated` itself, not a reversible hold.
+
+Ruled out as already covered: every item on the standing policy-question list, and every bug fixed in checkpoints 1-100 (confirmed via `git log --oneline -120` and the corresponding `DAILY_PROGRESS.md` entries - none touch `strategy.py` or this particular read path). No existing test (`tests/test_strategic_planning.py`, `tests/test_web_server.py`) ever allocates a budget on anything but the default "monthly" period with a fresh `period_start` (`datetime.utcnow()` at `allocate()` time), so `period_elapsed()` is always False in every prior test and this gap was never exercised.
+
+### 🔧 Fix
+
+**`strategy.py`**: `propose_reallocations()`'s loop now reads `for dept in list(self.budgets.budgets.keys())`, fetching each department's `DepartmentBudget` via `self.budgets.get_budget(dept)` (skipping a department that somehow no longer resolves) instead of unpacking `self.budgets.budgets.items()` directly. `get_budget()` already triggers `_roll_if_due()` for that one department - the same public method `organization_summary()`/`over_budget_departments()`'s private `_roll_all_due()` wraps per-department, and the one other call site in this codebase that reads a single department's budget by name. No change to the threshold logic (`low_threshold`/`high_threshold`), the greedy donor/recipient matching, `reserve_pct`'s donor protection, `apply_reallocations()`, or `rebalance()` - the fix is entirely in which object the scoring loop reads.
+
+### 🧪 Validation
+
+New file `tests/test_strategy_rollover_before_propose.py`, three tests against the real `budgets`/`strategy` modules (no mocking, isolated `data/test_strategy_rollover_budgets*.json`):
+
+1. The exact live false positive proven above: two departments on an already-elapsed daily period (95%/5% spend from the old period) produce zero proposals, not the stale $117.65 transfer.
+2. `propose_reallocations()` itself performs the rollover as a side effect (both departments' `spent` reset to `0.0`, and a real `PeriodRollover` is logged for each) - proving the fix routes through the real rollover mechanism, not just suppresses the symptom.
+3. A regression guard: two departments at 5%/95% utilization in their *current*, not-elapsed period still produce exactly the proposal checkpoint-era behavior already did (pinned to the same `$1,176.47` figure `tests/test_strategic_planning.py`'s own non-rollover test uses) - the fix narrows the stale-data case, it doesn't dampen a real, live shortfall.
+
+Ran the new file individually (all three green) and twice back-to-back for idempotency (identical PASS output both runs). Ran the full `tests/test_*.py` suite (85 files including this new one) - 84 green, the one pre-existing `test_concurrent_first_creation.py` flake noted above, confirmed unrelated (reproduces identically with this session's changes stashed out). `python3 -m py_compile` clean on `strategy.py` and the new test file; `import main_v2, agent_decisions, agent_state, task_executor_v2, workflows, web_server, budgets, departments, performance, core, strategy, tools, llm_provider, visualization` clean. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+`strategy --apply`/the dashboard's strategy actions, and any direct `rebalance()` call, no longer act on a department's utilization from a budget period that has already elapsed but hasn't yet been touched by another read path - that department is now rolled into its new period (spend reset, a `PeriodRollover` logged) as part of `propose_reallocations()` itself, the same moment every other organization-wide budget read already does it, rather than being scored against stale numbers from a period that's effectively already over. A department whose period has *not* elapsed is completely unaffected - this only changes which numbers an elapsed-period department is scored against, not the thresholds, the greedy matching, or the reserve protection.
+
+### 📝 Next Steps
+
+- All standing policy-question items from checkpoints 42-100's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()` zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker` (including its own separate falsy-zero `recommended_deadline * 100 if ... else 500` line, still deliberately unfixed since the class remains unwired/dead), `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the `bug_fix` template's unapprovable `tech_lead` `approval_role`, `DecisionResult.decision`'s dead `"reject"` branch, `web_server.py`'s `_task_summary()` list/detail split, `rank_candidate()`'s `workload_factor` ranking-quality note, `departments.py`'s `get_staff_count()`/`get_staff_range()` band-mismatch note, the negation-handling residual limits (double negation, clause-spanning negation, sarcasm), and `agent_state.py`'s `available_agents(skill_required=...)` key-mismatch) - unchanged, still open.
+- New, noticed but not chased this session: `tests/test_concurrent_first_creation.py` failed intermittently (1 run in 5 during this session's own full-suite run, and reproduced on a clean checkout with this session's changes stashed out, so it predates this checkpoint) - a threading-timing flake in the "many brand-new departments created concurrently" scenario, unrelated to budgets/strategy. Left uninvestigated: out of scope for a `strategy.py` fix, and not a new regression. A future session should treat this as its own "prove it live" starting point if it recurs.
+- No new non-policy, self-contained gap beyond the item above was spotted and deliberately left this session. The next session should look for a new non-policy gap the way checkpoints 45-101 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 17, 2026
 
 ## 🐛 CHECKPOINT 100: `approve_decision()`'S `recommended_deadline or 5.0` FALLBACK BILLED A LEGITIMATE 0-HOUR TASK AS A FABRICATED 5-HOUR ONE
