@@ -1,3 +1,57 @@
+# Daily Progress Report - November 19, 2026
+
+## 🐛 CHECKPOINT 102: `route_task()` SCORED DEPARTMENTS BY RAW KEYWORD COUNT WITH NO NEGATION HANDLING
+
+Session opened with `HEAD` detached on checkpoint 101's commit (`b4510a3`), one commit ahead of the locally-cached `main` ref - the same stale-ref shape checkpoints 53-100 have each hit. A real `git fetch origin main` showed `origin/main` already at `b4510a3`, matching `HEAD` exactly: checkpoint 101 was already pushed, and the local `main` ref was purely this container's unrefreshed snapshot. Fast-forwarded (`git checkout main && git merge --ff-only b4510a3`); no push was needed for the reconciliation itself. Ran the full 84-file suite to confirm checkpoint 101 is intact before starting new work - all green; restored the two seed files and removed the two generated data files the run dirtied.
+
+### 🔎 Research pass
+
+A background research fork surveyed `agent_decisions.py`, `agent_state.py`, `task_executor_v2.py`, `budgets.py`, `performance.py`, `departments.py`, `core.py`, `strategy.py`, `tools.py`, `main_v2.py`, `web_server.py`, `visualization.py`, `llm_provider.py`, `workflows.py`, and `agent_loop.py` for a fresh, non-policy correctness defect, with every standing policy item and every bug fixed in checkpoints 1-101 explicitly excluded. It pursued and falsified a cross-department file-save race (20+ runs, no corruption - CPython's buffered-writer `close()` held the GIL through the flush at this data size, so the theoretical race wasn't exploitable live), ruled the `"ceo"`/`"design_lead"` unapprovable workflow-approval roles as the same already-excluded gap shape as the `bug_fix` template's `tech_lead` item, and cleared the dashboard's escaping. It reported back with no new defect proven live.
+
+This session continued the survey by hand rather than accepting that as final, and converged on `departments.py`'s `DepartmentManager.route_task()` - sitting in the same file, a few hundred lines below the three functions checkpoints 97/98 already fixed for this exact bug shape.
+
+### 🐛 Proven live before touching anything
+
+Checkpoint 97 gave `estimate_hours()`/`estimate_complexity()`/`estimate_urgency()` `\b`-bounded keyword matching (no more substring false-positives), and checkpoint 98 then gave those same three functions negation-awareness via `_is_negated()`/`_matches_non_negated()` (no more "not urgent" scoring as urgent). `route_task()` sits right above them in the same file, already has the `\b`-bounded fix (checkpoint 38), but its own scoring loop - `sum(1 for kw in keywords if re.search(...))` - was never given the negation fix at all. It has the identical shape (count a keyword as a hit anywhere it appears) and the identical blind spot.
+
+Confirmed live, direct import, real `config.json`, no mocking:
+
+```
+route_task("This is not a sales deal, it is a support issue for an unhappy client")
+-> "sales"
+```
+
+Scoring breakdown: sales keywords matched `sales`, `deal`, and `client` (score 3 - two of the three, `sales` and `deal`, sit inside the very clause that explicitly rules sales out); support keywords matched `support` and `issue` (score 2). A task description that explicitly denies being a sales matter and explicitly states it's a support issue was routed to Sales - the real production path `submit_task()` (`main_v2.py`) calls on every task submitted without an explicit `--dept`, which in turn drives which department's budget gets charged and which department head's decision engine runs.
+
+Ruled out as already covered: every item on the standing policy-question list, and every bug fixed in checkpoints 1-101 (confirmed via `git log --oneline -150` and the corresponding `DAILY_PROGRESS.md` entries - checkpoints 97/98 touch `estimate_hours`/`estimate_complexity`/`estimate_urgency` specifically, never `route_task()`). No existing test (`test_product_department.py`, `test_finance_department.py`, `test_estimate_keyword_boundaries.py`) ever gives `route_task()` a negated department keyword, so this gap was never exercised.
+
+### 🔧 Fix
+
+**`departments.py`**: `route_task()`'s scoring loop now compiles a `\b`-bounded pattern per keyword (as before) but only counts it if `_is_negated()` - the same clause-bounded, 4-word-window, literal-cue-only check checkpoint 98 already defined for the estimate tiers - says `False` for at least one of its matches, via `any(not _is_negated(desc_lower, m.start()) for m in pattern.finditer(desc_lower))`. No change to word-boundary matching, tie-breaking (still Python's `max()`, first-insertion-order winner on a tie), or the empty-scores fallback to `config.json`'s `default_department`.
+
+### 🧪 Validation
+
+New file `tests/test_route_task_negation.py`, four tests against the real `departments` module and real `config.json` (no mocking):
+
+1. The exact live false positive proven above, plus two more of the same shape - a negated department keyword no longer outscores the department the text actually names.
+2. A regression guard: ordinary, un-negated routing (including sentences that reuse the same words the first test negates) is unaffected.
+3. Clause-boundary guard: negation in an earlier clause (`"Not a design task, ..."`) must not suppress a real, un-negated keyword match in a later clause (`"...this is clearly a backend database error"`) - mirrors `test_negation_keyword_tiers.py`'s own clause-boundary test for the estimate tiers.
+4. A description that negates every department it mentions falls through to `config.json`'s configured `default_department`, not a fabricated department kept alive only by a negated hit.
+
+Every test case's underlying per-department scores were computed and printed by hand (not just the final routed department) before being pinned, specifically to rule out a coincidental tie-break masquerading as a correct fix - an earlier draft of test 3 happened to pass only because of dict-insertion-order luck on a 3-way tie, caught by checking the scores directly and rewritten to an unambiguous case. Ran the new file individually (all four green) and twice back-to-back for idempotency (identical PASS output both runs). Ran the full `tests/test_*.py` suite (85 files including this new one) - all green. `python3 -m py_compile` clean on `departments.py` and the new test file; `import main_v2, agent_decisions, agent_state, task_executor_v2, workflows, web_server, budgets, departments, performance, core, strategy, tools, llm_provider, visualization` clean. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+`submit_task()`'s automatic routing (every CLI `submit` or dashboard `/api/submit` call that omits `--dept`/`department`) no longer lets a department keyword that the description explicitly negates ("not a sales deal", "no design work here") count toward that department's routing score. A description with no negated language is completely unaffected - this only changes which department wins when the text explicitly rules one out, not the keyword list, the word-boundary matching, or the tie-break rule.
+
+### 📝 Next Steps
+
+- All standing policy-question items from checkpoints 42-101's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()` zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker` (including its own separate falsy-zero `recommended_deadline * 100 if ... else 500` line, still deliberately unfixed since the class remains unwired/dead), `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the three workflow templates' unapprovable `design_lead`/`ceo`/`tech_lead` `approval_role`s (now confirmed to span `feature_request` and `bug_fix` both, not just the one `tech_lead` case earlier sessions named - still a policy question: should approval roles auto-provision a stub `AgentState`, or should real department heads be eligible approvers?), `DecisionResult.decision`'s dead `"reject"` branch, `web_server.py`'s `_task_summary()` list/detail split, `rank_candidate()`'s `workload_factor` ranking-quality note, `departments.py`'s `get_staff_count()`/`get_staff_range()` band-mismatch note, the negation-handling residual limits (double negation, clause-spanning negation, sarcasm, and now also confirmed: the fixed 4-word window means a cue more than 4 words before its keyword, e.g. "not sure if this needs design", is missed - deliberately narrow scope, not reopened here), `agent_state.py`'s `available_agents(skill_required=...)` key-mismatch, and the `tests/test_concurrent_first_creation.py` threading flake (pre-existing, unrelated) - unchanged, still open.
+- New, noticed but not chased this session: this session's research fork spent real effort (20+ runs with an instrumented repro) trying to prove a cross-department `BudgetManager.save()`/`AgentRegistry.save()`/`PerformanceAnalytics.save()` file-write race live and could not - CPython's buffered-writer `close()` appears to hold the GIL through the full flush at this data size, so the theoretical unlocked-concurrent-write race isn't exploitable in practice here. A future session chasing this should monkey-patch `save()` to inject a controlled yield point mid-write (proving the race exists in principle) rather than relying on timing alone, per that fork's own recommendation.
+- No new non-policy, self-contained gap beyond the item above was spotted and deliberately left this session. The next session should look for a new non-policy gap the way checkpoints 45-102 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 18, 2026
 
 ## 🐛 CHECKPOINT 101: `propose_reallocations()` SCORED A DEPARTMENT'S UTILIZATION OFF A STALE, ALREADY-ELAPSED BUDGET PERIOD

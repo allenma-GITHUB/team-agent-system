@@ -255,19 +255,36 @@ class DepartmentManager:
         real keyword list has nothing else in common with it. Any short
         keyword in any department's list (config.json is data, not code,
         so a future department could add one) is equally exposed.
+
+        A keyword only counts if it has at least one non-negated match
+        (_is_negated(), below) - the identical negation-blindness checkpoint
+        98 fixed for estimate_hours()/estimate_complexity()/estimate_urgency(),
+        never applied here even though this scoring loop has the exact same
+        shape. Confirmed live: "This is not a sales deal, it is a support
+        issue for an unhappy client" scored sales=3 ("sales"/"deal"/"client",
+        all literal keyword hits, two of them inside the very clause that
+        rules sales out) against support=2 ("support"/"issue") and routed
+        to SALES - the one department the sentence explicitly denies.
         """
         config = DepartmentManager.load_config()
         departments = config.get("departments", {})
         desc_lower = description.lower()
 
-        # Score each department
+        # Score each department - only a keyword with at least one
+        # non-negated occurrence counts, same convention as
+        # _matches_non_negated() above (that helper takes a single
+        # precompiled alternation pattern for a fixed tier list; here each
+        # department's keyword list comes from config.json at call time,
+        # so each keyword gets its own ad hoc \b-bounded pattern instead).
         scores = {}
         for dept_name, dept_config in departments.items():
             keywords = dept_config.get("keywords", [])
-            score = sum(
-                1 for kw in keywords
-                if re.search(r"\b" + re.escape(kw.lower()) + r"\b", desc_lower)
-            )
+            score = 0
+            for kw in keywords:
+                pattern = re.compile(r"\b" + re.escape(kw.lower()) + r"\b")
+                if any(not _is_negated(desc_lower, match.start())
+                       for match in pattern.finditer(desc_lower)):
+                    score += 1
             scores[dept_name] = score
 
         # Return highest scored department, or default
