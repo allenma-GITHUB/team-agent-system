@@ -639,7 +639,25 @@ class DepartmentHeadAgent(BaseAgent):
                             reasoning=f"Agent requested hand-off via delegate_to tool: {reason}",
                         )
 
-                    analysis = run.final_content or analysis
+                    # run.final_content can legitimately be "" on a
+                    # genuinely COMPLETED run - agent_loop.AgentRunResult.
+                    # completed()'s own docstring warns callers "not [to]
+                    # merely check[] that final_content is non-empty" for
+                    # exactly this reason. `run.final_content or analysis`
+                    # treated that empty string as falsy and silently kept
+                    # the "<Dept> team analyzed the task and produced a
+                    # plan" mock placeholder set above - reporting a plan
+                    # that was never produced, on both the completed and
+                    # max-iterations paths. Checked explicitly instead, so
+                    # the placeholder is only ever kept when no real LLM
+                    # call ran at all (self.llm is None - this branch is
+                    # never reached then, so `analysis` stays untouched).
+                    if run.final_content:
+                        analysis = run.final_content
+                    elif run.completed():
+                        analysis = "(none: the agent completed with no final answer text)"
+                    else:
+                        analysis = "(none: the agent produced no final answer text before stopping)"
                     tokens_used = run.tokens_estimate
                     provider_used = run.provider
                     tool_calls_made = len(run.tool_calls)

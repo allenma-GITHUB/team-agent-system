@@ -1,3 +1,65 @@
+# Daily Progress Report - November 20, 2026
+
+## 🐛 CHECKPOINT 103: A GENUINELY COMPLETED RUN WITH EMPTY FINAL TEXT WAS REPORTED AS A FABRICATED PLAN
+
+Session opened in a detached-`HEAD` state again (same recurring container quirk checkpoint 102 named, not a new issue): local `HEAD` sat on checkpoint 102's commit (`c32c98e`) with the locally-cached `main` ref still pointing at checkpoint 100 (`797655b`). A real `git fetch origin main` showed `origin/main` already at `c32c98e`, matching `HEAD` exactly - checkpoints 101 and 102 were both already pushed; the stale ref was purely this container's unrefreshed local `main` snapshot. Fast-forwarded (`git checkout main && git merge --ff-only origin/main`); no push was needed for the reconciliation itself. Ran the full 85-file suite to confirm checkpoint 102 is intact before starting new work - all green, including the previously-noted `tests/test_concurrent_first_creation.py` flake, which passed clean this run (consistent with it being a timing flake, not a regression). Restored the two seed files and removed the two generated data files the run dirtied.
+
+### 🔎 Research pass
+
+A background research fork surveyed `agent_decisions.py`, `agent_state.py`, `task_executor_v2.py`, `budgets.py`, `performance.py`, `departments.py`, `core.py`, `strategy.py`, `tools.py`, `main_v2.py`, `web_server.py`, `visualization.py`, `llm_provider.py`, `workflows.py`, and `agent_loop.py` for a fresh, non-policy correctness defect, with every standing policy item and every bug fixed in checkpoints 1-102 explicitly excluded, and specifically told not to re-propose the keyword/negation bug shape already closed in `departments.py`. It converged on `task_executor_v2.py`'s `DepartmentHeadAgent._run_locked()`, at the line immediately after the tool-calling agent loop returns.
+
+### 🐛 Proven live before touching anything
+
+`_run_locked()` initializes `analysis` to a fixed placeholder - `f"{self.department.title()} team analyzed the task and produced a plan."` - meant to stand in for a task that never reaches a real LLM at all (`self.llm is None`). When a real LLM call *is* made through the tool-calling path, the line `analysis = run.final_content or analysis` was meant to replace that placeholder with the model's real answer. But `agent_loop.AgentRunResult.completed()`'s own docstring already warns callers "not [to] merely check[] that final_content is non-empty" - `final_content` can legitimately be `""` on a run that genuinely finished (no tool calls pending, no exception, `stopped_reason="completed"`). Python's `or` treats that empty string as falsy exactly the same as "no answer came back", silently discarding the real (empty) completed answer and substituting the mock "analyzed the task and produced a plan" text in its place - with `incomplete_reason` staying `None` and `quality_score=4.0`, the system's highest execution-health tier.
+
+Confirmed live, direct import, isolated `AgentRegistry`/`BudgetManager`/`CapacityManager`/`PerformanceAnalytics`, a fake tool-calling provider returning `content=""`, `tool_calls=[]` (a genuinely completed turn, not an error):
+
+```
+status: completed
+analysis: '(none: the agent completed with no final answer text)'   # pre-fix: 'Engineering team analyzed the task and produced a plan.'
+quality_score: 4.0
+incomplete_reason: None
+```
+
+The same `or` also feeds the escalation path: when the loop instead runs out its iteration cap (`stopped_reason="max_iterations"`) with no text ever produced across any iteration, the pre-fix placeholder was embedded verbatim inside the escalation's own `"Partial output: {analysis[:200]}"` text - an escalated, unfinished run's "partial output" was the fabricated "produced a plan" sentence, not an honest "no output" marker. Confirmed live with a provider that always requests a nonexistent tool:
+
+```
+status: escalated
+analysis: 'Escalated, not executed: agent stopped after the 4-iteration limit while still requesting tools.
+           Partial output: Engineering team analyzed the task and produced a plan.'   # pre-fix
+```
+
+`run()` → `_run_locked()` is the production path every CLI `submit`/`process` and the dashboard's `/api/submit`+`/api/process` use, so any real provider/model whose final turn has blank content - plausible on some real API responses - gets this treatment on every task it touches.
+
+Ruled out as already covered: every item on the standing policy-question list, and every bug fixed in checkpoints 1-102. The only related, already-fixed case is checkpoint 59 (an LLM call that *raised* was still reported "completed") - that fix touched only the `except Exception` branch and added its own honest placeholder for that branch specifically; it never touched this success-path `or` at all. `tests/test_llm_exception_escalates.py` only exercises the exception branch; no existing test ever drives a "completed, empty final_content" or "max_iterations, empty final_content" run. The research fork's sweep of other `x or <default>` patterns, dict-key mismatches, and rollover-skipping reads across the same module list found nothing else it could prove live in the time available.
+
+### 🔧 Fix
+
+**`task_executor_v2.py`**: the single line `analysis = run.final_content or analysis` is now an explicit three-way check - `run.final_content` wins if truthy; otherwise, an honest "(none: the agent completed with no final answer text)" if `run.completed()` is `True`, or "(none: the agent produced no final answer text before stopping)" if it ran out its iteration cap instead. The mock placeholder itself is untouched and still used verbatim when `self.llm is None` (this branch is never reached in that case, so `analysis` keeps its initializer value) - this fix only changes what happens after a real LLM call returns. No change to `stopped_reason`/`completed()` semantics, the exception branch, `quality_score`'s tiers, or the gemini/groq/nvidia single-shot `result.get("content", analysis)` fallback (already safe: it only falls back when the `"content"` key is absent, not when it's present-but-empty, so it was not exhibiting this bug).
+
+### 🧪 Validation
+
+New file `tests/test_empty_final_content_not_fabricated.py`, three tests against the real `task_executor_v2`/`agent_loop` modules (no mocking of the fix itself - only the LLM provider boundary is a test double, exactly as `test_llm_exception_escalates.py` already does):
+
+1. The exact live false positive proven above (completed, empty content): analysis is the honest placeholder, not the fabricated one; `status == "completed"`, `incomplete_reason is None`, `quality_score == 4.0`.
+2. The max-iterations/empty-content shape: `status == "escalated"`, and the embedded "Partial output:" text carries the honest "before stopping" placeholder, not the fabricated plan sentence.
+3. Regression guard: a real, non-empty final answer is used completely unchanged - the fix must not touch the common case.
+
+Ran the new file individually (all three green) and twice back-to-back for idempotency (identical PASS output both runs - `BudgetManager.allocate()` resets `spent` to 0 each call, and each test resets `state.metrics`/`current_workload`/`learned_preferences` on the registered `AgentState` per CLAUDE.md, so neither accumulates across runs). Ran the full `tests/test_*.py` suite (86 files including this new one) - all green. `python3 -m py_compile` clean on `task_executor_v2.py` and the new test file; `import main_v2, agent_decisions, agent_state, task_executor_v2, workflows, web_server, budgets, departments, performance, core, strategy, tools, llm_provider, visualization, agent_loop` clean. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+Any task whose real LLM call completes cleanly but returns empty final text (previously indistinguishable from "no LLM was configured at all") now reports an honest "no final answer text" marker instead of the mock "team analyzed the task and produced a plan" sentence - both as the task's own `analysis` field and inside an escalation's "Partial output:" text. A task whose LLM call returns any real text, empty or not configured in the first place (`self.llm is None`), is completely unaffected - this only changes what's shown when a real call ran and produced nothing.
+
+### 📝 Next Steps
+
+- All standing policy-question items from checkpoints 42-102's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()` zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker` (including its own separate falsy-zero `recommended_deadline * 100 if ... else 500` line, still deliberately unfixed since the class remains unwired/dead), `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the three workflow templates' unapprovable `design_lead`/`ceo`/`tech_lead` `approval_role`s, `DecisionResult.decision`'s dead `"reject"` branch, `web_server.py`'s `_task_summary()` list/detail split, `rank_candidate()`'s `workload_factor` ranking-quality note, `departments.py`'s `get_staff_count()`/`get_staff_range()` band-mismatch note, the negation-handling residual limits (double negation, clause-spanning negation, sarcasm, the fixed 4-word cue window), `agent_state.py`'s `available_agents(skill_required=...)` key-mismatch, and the `tests/test_concurrent_first_creation.py` threading flake (pre-existing, unrelated) - unchanged, still open.
+- New, noticed but not chased this session: the cross-department `BudgetManager.save()`/`AgentRegistry.save()`/`PerformanceAnalytics.save()` file-write race checkpoint 102's research fork tried and could not prove live (20+ runs, CPython's buffered-writer `close()` held the GIL through the flush) - still open for a future session with an injected yield point rather than timing alone, per that fork's recommendation.
+- Related but out of scope this session: the gemini/groq/nvidia single-shot path's `result.get("content", analysis)` returns an empty string as-is (no placeholder substitution) when a provider's `"content"` key is present but empty - a different, lesser shape of the same underlying "what do we show when there's no real answer" question, not fixed here since it was never proven to fabricate anything (the empty string just passes through honestly, if silently). Worth an owner decision on whether an empty single-shot answer should also get an explicit "(none: ...)" marker for consistency with the fix above, or whether a bare empty string is acceptable there.
+- No new non-policy, self-contained gap beyond the two items above was spotted and deliberately left this session. The next session should look for a new non-policy gap the way checkpoints 45-103 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 19, 2026
 
 ## 🐛 CHECKPOINT 102: `route_task()` SCORED DEPARTMENTS BY RAW KEYWORD COUNT WITH NO NEGATION HANDLING
