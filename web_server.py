@@ -59,12 +59,19 @@ def _task_summary(task: dict) -> dict:
     /api/tasks/<id> for every row. Same absence-means-never-computed
     convention as the detail view: a task that never executed (queued, or
     escalated before execution) gets neither key, not a zeroed one -
-    checkpoint 46/47 already established why that distinction matters."""
+    checkpoint 46/47 already established why that distinction matters.
+
+    Checked by KEY PRESENCE, not truthiness: an attempt that really ran and
+    really cost/scored 0.0 (e.g. an LLM call that raised before a single
+    token was spent) still has the key in `result`, genuinely computed, and
+    must be told apart from a task that never got far enough to compute it
+    at all - the same falsy-zero shape checkpoints 99/100/103 each fixed
+    elsewhere, caught here too (checkpoint 104)."""
     summary = {k: v for k, v in task.items() if k != "result"}
     result = task.get("result") or {}
-    if result.get("quality_score"):
+    if "quality_score" in result:
         summary["quality_score"] = result["quality_score"]
-    if result.get("token_cost"):
+    if "token_cost" in result:
         summary["token_cost"] = result["token_cost"]
     return summary
 

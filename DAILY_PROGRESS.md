@@ -1,3 +1,62 @@
+# Daily Progress Report - November 21, 2026
+
+## 🐛 CHECKPOINT 104: `_task_summary()` DROPPED A REAL, GENUINELY-COMPUTED $0.00 TOKEN COST AS IF THE TASK HAD NEVER BEEN ATTEMPTED
+
+Session opened with local `main` three commits **behind** the real repo state: a prior session had done checkpoints 101-103 entirely on a detached `HEAD` and never fast-forwarded (or pushed) the `main` ref itself, leaving `b4510a3`/`c32c98e`/`91ea044` reachable only from that detached `HEAD` - not from any branch, locally or on `origin`. Confirmed the three commits were real, complete work (not left mid-stream): `git show --stat` on each, full 86-file suite green at `HEAD`. Reset local `main` to `HEAD` (`git checkout -B main 91ea044`) and pushed - `origin/main` now correctly carries all three. Restored the two seed files the suite run dirtied before continuing. (Noting this as its own reconciliation shape, distinct from checkpoints 53-103's recurring "stale local ref, already pushed, just needs a fast-forward" - this time the commits had never reached `origin` at all. A future session should `git push origin main` explicitly as part of its own open/close ritual, not only when it happens to still be attached to the branch.)
+
+### 🔎 Research pass
+
+A background research fork surveyed `agent_decisions.py`, `agent_state.py`, `task_executor_v2.py`, `budgets.py`, `performance.py`, `departments.py`, `core.py`, `strategy.py`, `tools.py`, `main_v2.py`, `web_server.py`, `visualization.py`, `llm_provider.py`, `workflows.py`, and `agent_loop.py` for a fresh, non-policy correctness defect, with every standing policy item and every bug fixed in checkpoints 1-103 explicitly excluded. It converged on `web_server.py`'s `_task_summary()`.
+
+### 🐛 Proven live before touching anything
+
+`_task_summary()`'s own docstring states its contract plainly: pulling `quality_score`/`token_cost` up from a task's `result` blob to the top level (so the Tasks list can show a per-row signal without a click-through) follows "[the] same absence-means-never-computed convention as the detail view: a task that never executed (queued, or escalated before execution) gets neither key, not a zeroed one." But the code implementing that contract - `if result.get("quality_score"):` / `if result.get("token_cost"):` - checks **truthiness**, not **presence**. Python's `or`-adjacent `.get()` truthy-check treats a genuinely-computed `0.0` exactly the same as a missing key, which is precisely the falsy-zero bug shape checkpoints 99, 100, and 103 each already closed at other sites, just never caught here.
+
+It's reachable on a real production path, not just a hypothetical: `task_executor_v2.py`'s `DepartmentHeadAgent._run_locked()` has an `except Exception` branch (checkpoint 59) for when a real provider call raises - `llm_provider.py` deliberately does not fall back to mock on a genuine API failure, so this fires on real outages with real API keys configured, not only in tests. In that branch, `tokens_used` never advances past its `0` initializer (the exception fires before the line that would set it), so `mock_cost = tokens_used * 0.00001` is a real, correctly-computed `0.0` - and it's written into the returned dict unconditionally (`"token_cost": mock_cost`, no guard on the write side, in both the escalated-after-attempting and completed branches). This is a different case from the already-covered "escalated-before-execution" shape (`escalate()`'s delegation-cycle/budget-denial dict, and the decision-engine's outright-decline dict): those never compute these keys at all, by construction, so their absence really does mean "never attempted" - exactly what `_task_summary()` is trying to preserve.
+
+Confirmed live, direct import, isolated `AgentRegistry`/`BudgetManager`/`CapacityManager`/`PerformanceAnalytics`, a provider whose `generate_with_tools()` raises before any token is counted (no mocking of `_task_summary()` itself):
+
+```
+status:        escalated
+tokens_used:   0
+token_cost:    0.0                       # real, present in result
+quality_score: 2.0
+
+summary keys (pre-fix): ['department', 'id', 'quality_score', 'status']
+token_cost in summary:  False            # silently dropped
+```
+
+An attempted-and-escalated task - real staff time spent, a real (zero) token cost computed and already fed into `agent_state.record_performance()`/`analytics.record_task()` - showed up in the dashboard's Tasks list indistinguishable from a task the decision engine declined before anyone touched it. `quality_score` happens not to falsy-drop in any real path today (every production call site constructs a real `LLMProvider()`, and every branch with a truthy `self.llm` sets `quality_score` to 1.0/2.0/3.0/4.0, never `0`; only a test double passing `llm_provider=None` ever leaves it at its `0.0` initializer), so it was fixed defensively alongside `token_cost` for the same invariant, not because a live repro of its own was found.
+
+Ruled out as already covered: every item on the standing policy-question list, and every bug fixed in checkpoints 1-103. `tests/test_web_server.py`'s two related tests (`test_task_detail_endpoint_exposes_the_fields_the_dashboard_needs`, `test_escalated_task_detail_has_no_execution_only_fields`) only exercise a completed task with real nonzero `token_cost` and a genuinely never-attempted escalation; neither drives the exception/attempted-then-escalated path through `_task_summary()`.
+
+### 🔧 Fix
+
+**`web_server.py`**: `_task_summary()`'s two guards changed from `if result.get("quality_score"):` / `if result.get("token_cost"):` to `if "quality_score" in result:` / `if "token_cost" in result:` - presence, not truthiness, matching the invariant the function's own docstring already claimed. No change to any other field, to the detail view (`/api/tasks/<id>`, which already returns the full `result` blob unfiltered and was never affected), or to `task_executor_v2.py`'s write side (already correct - it writes these keys unconditionally when, and only when, an attempt genuinely ran).
+
+### 🧪 Validation
+
+New file `tests/test_task_summary_zero_values.py`, three tests:
+
+1. The exact live false positive proven above, via the real `DepartmentHeadAgent`/exploding-provider path (no mocking of the fix target): a real `token_cost: 0.0` now survives into the summary.
+2. Regression guard: a synthetic genuinely-never-attempted result (mirroring `escalate()`'s own shape - no `quality_score`/`token_cost` key at all) still produces a summary with neither key.
+3. Regression guard: a completed task with real nonzero `quality_score`/`token_cost` is promoted exactly as before.
+
+Ran the new file individually (all three green) and twice back-to-back for idempotency (identical output both runs). Ran the full `tests/test_*.py` suite (87 files including this new one) - all green. `python3 -m py_compile` clean on `web_server.py` and the new test file; `import main_v2, agent_decisions, agent_state, task_executor_v2, workflows, web_server, budgets, departments, performance, core, strategy, tools, llm_provider, visualization, agent_loop` clean. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+The dashboard's `/api/tasks` list view (and anything reading `GET /api/tasks` directly) now shows a `quality_score`/`token_cost` badge for a task whose real execution attempt genuinely scored or cost exactly `0` - most concretely, a task that reached a real LLM call which then raised before any token was counted. A task that was declined before any attempt (budget denial, capacity denial, decision-engine decline, delegation-cycle/depth escalation) is completely unaffected - those result dicts never compute these keys at all, so they still show neither badge. A task with any real nonzero value is also unaffected - this only changes whether a real zero is told apart from "never computed," not the values themselves or the detail view.
+
+### 📝 Next Steps
+
+- All standing policy-question items from checkpoints 42-103's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()` zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker` (including its own separate falsy-zero `recommended_deadline * 100 if ... else 500` line, still deliberately unfixed since the class remains unwired/dead), `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the three workflow templates' unapprovable `design_lead`/`ceo`/`tech_lead` `approval_role`s, `DecisionResult.decision`'s dead `"reject"` branch, `web_server.py`'s `_task_summary()` list/detail split (the split itself is intentional and unchanged; only its truthy-vs-presence check was the bug), `rank_candidate()`'s `workload_factor` ranking-quality note, `departments.py`'s `get_staff_count()`/`get_staff_range()` band-mismatch note, the negation-handling residual limits (double negation, clause-spanning negation, sarcasm, the fixed 4-word cue window), `agent_state.py`'s `available_agents(skill_required=...)` key-mismatch, and the `tests/test_concurrent_first_creation.py` threading flake (pre-existing, unrelated) - unchanged, still open.
+- Still open, noted by prior sessions and not chased again this one: the cross-department `BudgetManager.save()`/`AgentRegistry.save()`/`PerformanceAnalytics.save()` file-write race (never proven live across 20+ runs by two prior sessions - CPython's buffered-writer `close()` holds the GIL through the flush at this data size); the gemini/groq/nvidia single-shot path's `result.get("content", analysis)` silently passing through an empty string with no placeholder (never proven to fabricate anything, left as an owner policy question on consistency).
+- A process gap, not a code gap: today's detached-`HEAD`/unpushed-`main` incident (see the top of this entry) suggests the daily routine's own close-out should end with an explicit `git push origin main` and a check that `origin/main`'s log matches local `HEAD`, rather than assuming the branch ref followed along - this is the second distinct way that assumption has broken (checkpoints 53-103's stale-but-already-pushed ref being the first).
+- No new non-policy, self-contained gap beyond the items above was spotted and deliberately left this session. The next session should look for a new non-policy gap the way checkpoints 45-104 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 20, 2026
 
 ## 🐛 CHECKPOINT 103: A GENUINELY COMPLETED RUN WITH EMPTY FINAL TEXT WAS REPORTED AS A FABRICATED PLAN
