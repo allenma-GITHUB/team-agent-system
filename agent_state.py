@@ -316,8 +316,27 @@ class AgentRegistry:
                 if skill_required in state.profile.expertise_areas
             ]
 
-        # Sort by affinity for task type (if known) and then by availability
-        return sorted(available, key=lambda s: (-s.learned_preferences.get(skill_required, 0), s.current_workload))
+        # Sort by affinity for task type (if known) and then by availability.
+        #
+        # learned_preferences is only ever written keyed by an agent's own
+        # department (learn_preference(self.department, ...) in
+        # task_executor_v2.py's _run_locked()) - never by a skill tag.
+        # skill_required is a skill/expertise string like "backend", and the
+        # one real production caller (agent_decisions.py's
+        # find_best_delegate()) passes no skill_required at all, so this key
+        # was always either a skill tag that can never be a learned_preferences
+        # key, or None, which can't be a dict key either - the affinity term
+        # evaluated to the hardcoded default for every candidate, every time,
+        # silently degenerating "sort by affinity, then availability" into
+        # "sort by availability" alone. Confirmed live: a candidate with
+        # learned_preferences={"engineering": 1.0} (max real affinity for
+        # their own department's work) sorted behind a zero-affinity peer
+        # purely on lower workload. Same key-mismatch shape checkpoint 99
+        # already fixed in agent_decisions.py's rank_candidate()/decide() -
+        # keying on the agent's own department instead asks the question
+        # this factor is meant to answer (does this agent like their own
+        # kind of work), the same way those two sites now do.
+        return sorted(available, key=lambda s: (-s.learned_preferences.get(s.profile.department, 0), s.current_workload))
 
 
 # Global registry instance

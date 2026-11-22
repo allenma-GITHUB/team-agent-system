@@ -1,3 +1,60 @@
+# Daily Progress Report - November 22, 2026
+
+## 🐛 CHECKPOINT 105: `available_agents()`'S AFFINITY SORT NEVER READ A KEY THAT COULD EXIST
+
+Session opened in a detached-`HEAD` state again (the same recurring container quirk named in checkpoints 53-104): local `HEAD` sat detached on checkpoint 104's commit (`730bbd6`) with the locally-cached `main` ref still pointing at checkpoint 100 (`797655b`). A real `git fetch origin main` showed `origin/main` already at `730bbd6`, matching detached `HEAD` exactly - checkpoint 104's push had, in fact, succeeded; the stale ref was purely this container's unrefreshed local `main` snapshot (the same shape checkpoint 103 hit, not checkpoint 104's "never reached origin at all" shape). Fast-forwarded (`git checkout main && git merge --ff-only origin/main`). Ran the full 87-file suite to confirm checkpoint 104 is intact before starting new work - all green. Restored the two seed files and removed the two generated data files the run dirtied.
+
+### 🔎 Research pass
+
+A background research fork surveyed `agent_decisions.py`, `agent_state.py`, `task_executor_v2.py`, `budgets.py`, `performance.py`, `departments.py`, `core.py`, `strategy.py`, `tools.py`, `main_v2.py`, `web_server.py`, `visualization.py`, `llm_provider.py`, `workflows.py`, and `agent_loop.py` for a fresh, non-policy correctness defect, with every standing policy item and every bug fixed in checkpoints 1-104 explicitly excluded. It was also pointed at one item already named as still-open in the standing Next Steps list - `agent_state.py`'s `available_agents(skill_required=...)` key-mismatch - to confirm whether it was real and live before counting it as this session's defect. It was.
+
+### 🐛 Proven live before touching anything
+
+`AgentRegistry.available_agents()`'s own comment states its contract: "Sort by affinity for task type (if known) and then by availability" - implemented as `sorted(available, key=lambda s: (-s.learned_preferences.get(skill_required, 0), s.current_workload))`. But `learned_preferences` is only ever written keyed by an agent's own *department* (`learn_preference(self.department, ...)` in `task_executor_v2.py`'s `_run_locked()`), never by a skill tag - and `skill_required` is a skill/expertise string like `"backend"`. The one real production caller, `agent_decisions.py`'s `find_best_delegate()`, calls `self.registry.available_agents(task_hours=context.estimated_hours)` with no `skill_required` at all, so the lookup key there is literally `None`. Either way - a skill tag that can never be a `learned_preferences` key, or `None`, which can't be a dict key either - the affinity term evaluates to the hardcoded default for every candidate, every time, silently degenerating "sort by affinity, then availability" into "sort by availability" alone.
+
+Confirmed live, isolated `AgentRegistry`, two candidates differing only in `learned_preferences` and workload:
+
+```
+eng_a: learned_preferences={'engineering': 1.0} (max real affinity for own dept's work), workload=1
+eng_b: learned_preferences={}                    (no preference),                        workload=0
+
+available_agents(skill_required="backend") order (pre-fix): ['eng_b', 'eng_a']
+available_agents() order, no skill_required - the real prod call (pre-fix): ['eng_b', 'eng_a']
+```
+
+`eng_b`, with zero stated affinity, sorted first purely on lower workload; `eng_a`'s real, maximal (1.0) affinity for exactly this kind of work never factored in, under either calling convention. Same key-mismatch shape checkpoint 99 already fixed in `agent_decisions.py`'s `rank_candidate()`/`decide()`'s `affinity_diff` (both now correctly read `candidate.profile.department`) - just never fixed at this sibling call site, even though it has sat on the standing Next Steps list as a named-but-unfixed item since at least checkpoint 42.
+
+Checked the production blast radius honestly rather than overstating it: `find_best_delegate()` is `available_agents()`'s only real caller, and it only uses the returned list to build a filtered candidate *set* before re-ranking with `max(candidates, key=rank_candidate)` - `max()` doesn't depend on input order except to break an exact tie in `rank_candidate()`'s score, which is already a narrow case. So today's fix corrects a violated contract on a function whose own docstring makes an affinity-ordering promise it never kept, and removes a real-but-narrow tie-break risk in the one production caller - it is not, by itself, the kind of every-decision production impact checkpoint 104's bug was. Recorded honestly rather than inflated.
+
+Ruled out as already covered: every item on the standing policy-question list, and every bug fixed in checkpoints 1-104. `tests/test_agent_decisions.py:158` and `tests/test_delegate_capacity_check.py:188-190` both call `available_agents(skill_required=...)` but neither asserts on resulting order, and neither test's candidate pool has two agents differing only in `learned_preferences`.
+
+### 🔧 Fix
+
+**`agent_state.py`**: `available_agents()`'s sort key changed from `s.learned_preferences.get(skill_required, 0)` to `s.learned_preferences.get(s.profile.department, 0)`, matching the pattern checkpoint 99 already established at the two sibling sites in `agent_decisions.py`. A comment at the call site records the key-mismatch shape and the confirmed-live repro, so a future reader doesn't have to re-derive why the lookup key changed. No change to the capacity filter (`skill_required in state.profile.expertise_areas`, unaffected - it was never the broken half of this function), `is_available()`, or any caller's signature.
+
+### 🧪 Validation
+
+New file `tests/test_available_agents_affinity_sort.py`, two tests:
+
+1. Two candidates differing only in `learned_preferences` and workload: the one with real, maximal affinity for their own department now correctly outranks a zero-affinity peer with lower workload, under both `skill_required="backend"` and the real production no-`skill_required` call.
+2. Regression guard: with no learned-preference data on either candidate, the sort still falls back to workload alone (the pre-fix behavior for the only case that ever had any real signal to go on).
+
+Ran the new file individually (both green) and twice back-to-back for idempotency (identical output both runs). Ran the full `tests/test_*.py` suite (88 files including this new one) - all green. `python3 -m py_compile` clean on `agent_state.py` and the new test file; `import main_v2, agent_decisions, agent_state, task_executor_v2, workflows, web_server, budgets, departments, performance, core, strategy, tools, llm_provider, visualization, agent_loop` clean. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json`/`data/test_*.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+`find_best_delegate()`'s candidate pool is now built from a correctly-affinity-sorted list rather than a capacity-filtered-but-unordered one. Because `find_best_delegate()` re-ranks with `rank_candidate()`/`max()` regardless of input order, this changes `decide()`'s actual delegate choice only in the narrow case where two or more candidates tie exactly on `rank_candidate()`'s score - in that case the delegate chosen can now differ from before (Python's `max()` returns the first maximal element in iteration order, and that order has changed). No change to any case with a clear ranking winner, to `rank_candidate()`'s formula itself, or to any other caller.
+
+### 📝 Next Steps
+
+- All standing policy-question items from checkpoints 42-104's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()` zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker` (including its own separate falsy-zero `recommended_deadline * 100 if ... else 500` line, still deliberately unfixed since the class remains unwired/dead), `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the three workflow templates' unapprovable `design_lead`/`ceo`/`tech_lead` `approval_role`s, `DecisionResult.decision`'s dead `"reject"` branch, `web_server.py`'s `_task_summary()` list/detail split (the split itself is intentional and unchanged), `rank_candidate()`'s `workload_factor` ranking-quality note, `departments.py`'s `get_staff_count()`/`get_staff_range()` band-mismatch note, the negation-handling residual limits (double negation, clause-spanning negation, sarcasm, the fixed 4-word cue window), and the `tests/test_concurrent_first_creation.py` threading flake (pre-existing, unrelated) - unchanged, still open.
+- **Closed this session**: `agent_state.py`'s `available_agents(skill_required=...)` key-mismatch, named as still-open since checkpoint 42, is fixed (see above) - removed from this list.
+- Still open, noted by prior sessions and not chased again this one: the cross-department `BudgetManager.save()`/`AgentRegistry.save()`/`PerformanceAnalytics.save()` file-write race (never proven live across 20+ runs by two prior sessions - CPython's buffered-writer `close()` holds the GIL through the flush at this data size); the gemini/groq/nvidia single-shot path's `result.get("content", analysis)` silently passing through an empty string with no placeholder (never proven to fabricate anything, left as an owner policy question on consistency).
+- A process gap, not a code gap: today's detached-`HEAD` incident (see the top of this entry) was the checkpoint-103 shape (stale local ref, already pushed - just needed a fast-forward), not the checkpoint-104 shape (never reached `origin` at all) - both have now recurred more than once. A future session should still make `git fetch origin main` plus a fast-forward (or reconciliation) its first step before trusting any locally-cached `main` ref, exactly as checkpoints 103 and 104 both already recommended.
+- No new non-policy, self-contained gap beyond the items above was spotted and deliberately left this session. The next session should look for a new non-policy gap the way checkpoints 45-105 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 21, 2026
 
 ## 🐛 CHECKPOINT 104: `_task_summary()` DROPPED A REAL, GENUINELY-COMPUTED $0.00 TOKEN COST AS IF THE TASK HAD NEVER BEEN ATTEMPTED
