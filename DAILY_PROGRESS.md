@@ -1,3 +1,75 @@
+# Daily Progress Report - November 23, 2026
+
+## 🐛 CHECKPOINT 106: `show_task()` AND `workflow_status()` HAD THE SAME TRUTHY-ZERO BUG CHECKPOINT 104 FIXED AT ONE SITE AND LEFT AT TWO OTHERS
+
+Session opened on a detached `HEAD` yet again - checkpoint 105's shape exactly (local `main` cached at checkpoint 100's commit, `HEAD` sitting on checkpoint 105's `c6579ba` with no branch pointing at it). A real `git fetch origin main` showed `origin/main` already at `c6579ba`, matching detached `HEAD` - checkpoint 105's push had succeeded; the stale ref was purely this container's unrefreshed local snapshot. Fast-forwarded (`git checkout main && git merge --ff-only origin/main`). Ran the full 88-file suite before starting new work - all green. Restored the two seed files and removed the two generated data files the run dirtied.
+
+### 🔎 Research pass
+
+Surveyed `agent_decisions.py`, `agent_state.py`, `task_executor_v2.py`, `budgets.py`, `performance.py`, `departments.py`, `core.py`, `strategy.py`, `tools.py`, `main_v2.py`, `web_server.py`, `visualization.py`, `llm_provider.py`, `workflows.py`, and `agent_loop.py` for a fresh, non-policy correctness defect, with every bug fixed in checkpoints 1-105 and every standing policy item excluded. Grepped every file for truthy-checked `.get()` calls, dict key mismatches, and status-mislabeling - this codebase's recurring bug family - and checked each hit against a real call path.
+
+### 🐛 Proven live before touching anything
+
+Checkpoint 104 fixed `web_server.py`'s `_task_summary()`: `if result.get("quality_score"):` / `if result.get("token_cost"):` treated a real, computed `0`/`0.0` exactly like a missing key, hiding an attempted-then-escalated task's real (zero) cost. That checkpoint's own fix comment named the correct contract - key *presence*, not truthiness - but the fix was applied only at that one function. `main_v2.py` has the identical shape at **two** more sites reading the exact same result-dict structure, both missed:
+
+- `show_task()` (the `main_v2.py show <id>` CLI command): `if result.get('tokens_used'):` and `if result.get('quality_score'):`
+- `workflow_status()` (the `main_v2.py workflow-status <id>` CLI command): `if result.get("quality_score"):` and `if result.get("tokens_used"):` on a workflow step's stored result
+
+Both are reachable the same way checkpoint 104's repro was: `task_executor_v2.py`'s `DepartmentHeadAgent._run_locked()` `except Exception` branch leaves `tokens_used` at its `0` initializer and sets `quality_score = 2.0` - a real, present `tokens_used: 0` alongside a real, present, nonzero `quality_score`.
+
+Confirmed live, full stack, no mocking of the functions under test:
+
+```
+# show_task(), via a real DepartmentHeadAgent + exploding provider:
+status: escalated, tokens_used: 0 (present: True), quality_score: 2.0
+
+`main_v2.py show <id>` printed (pre-fix):
+  LLM Provider: mock
+  Quality Score: 2.0          <- "Tokens Used:" line missing entirely
+
+# workflow_status(), via a real WorkflowEngine.execute_step() + TaskExecutor:
+step_result: tokens_used: 0 (present: True), quality_score: 2.0
+
+`main_v2.py workflow-status <id>` printed (pre-fix):
+  triage  in_progress
+    Support team escalated task after 0.00s: ... (quality 2.0)   <- cost half of the line missing
+```
+
+A human running `show <id>` on an attempted-and-escalated task saw a quality score with no evidence the task was ever attempted in cost/token terms at all; the same gap showed up a step at a time in `workflow-status`. Same bug family as checkpoints 99 (`learned_preferences` key mismatch), 100 (`recommended_deadline or 5.0`), 103 (`run.final_content or analysis`), 104, and 105 (`available_agents()`'s mis-keyed affinity lookup) - a real zero/falsy value mistaken for "never computed," just two sites checkpoint 104's own sweep didn't reach.
+
+Ruled out as already covered: every bug fixed in checkpoints 1-105, and every standing policy-question item. `tests/test_task_summary_zero_values.py` only exercises `web_server._task_summary()`, never these two CLI functions.
+
+### 🔧 Fix
+
+**`main_v2.py`**: both guards at each site changed from truthy checks to presence checks, matching checkpoint 104's established pattern exactly:
+- `show_task()`: `if result.get('tokens_used'):` → `if 'tokens_used' in result:`; `if result.get('quality_score'):` → `if 'quality_score' in result:`
+- `workflow_status()`: `if result.get("quality_score"):` → `if "quality_score" in result:`; `if result.get("tokens_used"):` → `if "tokens_used" in result:`
+
+No other field in either function was touched. `workflow_status()`'s outer `if result and result.get("summary"):` guard was left as-is - `summary` is always a non-empty string whenever `TaskExecutor.execute()` produces the result (both the completed and escalated branches build a real sentence), so there was no evidence of a real-but-falsy `summary` to fix, unlike `tokens_used`/`quality_score`.
+
+### 🧪 Validation
+
+New file `tests/test_cli_zero_value_display.py`, three tests, each driving real classes end to end with no mocking of the CLI functions under test:
+
+1. `show_task()`: a real `DepartmentHeadAgent` run through an exploding provider, fed through the real `main_v2.show_task()` (with `main_v2.TASKS_FILE` pointed at an isolated file) - asserts the printed output now contains `"Tokens Used: 0"` alongside `"Quality Score: 2.0"`.
+2. `workflow_status()`: a real `WorkflowEngine.execute_step()` through a real `TaskExecutor` and the same exploding provider, fed through the real `main_v2.workflow_status()` (with `main_v2.workflow_engine` swapped to an isolated engine) - asserts the step detail line now contains both `"(quality 2.0)"` and `"$0.00000"`.
+3. Regression guard: a genuinely never-attempted escalation (budget/capacity/decision-engine denial shape, no `tokens_used`/`quality_score` key at all) still shows neither field in `show_task()`'s output.
+
+Ran the new file individually (all green) and twice back-to-back for idempotency (identical output both runs). Ran the full `tests/test_*.py` suite (89 files including this new one) - all green. `python3 -m py_compile` clean on `main_v2.py` and the new test file; `import main_v2` clean. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json`/`data/test_*.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+`main_v2.py show <id>` now prints a `Tokens Used:` line (showing `$0.00000`) for any task that was genuinely attempted and then escalated via an exception with zero tokens counted, where it previously printed nothing for that field. `main_v2.py workflow-status <id>` now appends the cost half of a step's detail line (`($0.00000)`) in the same real-zero case, where it previously showed only the quality annotation. No change to any task/step with a real nonzero `tokens_used`/`quality_score`, or to any task/step that was escalated *before* execution (no keys to begin with, still shows neither field) - those paths produce identical output to before.
+
+### 📝 Next Steps
+
+- All standing policy-question items from checkpoints 42-105's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()` zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker` (including its own separate falsy-zero `recommended_deadline * 100 if ... else 500` line, still deliberately unfixed since the class remains unwired/dead), `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the three workflow templates' unapprovable `design_lead`/`ceo`/`tech_lead` `approval_role`s, `DecisionResult.decision`'s dead `"reject"` branch, `web_server.py`'s `_task_summary()` list/detail split (intentional, unchanged), `rank_candidate()`'s `workload_factor` ranking-quality note, `departments.py`'s `get_staff_count()`/`get_staff_range()` band-mismatch note, the negation-handling residual limits, the `tests/test_concurrent_first_creation.py` threading flake (pre-existing, unrelated), the cross-department file-write race (never proven live), and the gemini/groq/nvidia single-shot path's empty-string passthrough (never proven to fabricate anything) - unchanged, still open.
+- **Closed this session**: the truthy-vs-presence `tokens_used`/`quality_score` guards in `main_v2.py`'s `show_task()` and `workflow_status()`, the two sibling sites checkpoint 104's own fix didn't reach - fixed (see above).
+- `workflow_status()`'s outer `if result and result.get("summary"):` guard and `main_v2.py`'s `result.get('used_tools')`/`result.get('delegation_declined')`/other boolean-flag checks were deliberately left alone - no evidence any of them is ever a real-but-falsy value rather than a genuine absent-vs-True/False distinction, unlike the two numeric fields fixed here. A future session should not re-open these without a live repro.
+- No new non-policy, self-contained gap beyond the item above was spotted and deliberately left this session. The next session should look for a new non-policy gap the way checkpoints 45-106 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 22, 2026
 
 ## 🐛 CHECKPOINT 105: `available_agents()`'S AFFINITY SORT NEVER READ A KEY THAT COULD EXIST

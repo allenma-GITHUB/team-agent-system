@@ -231,18 +231,27 @@ def show_task(task_id: str):
         # delegation_chain, ...) come straight from DepartmentHeadAgent.run() -
         # TaskExecutor.execute() used to discard all of them before reaching
         # this dict, so a task's real cost/handling was invisible outside the
-        # budget manager's own expense log. Guarded with .get()s: an
-        # escalated-before-execution result (decision engine or budget denial)
-        # never had these fields to begin with, only a completed or
-        # iteration-exhausted run does.
+        # budget manager's own expense log. Guarded on KEY PRESENCE, not
+        # truthiness: an escalated-before-execution result (decision engine
+        # or budget denial) never had these fields to begin with, only a
+        # completed or iteration-exhausted run does - but an attempted-then-
+        # escalated run (DepartmentHeadAgent._run_locked()'s own `except
+        # Exception` branch) genuinely computes tokens_used=0/token_cost=0.0
+        # before failing. `if result.get('tokens_used'):` treated that real,
+        # present 0 exactly like a missing key, hiding it - the same
+        # truthy-vs-presence bug checkpoint 104 fixed at web_server.py's
+        # _task_summary(), left unswept at this sibling CLI site. Confirmed
+        # live: an exploding provider's result has tokens_used=0,
+        # quality_score=2.0, both present - pre-fix, `show <task_id>` printed
+        # "Quality Score: 2.0" with no "Tokens Used:" line at all.
         if result.get('llm_provider'):
             print(f"  LLM Provider: {result['llm_provider']}")
-        if result.get('tokens_used'):
+        if 'tokens_used' in result:
             charge_note = ("" if result.get('token_cost_charged', True)
                            else f" [NOT CHARGED: {result.get('token_budget_note')}]")
             print(f"  Tokens Used: {result['tokens_used']} "
                   f"(${result.get('token_cost', 0):.5f}){charge_note}")
-        if result.get('quality_score'):
+        if 'quality_score' in result:
             print(f"  Quality Score: {result['quality_score']}")
         if result.get('metrics'):
             m = result['metrics']
@@ -537,9 +546,16 @@ def workflow_status(instance_id: str):
         result = status["step_results"].get(step_id)
         if result and result.get("summary"):
             detail = f"    {result['summary']}"
-            if result.get("quality_score"):
+            # Same truthy-vs-presence bug as show_task()'s tokens_used/
+            # quality_score guards above (see that comment) - a step that
+            # really ran and really escalated via an exception has a real,
+            # present tokens_used=0/quality_score=2.0, not a missing key.
+            # Confirmed live: executing a workflow step through an exploding
+            # provider showed "(quality 2.0)" with the cost half of the same
+            # line silently dropped.
+            if "quality_score" in result:
                 detail += f" (quality {result['quality_score']})"
-            if result.get("tokens_used"):
+            if "tokens_used" in result:
                 detail += f" (${result.get('token_cost', 0):.5f})"
             print(detail)
 
