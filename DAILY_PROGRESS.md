@@ -1,3 +1,56 @@
+# Daily Progress Report - November 24, 2026
+
+## 🐛 CHECKPOINT 107: THE MOCK TOOL-CALLING PATH PICKED A DEPARTMENT BY PLAIN SUBSTRING, NOT A WORD-BOUNDED MATCH
+
+Session opened cleanly this time - local `main` already matched `origin/main` at checkpoint 106's `c152555`, no detached-`HEAD` reconciliation needed. Ran the full 89-file suite before starting new work - all green. Restored the two seed files the run dirtied.
+
+### 🔎 Research pass
+
+A background research fork surveyed `agent_decisions.py`, `agent_state.py`, `task_executor_v2.py`, `budgets.py`, `performance.py`, `departments.py`, `core.py`, `strategy.py`, `tools.py`, `main_v2.py`, `web_server.py`, `visualization.py`, `llm_provider.py`, `workflows.py`, and `agent_loop.py` for a fresh, non-policy correctness defect, with every bug fixed in checkpoints 1-106 and every standing policy item excluded. It converged on `llm_provider.py`'s `_mock_pick_department()`.
+
+### 🐛 Proven live before touching anything
+
+`_mock_pick_department()` - called by `_mock_tool_response()`, which is the **only** tool-calling path this environment ever actually exercises, since no API key is configured anywhere and `LLMProvider.select_provider()` always falls back to `"mock"` - picked a department by plain substring containment: `if dept.lower() in text:`. This is the identical naive-substring bug shape checkpoints 38, 97, and 98 already fixed at three other sites (`departments.py`'s `route_task()`, `infer_required_skills()`, and `estimate_hours()`/`estimate_complexity()`/`estimate_urgency()` - "typo" matching inside "typography", "migration" inside "immigration") - just never swept to this fourth site. Two of this system's real department names from `config.json` are themselves substrings of common English words: "support" is a substring of "supported"/"unsupported"/"supportive", and "product" is a substring of "production"/"productive"/"reproduction".
+
+Confirmed live via the real agent-run pipeline, no mocking of `_mock_pick_department()`, the tool registry, or `LLMProvider` itself:
+
+```
+main_v2.run_agent(
+    "Is this decision well-supported? Should finance sign off on the "
+    "budget to afford this?"
+)
+```
+
+names "finance" explicitly and no other department, yet the agent's one tool call was `get_department_budget(department='support')` - looking up and displaying SUPPORT's $5,000 budget as the answer to a question about FINANCE affording something, purely because "supported" contains "support" as a substring and department iteration order (`config.json`'s dict order: engineering, design, support, research, sales, product, finance) checks "support" long before "finance" ever gets a chance. FINANCE's real $99,000 allocation was never looked up at all.
+
+Ruled out as already covered: every bug fixed in checkpoints 1-106, and every standing policy-question item. No existing test exercises `_mock_pick_department()` or the mock provider's department-selection behavior at all.
+
+### 🔧 Fix
+
+**`llm_provider.py`**: added `import re`; changed `_mock_pick_department()`'s match from `if dept.lower() in text:` to `if re.search(r"\b" + re.escape(dept.lower()) + r"\b", text):` - a word-bounded match, matching the pattern checkpoints 38/97/98 already established at the three sibling sites in `departments.py`. A comment at the call site records the bug shape, names the three prior same-family fixes, and quotes the confirmed-live repro. No change to the fallback (`"engineering"` when no department name matches), department iteration order, or any other function.
+
+### 🧪 Validation
+
+New file `tests/test_mock_department_word_boundary.py`, two tests, both driving real classes with no mocking of the function under test:
+
+1. `_mock_pick_department()` direct cases: three substring-collision texts (finance/"well-supported", research/"productive", design/"reproduce") each now resolve to the department genuinely named, not the substring hit; two regression guards confirm a literal, intended mention of "support" or "product" still resolves to that department; a no-department-named case still falls back to "engineering".
+2. Full pipeline: a real `LLMProvider` → `run_agent_loop()` → `ToolRegistry` → `get_department_budget` chain, isolated budgets (`support`: $5,000, `finance`: $99,000), asserts the one tool call targets `department='finance'` and returns the real $99,000, with $5,000 nowhere in the result.
+
+Ran the new file individually (both green) and twice back-to-back for idempotency (byte-identical output both runs). Ran the full `tests/test_*.py` suite (90 files including this new one) - all green. `python3 -m py_compile` clean on `llm_provider.py` and the new test file; `import` of all 15 source modules clean. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json`/`data/test_*.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+Any real agent-run question under the mock provider (i.e. every real task execution in this environment, since no live API key is configured) whose wording contains "supported"/"unsupported"/"supportive" or "production"/"productive"/"reproduction" without otherwise naming the "support" or "product" department will now have its simulated budget/capacity tool call target whichever department the text actually names (or fall back to "engineering" if none is named), instead of silently defaulting to "support"/"product" on the substring collision. No change to any question that genuinely names "support" or "product" literally, nor to any question naming no department at all - both keep their pre-fix behavior exactly.
+
+### 📝 Next Steps
+
+- All standing policy-question items from checkpoints 42-106's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()` zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker` (including its own separate falsy-zero `recommended_deadline * 100 if ... else 500` line, still deliberately unfixed since the class remains unwired/dead), `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the three workflow templates' unapprovable `design_lead`/`ceo`/`tech_lead` `approval_role`s, `DecisionResult.decision`'s dead `"reject"` branch, `web_server.py`'s `_task_summary()` list/detail split (intentional, unchanged), `rank_candidate()`'s `workload_factor` ranking-quality note, `departments.py`'s `get_staff_count()`/`get_staff_range()` band-mismatch note, the negation-handling residual limits, the `tests/test_concurrent_first_creation.py` threading flake (pre-existing, unrelated), the cross-department file-write race (never proven live), and the gemini/groq/nvidia single-shot path's empty-string passthrough (never proven to fabricate anything) - unchanged, still open.
+- **Closed this session**: `llm_provider.py`'s `_mock_pick_department()` plain-substring department match, the fourth site of the checkpoints-38/97/98 naive-substring bug family, never swept here before - fixed (see above).
+- **New, narrower, deliberately-not-chased-further observation**: `_mock_pick_department()`'s word-boundary fix still resolves ties by `config.json`'s fixed department iteration order (engineering, design, support, research, sales, product, finance) when a question names two or more departments by a real word-boundary match - e.g. a question naming both "support" and "finance" literally still picks "support" first, same as before this fix. This is a plausible-but-unproven further gap (no live repro attempted this session, and "first department named wins" vs. "last department named wins" vs. "most-mentioned department wins" is itself a policy question about intended mock behavior, not a clear defect) - left here for a future session or an owner decision rather than fixed speculatively.
+- No new non-policy, self-contained gap beyond the item above was spotted and deliberately left this session. The next session should look for a new non-policy gap the way checkpoints 45-107 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 23, 2026
 
 ## 🐛 CHECKPOINT 106: `show_task()` AND `workflow_status()` HAD THE SAME TRUTHY-ZERO BUG CHECKPOINT 104 FIXED AT ONE SITE AND LEFT AT TWO OTHERS

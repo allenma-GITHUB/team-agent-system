@@ -4,6 +4,7 @@ Gracefully degrades: if API keys missing, uses mock responses.
 """
 import os
 import json
+import re
 from typing import Optional, Dict, Any
 from pathlib import Path
 
@@ -538,8 +539,24 @@ def _mock_pick_department(text: str) -> str:
     # which is the property that lets it be imported anywhere without
     # dragging the domain layer along.
     from departments import DepartmentManager
+
+    # \b-bounded, not plain substring "in" - the same naive-substring bug
+    # shape checkpoints 38/97/98 already fixed for route_task()/
+    # infer_required_skills()/estimate_hours()-complexity()-urgency(),
+    # never applied here. "support" is a plain substring of "supported"/
+    # "unsupported"/"supportive", and "product" of "production"/
+    # "productive"/"reproduction" - both real department names in
+    # config.json. Confirmed live via the real agent-run pipeline (no
+    # mocking of this function or the tool registry): the question "Is
+    # this decision well-supported? Should finance sign off on the budget
+    # to afford this?" - which names "finance" explicitly and no other
+    # department - picked "support" instead, purely because "supported"
+    # contains "support" and department iteration order (config.json's
+    # dict order) checks "support" before "finance" ever gets a chance.
+    # The mock then looked up and displayed SUPPORT's budget as the answer
+    # to a question about FINANCE affording something, via get_department_budget.
     for dept in DepartmentManager.get_departments():
-        if dept.lower() in text:
+        if re.search(r"\b" + re.escape(dept.lower()) + r"\b", text):
             return dept
     return "engineering"
 
