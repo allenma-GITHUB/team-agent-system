@@ -383,10 +383,27 @@ class DepartmentManager:
         is the generic placeholder ([department]). Absence of a recognized
         keyword is treated as "no specific skill demand", not as license to
         assume one that isn't in the text.
+
+        A keyword only counts if it has at least one non-negated match
+        (_is_negated(), checkpoint 98) - the identical negation-blindness
+        bug checkpoint 98 fixed for estimate_hours()/estimate_complexity()/
+        estimate_urgency() and checkpoint 102 fixed for route_task(), never
+        swept to this sibling even though it scans the same desc_lower with
+        the same keyword-tier shape. Confirmed live (checkpoint 108):
+        infer_required_skills("This is not a deployment issue - just a
+        customer support ticket about a confusing error message") returned
+        ['deployment', 'customer_service'] - "deployment" is a bare
+        word-boundary hit inside the very clause denying it - and
+        support_head (expertise customer_service/problem_solving/
+        documentation, no "deployment") then escalated that plain support
+        ticket via can_execute()'s real skill-gap check, reasoning "Missing
+        expertise in: deployment", instead of executing it.
         """
         desc_lower = description.lower()
         skills = []
         for match in _SKILL_KEYWORD_PATTERN.finditer(desc_lower):
+            if _is_negated(desc_lower, match.start()):
+                continue
             skill = SKILL_KEYWORDS[match.group(1)]
             if skill not in skills:
                 skills.append(skill)

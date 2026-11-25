@@ -1,3 +1,59 @@
+# Daily Progress Report - November 25, 2026
+
+## 🐛 CHECKPOINT 108: `infer_required_skills()` HAD NO NEGATION HANDLING, THE FOURTH SIBLING OF THE CHECKPOINT-98/102 BUG FAMILY
+
+Session opened with local `main` detached at checkpoint 107's `206fa42` (one commit ahead of the local `main` ref, same `HEAD`-reconciliation shape prior sessions have hit). Fetched `origin/main` first this time before assuming anything was unpushed: checkpoint 107 was already on GitHub (`origin/main` was at `206fa42`, not stale `c152555` as the unfetched local remote-tracking ref suggested) - so nothing was actually lost, only the local `main` branch pointer needed fast-forwarding to match. Ran the full 90-file suite before starting new work - all green. Restored the two seed files and removed the generated budget/workflow files the run dirtied.
+
+### 🔎 Research pass
+
+A background research fork surveyed `core.py`, `strategy.py`, `agent_loop.py`, `agent_decisions.py`, `agent_state.py`, `tools.py`, `departments.py`, `budgets.py`, `web_server.py`, `performance.py`, `llm_provider.py`, `workflows.py`, `main_v2.py`, `task_executor_v2.py`, and `visualization.py` for a fresh, non-policy correctness defect, with every bug fixed in checkpoints 1-107 and every standing policy item excluded. It converged on `departments.py`'s `infer_required_skills()`.
+
+### 🐛 Proven live before touching anything
+
+`infer_required_skills()` - the function that supplies `required_skills` to `can_execute()`'s skill-gap check, the one real consumer wired up at checkpoint 93 - scanned `_SKILL_KEYWORD_PATTERN` with no negation handling at all. This is the identical bug shape checkpoints 98 and 102 already fixed at three sibling sites in this exact file (`estimate_hours()`/`estimate_complexity()`/`estimate_urgency()` at checkpoint 98, `route_task()` at checkpoint 102) - all four functions scan the same `desc_lower` for keyword hits with the same per-match loop shape, and this fourth one was never swept. Checkpoint 97's own `\b`-boundary fix at this exact site closed substring false positives ("build" inside "ui") but never addressed negation.
+
+Confirmed live, direct import, no mocking:
+
+```
+DepartmentManager.infer_required_skills(
+    "This is not a deployment issue - just a customer support ticket "
+    "about a confusing error message"
+)
+-> ['deployment', 'customer_service']
+```
+
+"deployment" is a bare word-boundary hit inside the very clause denying it. Confirmed again through the real production pipeline, no mocking of `infer_required_skills`, `can_execute`, or `decide`: a `support_head` agent (expertise `customer_service`/`problem_solving`/`documentation`, skill level 3, isolated test data) handed that exact task via `decide_on_task()` returned `decision="escalate"`, `reasoning="Cannot execute (Missing expertise in: deployment) and no suitable delegates available. Escalating."` - a plain support ticket that explicitly disclaims being a deployment issue, blocked on a requirement the text never actually makes, with no other department even capable of picking it up.
+
+Ruled out as already covered: every bug fixed in checkpoints 1-107, and every standing policy-question item from checkpoint 107's Next Steps. No existing test exercised negation inside `infer_required_skills()` specifically (`test_route_task_negation.py` and `test_negation_keyword_tiers.py` cover the other three sibling sites only).
+
+### 🔧 Fix
+
+**`departments.py`**: `infer_required_skills()`'s match loop now calls the existing `_is_negated()` helper (already defined above it in this file for `route_task()` and the three `estimate_*()` functions) and skips a match whose keyword is negated in its own clause, same `_NEGATION_WINDOW_WORDS`/clause-boundary scope as the three prior fixes. No change to word-boundary matching, the permissive-`[]`-on-no-match default, or `SKILL_KEYWORDS` itself. A comment at the site names the three prior same-family fixes and quotes the confirmed-live repro.
+
+### 🧪 Validation
+
+New file `tests/test_infer_required_skills_negation.py`, five tests, all driving real code with no mocking of the function under test:
+
+1. The exact live false positive above plus two more SKILL_KEYWORDS cases (`budget_planning`, `ui_design`) now infer nothing when the keyword is negated with no other skill signal present.
+2. Real, un-negated inference across four SKILL_KEYWORDS entries is unaffected, including descriptions that genuinely need the same skills case 1 negates.
+3. Negation is clause-bounded: a cue in an earlier clause does not suppress a real keyword after a comma.
+4. A description with every real match negated still infers `[]`, not a fabricated requirement.
+5. The real pipeline test: `DepartmentHeadAgent.decide_on_task()` → `AgentDecisionEngine.decide()` → `can_execute()`, isolated agent/budget/capacity/metrics state, asserts `required_skills` no longer contains `"deployment"`, the decision is `"execute"` (not `"escalate"`), and the reasoning no longer cites the negated skill.
+
+Ran the new file individually (all five green) and twice back-to-back for idempotency (byte-identical output both runs, no leftover `data/test_*.json`). Ran the full `tests/test_*.py` suite (91 files including this new one) - all green. `python3 -m py_compile` clean on `departments.py` and the new test file; `import` of all 15 source modules clean. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json`/`data/test_*.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+Any task description that negates a `SKILL_KEYWORDS` term ("not a deployment issue", "no budget planning needed", "isn't a UI problem", ...) no longer has that term counted toward `required_skills` for an agent whose `config.json` entry declares real `expertise_areas` (the built-in department heads). Concretely: such a task is no longer blocked by `can_execute()`'s skill-gap check on a requirement the text explicitly denies, so it is more likely to execute directly instead of escalating or needing an approval/delegation detour. A task that genuinely states a skill need (negated or not elsewhere in the same text) keeps inferring that skill exactly as before; a task naming no recognized skill vocabulary at all is unaffected (`infer_required_skills()` was and remains permissive, returning `[]` rather than guessing).
+
+### 📝 Next Steps
+
+- All standing policy-question items from checkpoints 42-107's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()` zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker` (including its own separate falsy-zero `recommended_deadline * 100 if ... else 500` line, still deliberately unfixed since the class remains unwired/dead), `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the three workflow templates' unapprovable `design_lead`/`ceo`/`tech_lead` `approval_role`s, `DecisionResult.decision`'s dead `"reject"` branch, `web_server.py`'s `_task_summary()` list/detail split (intentional, unchanged), `rank_candidate()`'s `workload_factor` ranking-quality note, `departments.py`'s `get_staff_count()`/`get_staff_range()` band-mismatch note, the negation-handling residual limits (double negation, sarcasm, cross-clause negation - still explicitly out of scope for all four sites now), the `tests/test_concurrent_first_creation.py` threading flake (pre-existing, unrelated), the cross-department file-write race (never proven live), the gemini/groq/nvidia single-shot path's empty-string passthrough (never proven to fabricate anything), and checkpoint 107's own multi-department-tie-breaking observation in `_mock_pick_department()` (plausible-but-unproven, left for a future session or owner decision) - unchanged, still open.
+- **Closed this session**: `departments.py`'s `infer_required_skills()` negation blindness, the fourth and last site of the checkpoints-98/102 naive-negation bug family in this file - fixed (see above). All four sibling keyword-scanning functions in `departments.py` (`route_task()`, `estimate_hours()`/`estimate_complexity()`/`estimate_urgency()`, `infer_required_skills()`) now share the same word-boundary-plus-negation handling.
+- No new non-policy, self-contained gap beyond the items above was spotted and deliberately left this session. The next session should look for a new non-policy gap the way checkpoints 45-108 each did, or get an owner decision on one of the policy questions above.
+
+---
+
 # Daily Progress Report - November 24, 2026
 
 ## 🐛 CHECKPOINT 107: THE MOCK TOOL-CALLING PATH PICKED A DEPARTMENT BY PLAIN SUBSTRING, NOT A WORD-BOUNDED MATCH
