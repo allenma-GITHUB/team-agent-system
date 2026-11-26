@@ -247,16 +247,28 @@
 <script>
 const $ = (sel) => document.querySelector(sel);
 
-function pctClass(pct) {
-  if (pct >= 0.9) return "bad";
-  if (pct >= 0.7) return "warn";
+// pct is always "how full is this bar," but what a full bar MEANS differs by
+// caller: for budget/capacity/spend-share, high = bad (approaching a limit).
+// For a relationship's trust_score (agent_state.py's RelationshipScore, 0-1,
+// higher = more trusted), high is good and low is the thing worth flagging -
+// the exact opposite polarity. Without highIsGood, a maximally-trusted
+// relationship (trust_score 1.0, ten real successful delegations) rendered
+// with the same "bad"/red class this scale uses for a department at 100% of
+// its budget, while a barely-trusted one (trust_score 0.05, a real failed
+// delegation) rendered with no warning class at all - backwards in both
+// directions. highIsGood flips which end of the 0-1 scale counts as "danger"
+// for color purposes only; the bar's width still always renders the real pct.
+function pctClass(pct, highIsGood) {
+  const danger = highIsGood ? 1 - pct : pct;
+  if (danger >= 0.9) return "bad";
+  if (danger >= 0.7) return "warn";
   return "";
 }
 
-function bar(label, pct, right) {
+function bar(label, pct, right, highIsGood) {
   const clamped = Math.max(0, Math.min(1, pct || 0));
   return `<div class="bar-label"><span>${label}</span><span>${right}</span></div>
-    <div class="bar-track"><div class="bar-fill ${pctClass(clamped)}" style="width:${(clamped*100).toFixed(0)}%"></div></div>`;
+    <div class="bar-track"><div class="bar-fill ${pctClass(clamped, highIsGood)}" style="width:${(clamped*100).toFixed(0)}%"></div></div>`;
 }
 
 function money(n) { return "$" + Number(n || 0).toLocaleString(undefined, {maximumFractionDigits: 0}); }
@@ -638,7 +650,8 @@ async function loadReport() {
   if (!collabPanel.hidden) {
     $("#collaboration-list").innerHTML = collaboration.map(rel =>
       bar(`${escapeHtml(rel.from_agent)} &rarr; ${escapeHtml(rel.to_agent)}`, rel.trust_score,
-          `${rel.trust_score.toFixed(2)} trust (${rel.collaboration_count} collaboration${rel.collaboration_count !== 1 ? "s" : ""})`)
+          `${rel.trust_score.toFixed(2)} trust (${rel.collaboration_count} collaboration${rel.collaboration_count !== 1 ? "s" : ""})`,
+          /* highIsGood */ true)
     ).join("");
   }
 }

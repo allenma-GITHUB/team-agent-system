@@ -1,3 +1,57 @@
+# Daily Progress Report - November 26, 2026
+
+## 🐛 CHECKPOINT 109: THE COLLABORATION PANEL'S TRUST BAR REUSED A "HIGH = BAD" COLOR SCALE FOR A "HIGH = GOOD" METRIC
+
+Session opened with local `main` detached one commit behind `origin/main` (local was still at checkpoint 106's `c152555`; checkpoints 107 and 108 existed as commits but the local branch pointer had never been fast-forwarded past them, and the local remote-tracking ref for `origin/main` was itself stale at `c152555` until `git fetch origin main` ran - the same shape prior sessions have hit, confirmed this time with an explicit fetch before touching anything). `git merge --ff-only origin/main` moved local `main` to `3c91865` with no divergence. Ran the full 91-file suite before starting new work - all green. Restored the two seed files the run dirtied.
+
+### 🔎 Research pass
+
+A background research fork spent its full budget surveying every non-dashboard module (`agent_decisions.py`, `agent_state.py`, `agent_loop.py`, `budgets.py`, `core.py`, `departments.py`, `llm_provider.py`, `main_v2.py`, `performance.py`, `strategy.py`, `task_executor_v2.py`, `tools.py`, `visualization.py`, `web_server.py`, `workflows.py`) for a fresh, non-policy correctness defect, with every bug fixed in checkpoints 1-108 and every standing policy item excluded. It came back with **no qualifying candidate** - five were investigated and individually rejected (already covered: `performance.py`'s overlapping-window dilution, checkpoint 94; not reachable: a `task_executor_v2._dispatch_delegation` path that can't actually occur given real caller behavior; not a bug: `BudgetManager.reserve_funds`/`confirm_reservation`'s check-then-act race, serialized by every real caller; a threshold/policy call: `requires_approval()`'s `> 16` boundary; a resurfaced-but-not-fixed observation: `can_execute()`'s `skill_level < 4` gate lets skill-level-4+ department heads bypass the skill-gap check entirely, flagged live once in this repo's history but never carried into the tracked Next Steps - recorded below as a policy question, not fixed here). It explicitly suggested extending the search into `static/dashboard.html`'s JS, which it had only partially audited and which has no Python test coverage of its own logic (only of its wiring to real API fields).
+
+Followed that suggestion and read the full file. `function pctClass(pct)` (and `bar()`, which calls it) colors a bar red ("bad") at `pct >= 0.9` and orange ("warn") at `>= 0.7`, on the assumption baked into every one of its four existing callers (budget utilization, capacity utilization, spend-by-category share, workflow progress) that a *higher* pct is *worse*. The "Agent Trust & Collaboration" panel (added when `get_collaboration_summary()` shipped) passes `rel.trust_score` straight into the same `bar()` with no adjustment - but `agent_state.py`'s `RelationshipScore.trust_score` (0-1 scale, default 0.5) is the opposite polarity: `update_trust_with_agent()` moves it *toward* 1.0 on a real successful delegation and *toward* 0.0 on a real failed one, so higher is *better*, not worse.
+
+### 🐛 Proven live before touching anything
+
+Extracted `pctClass()`/`bar()` verbatim from `static/dashboard.html` and ran them under `node` (no mocking, the real function bodies) against representative `RelationshipScore`-shaped data:
+
+```
+trust_score=1.00  ->  bar-fill class = "bad"               (10 real, successful collaborations)
+trust_score=0.50  ->  bar-fill class = "(none/default-blue)" (brand-new relationship, untouched default)
+trust_score=0.05  ->  bar-fill class = "(none/default-blue)" (a real failed delegation drove trust nearly to zero)
+```
+
+Backwards in both directions: the single most-trusted relationship in the whole system renders identically to a department at 100% of its budget - the dashboard's most alarming visual state - while a relationship trust has nearly collapsed renders exactly like a healthy, under-70%-utilized budget bar. A viewer scanning the panel for a relationship that needs attention would be drawn to the wrong one and reassured by the other.
+
+Ruled out as already covered: grepped `DAILY_PROGRESS.md` for `pctClass`/`trust_score`/`collaboration` - the checkpoint that added the panel (`$("#collaboration-list").innerHTML = collaboration.map(rel => bar(...))`) never discusses bar color semantics at all, only that the panel renders and escapes its fields; no later checkpoint touches it either. Not a rehash of any checkpoint 1-108 bug (all backend-logic bugs - naive substring/negation/dropped-value/stale-state shapes) or any listed policy question.
+
+### 🔧 Fix
+
+**`static/dashboard.html`**: `pctClass(pct, highIsGood)` and `bar(label, pct, right, highIsGood)` gain an optional 4th parameter. When truthy, the color-determining "danger" value is computed as `1 - pct` instead of `pct`, so the *low* end of the scale is what crosses the bad/warn thresholds - the bar's rendered width is untouched either way, only its color. Only the collaboration panel's call site (`rel.trust_score`) now passes `highIsGood = true`; the four pre-existing callers (budget, capacity, spend-by-category share, workflow progress) still call with exactly 3 arguments, so `highIsGood` is `undefined` there and their behavior is byte-for-byte unchanged. Re-ran the same node repro against the fixed source: `trust_score=1.00 -> "(none/neutral)"`, `trust_score=0.50 -> "(none/neutral)"`, `trust_score=0.05 -> "bad"`; confirmed the four unchanged callers still produce their pre-fix classes (`utilization_pct=0.95 -> "bad"`, `utilization_pct=0.10 -> "(none/neutral)"`).
+
+### 🧪 Validation
+
+New file `tests/test_trust_bar_color_polarity.py`, four tests. This repo's test suite doesn't shell out to a JS engine (that would add a non-stdlib runtime dependency to "zero third-party dependencies, standard library only, everywhere"), so - consistent with how every other `dashboard.html` checkpoint has validated frontend-only fixes - this pins the real page source via regex/substring assertions rather than executing it in the suite itself; the live node proof above was run separately, outside the shipped tests, to actually demonstrate the behavior change.
+
+1. `pctClass`/`bar`'s exact new signatures and the `danger = highIsGood ? 1 - pct : pct` line are present in the real file.
+2. The collaboration panel's call site passes a truthy `highIsGood` as its 4th argument.
+3. Regression guard: the four pre-existing call sites (budget, capacity, spend-by-category share, workflow progress) are matched verbatim and still take exactly 3 arguments - confirming the fix didn't silently touch any of them.
+4. A pure-Python mirror of the exact formula pinned in test 1 is exercised against the same boundary values the live node repro used (1.00/0.50/0.05/0.25 for trust, 0.95/0.10 for the unchanged utilization callers), proving the fix flips polarity only where intended.
+
+Ran the new file individually (all four green) and twice back-to-back for idempotency (byte-identical output both runs). Ran the full `tests/test_*.py` suite (92 files including this new one) - all green. `python3 -m py_compile` clean on every tracked `.py` file including the new test; `import` of all 15 source modules clean. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json`/`data/test_*.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+Purely visual, scoped to the dashboard's "Agent Trust & Collaboration" panel: a relationship's trust bar now colors red/orange based on how *low* its trust is, not how high. No backend computation, no API payload, and no other panel's bar color changes - the fix is additive (`highIsGood` is `undefined`, i.e. falsy, for every pre-existing caller).
+
+### 📝 Next Steps
+
+- All standing policy-question items from checkpoints 42-108's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()` zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the three workflow templates' unapprovable `design_lead`/`ceo`/`tech_lead` `approval_role`s, `DecisionResult.decision`'s dead `"reject"` branch, `web_server.py`'s `_task_summary()` list/detail split, `rank_candidate()`'s `workload_factor` ranking-quality note, `departments.py`'s `get_staff_count()`/`get_staff_range()` band-mismatch note, the negation-handling residual limits, the `tests/test_concurrent_first_creation.py` threading flake, the cross-department file-write race (never proven live), the gemini/groq/nvidia single-shot path's empty-string passthrough, and checkpoint 107's own multi-department-tie-breaking observation) - unchanged, still open.
+- **Resurfaced this session, not fixed**: `agent_decisions.py`'s `can_execute()` only runs its skill-gap check when `agent.skill_level < 4` - every department head with skill level 4 or 5 (4 of this repo's 5 original heads) bypasses the check entirely regardless of actual expertise mismatch. This was flagged live once, in the checkpoint that introduced the skill-gap check itself, but never carried forward into later checkpoints' tracked Next Steps and had quietly dropped off the backlog. Whether this is deliberate ("senior agents are trusted to self-assess") or a gap is a design/policy call for the owner, not something to unilaterally change inside a refactor - added here so it isn't lost again.
+- **Closed this session**: `static/dashboard.html`'s Agent Trust & Collaboration panel coloring a maximally-trusted relationship the same alarm red as a maxed-out budget, and a nearly-abandoned one with no warning at all - fixed (see above).
+- No new non-policy, self-contained gap beyond the items above was spotted and deliberately left this session. The next session should look for a new non-policy gap the way checkpoints 45-109 each did (today's research fork found none in the backend modules - today's bug came from following its own suggestion into `static/dashboard.html`, which may be worth another close pass given it has no execution-based test coverage), or get an owner decision on one of the policy questions above (the skill_level gate resurfaced this session is now the most actionable one).
+
+---
+
 # Daily Progress Report - November 25, 2026
 
 ## 🐛 CHECKPOINT 108: `infer_required_skills()` HAD NO NEGATION HANDLING, THE FOURTH SIBLING OF THE CHECKPOINT-98/102 BUG FAMILY
