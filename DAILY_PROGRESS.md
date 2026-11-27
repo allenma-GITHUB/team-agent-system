@@ -1,3 +1,77 @@
+# Daily Progress Report - November 27, 2026
+
+## 🐛 CHECKPOINT 110: THE WORKFLOW PROGRESS BAR REUSED THE SAME "HIGH = BAD" COLOR SCALE CHECKPOINT 109 JUST FIXED FOR TRUST - AT A SITE THAT TURNED OUT TO NEED A THIRD POLARITY, NOT THE SAME FIX
+
+Session opened with local `main` detached one commit behind `origin/main` (same reconciliation shape as checkpoints 107-109: local `main` was still at checkpoint 106's `c152555`, but checkpoints 107-109 were already on GitHub). `git fetch origin main` then `git checkout -B main origin/main` moved local `main` to `30874d2` with no divergence - confirmed via `git log --oneline origin/main..HEAD` returning nothing before touching anything. Ran the full 92-file suite before starting new work - all green. Restored the two seed files the run dirtied afterward.
+
+### 🔎 Research pass
+
+Two tracks, per `DAILY_ROUTINE_PROMPT.md`'s step 3: the rotating ecosystem-landscape slice (RESEARCH_LOG.md), and a defect hunt (a background research fork), run in parallel.
+
+**Ecosystem slice (RESEARCH_LOG.md):** re-checked the 2026-09-11 "Slice 1: model/provider landscape" open risk rather than rotating to a never-checked slice - it was the only entry ever flagged as an actual risk (not "nothing changed"), and 2.5 months of daily checkpoints (97-109) had passed without anyone revisiting it. Result: the Anthropic half is now closed. `platform.claude.com/docs/en/about-claude/model-deprecations` - unreachable in no prior session's attempt, reachable this time - gives a dated, authoritative table showing both exact IDs `llm_provider.py` hardcodes, `claude-sonnet-5` and `claude-opus-5`, as **Active** with no retirement sooner than mid/late 2027. The OpenAI half stays open and still blocked (`developers.openai.com` and `help.openai.com` both `ENOTFOUND` from this environment); per the research log's own confidence rule, aggregator-summary disagreement was not upgraded to a verified finding. Full writeup, including why no code follows from either finding (the provider-call code paths are unreachable in this deployment regardless - `anthropic`/`openai`/`requests` are not installed, confirmed live), is in RESEARCH_LOG.md's new top entry.
+
+**Defect hunt:** a background research fork surveyed every module (the standard list: `agent_decisions.py`, `agent_state.py`, `agent_loop.py`, `budgets.py`, `core.py`, `departments.py`, `performance.py`, `strategy.py`, `task_executor_v2.py`, `tools.py`, `visualization.py`, `web_server.py`, `workflows.py`, `main_v2.py`, `static/dashboard.html`) against checkpoints 1-109 and all standing policy notes, with the `llm_provider.py` call paths explicitly ruled out as unreachable territory. It converged on `static/dashboard.html`'s workflow-card "Progress" bar - a second `bar()`/`pctClass()` call site with the same backwards-polarity shape checkpoint 109 just fixed for `trust_score`, which checkpoint 109 itself had listed as one of the "four pre-existing callers" it assumed were correctly using the original "high = bad" scale, without checking that assumption.
+
+### 🐛 Proven live before touching anything
+
+Verified the fork's finding independently. `workflows.py`'s `WorkflowInstance.get_progress()` (line 128) is explicitly documented as "completion percentage (0-1)" - `completed / total` steps. `static/dashboard.html` line 715 called `bar("Progress", w.progress, ...)` with no 4th argument, so `pctClass`'s `highIsGood` was `undefined` → the same "high = bad" polarity budget/capacity/spend-share use. Traced the full chain confirming `w.progress` really is this value with no inversion anywhere in between: `get_progress()` → `get_status()`'s `"progress"` key (`workflows.py:710`) → `build_workflows_payload()`/`/api/workflows` (`web_server.py`) → `loadWorkflows()`'s `w.progress` (`dashboard.html`).
+
+Extracted the real `pctClass()`/`bar()` source and ran it under `node` against the real function bodies, same method checkpoint 109 used:
+
+```
+progress=1.00 (workflow fully complete)  -> bar-fill class = "bad"
+progress=0.95 (nearly done)              -> bar-fill class = "bad"
+progress=0.50                            -> bar-fill class = "(none/neutral)"
+progress=0.10 (just started)             -> bar-fill class = "(none/neutral)"
+progress=0.00 (brand new)                -> bar-fill class = "(none/neutral)"
+```
+
+Confirmed the visible contradiction this produces: `static/dashboard.html`'s CSS gives `.badge.completed` the color `var(--good)` (green). A workflow that just finished shows its own status badge in green while its Progress bar, on the same card, renders in alarm red at the same moment - the dashboard disagreeing with itself about whether finishing is good.
+
+**Checked the obvious fix before shipping it, and rejected it.** The mechanical move - add `highIsGood=true` to the call, identical to checkpoint 109's own fix - was tried live first:
+
+```
+progress=1.00 -> ""      (fixed - no longer alarms on completion)
+progress=0.00 -> "bad"   (newly broken - a workflow that JUST STARTED now alarms)
+```
+
+Unlike `trust_score` (checkpoint 109: 0.5 is a genuine neutral midpoint default, and low trust genuinely reflects accumulated failure - both ends of the flipped scale are meaningful) or budget/capacity (approaching the limit is genuinely risky), workflow progress has no "risky end" at either extreme: 0% is simply early, not a problem, and `.badge.in_progress` is a neutral blue, not a warning - so a mechanical flip would have fixed the 95-100% false alarm by introducing a new one at 0-10%, not removed the bug.
+
+Ruled out as already covered: every bug fixed in checkpoints 1-109, including checkpoint 109 itself (which touched `pctClass`/`bar` but explicitly treated "workflow progress" as one of the unchanged, presumptively-correct callers - a `DAILY_PROGRESS.md` grep for `"Progress"` bar discussion confirms no checkpoint ever examined this call site's color semantics before now). Not a policy/threshold question - there's no judgment call here, `get_progress()`'s own docstring settles which direction is "good," and the fix doesn't touch any threshold.
+
+### 🔧 Fix
+
+**`static/dashboard.html`**: `pctClass(pct, highIsGood)` gains a third mode. `highIsGood === null` short-circuits before the danger computation and returns `""` unconditionally - opting a caller out of the danger scale entirely, rather than flipping which end counts as danger. `bar()`'s signature and body are unchanged (it already threads `highIsGood` through to `pctClass` without inspecting it). Only the workflow card's Progress call site now passes `null` as its 4th argument; every other caller (budget, capacity, spend-by-category share - no 4th argument - and the collaboration panel's trust bar - `highIsGood=true`) is byte-for-byte unchanged. A comment at both the `pctClass` definition and the Progress call site records the bug, the rejected mechanical-flip fix, and why.
+
+### 🧪 Validation
+
+Re-ran the same `node` repro against the fixed source across the full 0-1 range (0.00/0.10/0.25/0.50/0.70/0.90/0.95/1.00): every value now renders `""` for Progress. Confirmed the collaboration panel's trust bar (`highIsGood=true`) and the three untouched utilization-style bars (no 4th argument) still produce their exact pre-this-checkpoint classes.
+
+New file `tests/test_progress_bar_no_danger_coloring.py`, four tests, following the same source-pinning convention `test_trust_bar_color_polarity.py` established (this suite doesn't shell out to a JS engine, so assertions are structural/regex against the real file plus a pure-Python mirror of the pinned formula for boundary values):
+
+1. `pctClass`'s `highIsGood === null` check comes *before* the danger computation (not an after-the-fact override) and returns `""` unconditionally.
+2. The Progress call site passes exactly `null` - with explicit regression guards against regressing to either the original no-4th-argument bug or the rejected `true` fix.
+3. The pure-Python mirror returns `""` for `highIsGood=None` across eight boundary values spanning 0.00-1.00, plus two named sanity checks: the original bug (`1.00, high_is_good=False` → `"bad"`) and the rejected fix's would-be regression (`0.00, high_is_good=True` → `"bad"`) are both still reproducible in the mirror, proving the test would have caught either mistake.
+4. `trust_score` (checkpoint 109) and the utilization-style formula path are unaffected by the new `null` branch.
+
+Also updated `tests/test_trust_bar_color_polarity.py::test_pre_existing_bar_callers_are_unchanged`: it previously pinned the Progress bar's *old* 3-argument call as one of the "unchanged" callers, which this checkpoint's fix necessarily changes. Dropped Progress from that list (budget/capacity/spend-share remain pinned there) and added a note pointing to this checkpoint for why, rather than silently deleting the historical context checkpoint 109 recorded.
+
+Ran both new/changed test files individually (all green) and twice back-to-back for idempotency (byte-identical output both runs). Ran the full `tests/test_*.py` suite (93 files) - all green. `python3 -m py_compile` clean on both test files (the dashboard change is JS inside an `.html` file, not standalone Python, so it isn't a `py_compile` target - validated via the live `node` repro instead, same as checkpoint 109). `import` of all 15 source modules clean, unaffected since no `.py` source file changed. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json`/`data/test_*.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+Purely visual, scoped to the dashboard's workflow cards' Progress bar. A workflow's progress bar no longer takes the red/orange "danger" fill color at any completion level - it always renders in the neutral/informational color, regardless of how far along the workflow is. No backend computation, no API payload (`get_progress()`/`get_status()`/`/api/workflows` are all untouched), and no other bar's color changes.
+
+### 📝 Next Steps
+
+- All standing policy-question items from checkpoints 42-109's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()` zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the three workflow templates' unapprovable `design_lead`/`ceo`/`tech_lead` `approval_role`s, `DecisionResult.decision`'s dead `"reject"` branch, `web_server.py`'s `_task_summary()` list/detail split, `rank_candidate()`'s `workload_factor` ranking-quality note, `departments.py`'s `get_staff_count()`/`get_staff_range()` band-mismatch note, the negation-handling residual limits, the `tests/test_concurrent_first_creation.py` threading flake, the cross-department file-write race, the gemini/groq/nvidia single-shot path's empty-string passthrough, checkpoint 107's multi-department-tie-breaking observation, and checkpoint 109's resurfaced `can_execute()` `skill_level < 4` skill-gap-bypass policy question) - unchanged, still open. The skill_level gate remains the most actionable owner decision pending.
+- **New standing risk, tracked rather than forgotten**: the 2026-09-11 research log's OpenAI model-list risk is still open (unverifiable from this environment - `developers.openai.com`/`help.openai.com` both unreachable) and its three build candidates (verify/update the model IDs, make the silent mock-fallback distinguishable in `generate()`'s return value, source model IDs from `config.json`) are still open - the Anthropic half of the original risk is now closed, see RESEARCH_LOG.md.
+- **Closed this session**: `static/dashboard.html`'s workflow Progress bar coloring a just-finished workflow in alarm red next to its own green "completed" badge - fixed with a third `highIsGood` mode rather than the naive polarity flip, which was checked live and found to trade one false alarm for another (see above).
+- `static/dashboard.html` has now had two consecutive checkpoints (109, 110) both in `pctClass`/`bar()` callers - worth a dedicated close pass over the rest of the file's JS (it still has no Python test coverage of its own logic, only of its wiring to real API fields) before assuming it's exhausted; today's session did not do a full fresh sweep of the whole file, only followed up on the specific bug family the fork flagged.
+- No new non-policy, self-contained gap beyond the items above was spotted and deliberately left this session.
+
+---
+
 # Daily Progress Report - November 26, 2026
 
 ## 🐛 CHECKPOINT 109: THE COLLABORATION PANEL'S TRUST BAR REUSED A "HIGH = BAD" COLOR SCALE FOR A "HIGH = GOOD" METRIC

@@ -33,6 +33,14 @@ the bad/warn thresholds - without changing what percentage the bar visually
 fills to. Only the collaboration panel's call site passes
 highIsGood=true; the four pre-existing callers (budget, capacity,
 spend-by-category share, workflow progress) call bar()/pctClass() with no
+
+NOTE (later checkpoint): this entry's framing of "workflow progress" as one
+of the four pre-existing, presumptively-correct callers turned out to be
+wrong - a later checkpoint found it needed a third polarity (no danger
+coloring at all, highIsGood=null), not the original 3-arg call. See
+test_progress_bar_no_danger_coloring.py; test 3 below was updated to drop
+progress from its unchanged-callers list accordingly.
+
 4th argument and are therefore byte-for-byte unchanged in behavior.
 """
 
@@ -97,17 +105,22 @@ def test_collaboration_panel_passes_high_is_good():
 
 
 def test_pre_existing_bar_callers_are_unchanged():
-    """Regression guard: the four callers this bug didn't involve (budget,
-    capacity, spend-by-category share, workflow progress) must still call
-    bar() with exactly 3 arguments - confirming the fix is additive-only and
-    none of them silently started inverting too."""
-    print_section("3. Budget/Capacity/Spend-Share/Progress Bars Are Byte-Identical")
+    """Regression guard: the three callers this bug didn't involve (budget,
+    capacity, spend-by-category share) must still call bar() with exactly 3
+    arguments - confirming this fix is additive-only and none of them
+    silently started inverting too.
+
+    Workflow progress is deliberately NOT in this list: a later checkpoint
+    (see test_progress_bar_no_danger_coloring.py) found it needed its own
+    fix - this checkpoint's note that "workflow progress" was a pre-existing,
+    unexamined caller turned out to assume its pre-fix polarity was correct
+    when it wasn't."""
+    print_section("3. Budget/Capacity/Spend-Share Bars Are Byte-Identical")
 
     source = _dashboard_source()
     unchanged_calls = [
         'bar("Budget", d.budget.utilization_pct, `${money(d.budget.spent)} / ${money(d.budget.allocated)}`)',
         'bar("Capacity", d.capacity.utilization_pct, `${d.capacity.workload}/${d.capacity.total} tasks`)',
-        'bar("Progress", w.progress, `${(w.progress * 100).toFixed(0)}%`)',
     ]
     for call in unchanged_calls:
         assert call in source, f"expected unchanged 3-arg call site: {call!r}"

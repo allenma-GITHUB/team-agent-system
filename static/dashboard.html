@@ -258,7 +258,22 @@ const $ = (sel) => document.querySelector(sel);
 // delegation) rendered with no warning class at all - backwards in both
 // directions. highIsGood flips which end of the 0-1 scale counts as "danger"
 // for color purposes only; the bar's width still always renders the real pct.
+//
+// A third metric, workflow progress (workflows.py's get_progress(), 0-1
+// completion fraction), fits neither polarity: unlike budget/capacity, a
+// LOW value isn't a problem (a workflow just started is normal, not a
+// warning sign - it has its own neutral "in_progress" badge for that), and
+// unlike trust_score there's no accumulated-failure story at the low end
+// either. Passing highIsGood=null opts a caller out of the danger scale
+// entirely rather than just flipping which end counts as danger - verified
+// live: before any fix, a workflow at 100% progress rendered "bad"/red
+// alongside its own green "completed" badge on the same card; naively
+// flipping polarity (highIsGood=true) would have "fixed" that but made a
+// freshly-started workflow (progress 0.0, normal, badged neutral
+// "in_progress") render "bad"/red instead - trading one false alarm for
+// another rather than removing it.
 function pctClass(pct, highIsGood) {
+  if (highIsGood === null) return "";
   const danger = highIsGood ? 1 - pct : pct;
   if (danger >= 0.9) return "bad";
   if (danger >= 0.7) return "warn";
@@ -708,11 +723,14 @@ async function loadWorkflows() {
       })
       .join(" · ");
     const errorLine = w.error ? `<div class="alert">⚠ ${escapeHtml(w.error)}</div>` : "";
+    // highIsGood=null: progress has no danger polarity at all (see pctClass)
+    // - opts this bar out of bad/warn coloring entirely rather than flipping
+    // which end is "danger".
     return `<div class="workflow-card" data-instance="${escapeHtml(w.instance_id)}">
       <h3><span>${escapeHtml(w.workflow_name)}</span><span class="badge ${escapeHtml(w.status)}">${escapeHtml(w.status)}</span></h3>
       <div class="muted" style="font-size:12px;">${escapeHtml(w.instance_id)}${w.current_step ? " · current: " + escapeHtml(w.current_step) : ""}</div>
       <div class="muted" style="font-size:12px;">Created: ${escapeHtml(w.created_at || "—")} · Started: ${escapeHtml(w.started_at || "—")} · Completed: ${escapeHtml(w.completed_at || "—")}</div>
-      ${bar("Progress", w.progress, `${(w.progress * 100).toFixed(0)}%`)}
+      ${bar("Progress", w.progress, `${(w.progress * 100).toFixed(0)}%`, null)}
       <div class="muted" style="font-size:12px;margin-top:6px;">${steps}</div>
       ${errorLine}
       <div class="row" style="margin-top:8px; flex-wrap: wrap;">

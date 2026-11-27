@@ -18,6 +18,75 @@ reasoning rather than relitigated every week.
 
 ---
 
+## 2026-11-27 — Slice 1 re-check: model/provider landscape (PARTIAL RISK CLOSED, ONE STILL OPEN)
+
+Re-checked the 2026-09-11 open risk rather than rotating to a never-checked
+slice: that entry was the only one flagged as an actual risk (the other two
+were "nothing changed"), 2.5 months had passed, and the daily checkpoint
+cadence (97-109) had not touched `llm_provider.py`'s model lists in that
+time, so it was overdue regardless of rotation order.
+
+**Anthropic side: resolved, verified against the primary source this time.**
+`platform.claude.com/docs/en/about-claude/model-deprecations` is reachable
+from this environment (unlike the OpenAI hosts below) and gives a dated,
+authoritative table. The exact two IDs `_call_anthropic()` hardcodes are
+both **Active**:
+
+| API model name | State | Tentative retirement |
+|---|---|---|
+| `claude-sonnet-5` | Active | not sooner than June 30, 2027 |
+| `claude-opus-5` | Active | not sooner than July 24, 2027 |
+
+Newer `claude-sonnet-5-5`/`claude-opus-5-5` exist and are also Active (and
+are what this very session is running on/falling back through per its own
+system context), but `sonnet-5`/`opus-5` are not deprecated, just not the
+newest point release — nothing here requires a code change. The 2026-09-11
+entry's "resolve the model IDs against a reachable authoritative source"
+build candidate is closed for the Anthropic half.
+
+**OpenAI side: still unverified, still blocked, same as 2026-09-11.**
+Both `developers.openai.com` and (tried as an alternate host)
+`help.openai.com` fail DNS resolution from this environment's egress proxy
+(`ENOTFOUND` — outside the allowed network domains). Per the WebFetch tool's
+own guidance, did not try a third OpenAI host after two failed the same way.
+Search-result aggregators (not primary source) repeat the same
+2026-09-11 picture with no material new information and still disagree with
+each other on `gpt-4o`'s exact API retirement date (one claims January 2027,
+another claims it already happened); `gpt-4-turbo`/`gpt-3.5-turbo` variants
+show up on aggregator-reported "October 2026" and "September 2026"
+deprecation-notice dates, unconfirmed against the real deprecations page.
+Confidence: unchanged from 2026-09-11 — search-summary-only, not upgraded to
+verified.
+
+**Why no code change follows from either finding:** `_call_openai()` and
+`_call_anthropic()` are unreachable in this deployment regardless of what
+the real APIs do — `anthropic`/`openai`/`requests` are not installed
+(confirmed live: `import anthropic`/`import openai`/`import requests` all
+raise `ModuleNotFoundError` in this environment), so
+`LLMProvider.detect_providers()` can never set `self.available["anthropic"]`
+or `["openai"]` True no matter what environment variables are set, and
+`generate()` always resolves to `_mock_response()`. This is the same
+"not reachable given real caller behavior" reasoning checkpoint 109's
+research pass applied to a `task_executor_v2` path — a correct-today,
+dead-if-the-landscape-shifts code path doesn't meet this project's
+"prove it live" bar for a fix, and the zero-dependency constraint means it
+cannot be proven live here without installing a package this project
+deliberately excludes. Recorded rather than fixed, same as the 2026-09-11
+build candidates #2 (making the mock fallback distinguishable in the
+returned dict) and #3 (sourcing model IDs from `config.json`) — both still
+open, now explicitly still open rather than silently dropped.
+
+**No action needed this run.** Anthropic risk closed; OpenAI risk stays
+open and blocked; the three 2026-09-11 build candidates are still standing
+backlog, not forgotten.
+
+Sources: [Anthropic model deprecations](https://platform.claude.com/docs/en/about-claude/model-deprecations)
+(primary, reachable, this date);
+OpenAI deprecations remain unreachable from this environment
+(`developers.openai.com`, `help.openai.com` — both `ENOTFOUND`).
+
+---
+
 ## 2026-10-14 — Slice 3: Agent frameworks — org/budget/capacity modeling (NOTHING CHANGED)
 
 Least-recently-checked slice - never dedicated-checked before today (only the 2026-09-11 baseline sweep touched it in passing). Standing question: has anything appeared that actually models an org (departments, budgets, capacity) the way this project does?
