@@ -459,14 +459,28 @@ function renderTaskDetail(task) {
     if (result.llm_provider) {
       extra.push(`<dt>LLM Provider</dt><dd>${escapeHtml(result.llm_provider)}</dd>`);
     }
-    if (result.tokens_used) {
+    // Checked by KEY PRESENCE, not truthiness - same falsy-zero bug
+    // checkpoints 104/106 fixed in web_server._task_summary() and
+    // main_v2.show_task()/workflow_status(), unswept from this file until
+    // now. An attempt that really ran and raised before a token was spent
+    // (task_executor_v2.py's `except Exception` branch) leaves
+    // tokens_used=0 genuinely present alongside quality_score=2.0 - `if
+    // (result.tokens_used)` silently dropped the whole Tokens Used line
+    // (cost and any [NOT CHARGED] note included) for that real $0, making
+    // an attempted-then-escalated task indistinguishable here from one
+    // never attempted at all. quality_score's guard is switched the same
+    // way for consistency with checkpoint 106's own two sites, though
+    // quality_score has no live path that leaves it at a falsy 0 today
+    // (task_executor_v2.py sets it to 1.0/2.0/3.0/4.0 on every reachable
+    // branch - self.llm is always a real LLMProvider instance in production).
+    if ("tokens_used" in result) {
       const notCharged = result.token_cost_charged === false;
       const chargeNote = notCharged
         ? ` <span class="not-charged">[NOT CHARGED: ${escapeHtml(result.token_budget_note || "")}]</span>`
         : "";
       extra.push(`<dt>Tokens Used</dt><dd>${result.tokens_used} (${moneyPrecise(result.token_cost)})${chargeNote}</dd>`);
     }
-    if (result.quality_score) {
+    if ("quality_score" in result) {
       extra.push(`<dt>Quality Score</dt><dd>${escapeHtml(result.quality_score)}</dd>`);
     }
     if (result.metrics) {
@@ -715,8 +729,12 @@ async function loadWorkflows() {
         let line = `${escapeHtml(stepId)}: ${escapeHtml(status)}`;
         if (result && result.summary) {
           let extra = escapeHtml(result.summary);
-          if (result.quality_score) extra += ` (quality ${result.quality_score})`;
-          if (result.tokens_used) extra += ` ($${(result.token_cost || 0).toFixed(5)})`;
+          // Same key-presence fix as renderTaskDetail() above, same bug:
+          // a step result that really ran and really cost/scored 0 (the
+          // exploding-provider except-branch shape) was dropped by this
+          // truthy check as if the step had no result at all.
+          if ("quality_score" in result) extra += ` (quality ${result.quality_score})`;
+          if ("tokens_used" in result) extra += ` ($${(result.token_cost || 0).toFixed(5)})`;
           line += `<br><span class="muted">&nbsp;&nbsp;${extra}</span>`;
         }
         return line;

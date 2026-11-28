@@ -1,3 +1,65 @@
+# Daily Progress Report - November 28, 2026
+
+## 🐛 CHECKPOINT 111: THE DASHBOARD'S OWN TOKENS-USED/QUALITY-SCORE LINES HAD THE SAME TRUTHY-ZERO BUG CHECKPOINTS 104/106 ALREADY FIXED AT TWO OTHER SITES, UNSWEPT TO THE BROWSER
+
+Session opened on local `main` already in sync with `origin/main` at checkpoint 110's `08c938c` - `git fetch origin main` confirmed no divergence before touching anything (local had drifted into a detached-HEAD state from a prior session that never fast-forwarded the branch pointer; re-pointed `main` at `origin/main` and moved on, same recurring shape checkpoints 107-110 each hit). Ran the full 93-file suite before starting new work - all green. Restored the two seed files the run dirtied afterward.
+
+### 🔎 Research pass (ecosystem slice, run in parallel with the defect hunt below)
+
+Picked the two explicit "Open watch items" named in the 2026-09-11 baseline sweep - promptfoo's license post-acquisition, and OTel GenAI semconv reaching 1.0 - rather than re-surveying slices 4-6 (durable execution/observability/security advisories) wholesale; those two are concrete, dated flags meant to be revisited, and slice 1 was already re-checked yesterday (checkpoint 110's research pass). Findings (full detail in RESEARCH_LOG.md's new top entry, committed separately this session since it was ready well before the build task below): **promptfoo** - OpenAI's March 2026 acquisition comes with an explicit commitment (from both companies) to keep the project open source; watch item closed, no license risk materialized. **OTel GenAI semconv** - still "Development" status on every `gen_ai.*` attribute/span/metric/event as of the newest sources found, no 1.0 timeline; nothing changed, watch item stays open. Noted for tomorrow: slices 4-6 are now the least-recently-checked rotation slots, having had no dedicated re-check since the baseline.
+
+### 🔎 Defect hunt
+
+A background research fork surveyed every module (the standard list, `static/dashboard.html`'s JS included) against the full backlog of already-known/already-fixed items, explicitly excluding everything already named in checkpoints 42-110's Next Steps and the two dashboard.html color-polarity fixes (109, 110), looking for an unexamined sibling of this repo's established bug families - especially the "truthy check on a number that can legitimately be a real zero" family (checkpoints 100, 104, 105, 106).
+
+It found one: `static/dashboard.html`'s own `renderTaskDetail()` (the task detail panel, lines ~462-471 pre-fix) and `loadWorkflows()`'s per-step line builder (lines ~716-720 pre-fix) guard `tokens_used`/`quality_score` with `if (result.tokens_used)` / `if (result.quality_score)` - a truthy check, not a presence check. Checkpoint 104 fixed this exact bug in `web_server._task_summary()`; checkpoint 106 fixed the identical pair of guards in `main_v2.py`'s `show_task()`/`workflow_status()`, explicitly calling out that it was sweeping checkpoint 104's fix to two more sites reading the same result-dict shape. Neither of those checkpoints touched `dashboard.html`, which reads that exact same shape straight off `/api/tasks/<id>` and `/api/workflows` in the browser - the backend fix means the JSON payload has always carried the real `tokens_used: 0` correctly since checkpoint 104/106; it was the dashboard's own rendering JS that never got the memo.
+
+### 🔎 Proven live before touching anything
+
+Verified independently, not just taken on the fork's word. Confirmed by grep that `DepartmentHeadAgent` has exactly one production construction site (`task_executor_v2.py:965`, inside `TaskExecutor`), and both of `TaskExecutor`'s own construction sites (`main_v2.py`'s `process_tasks()`/`run_agent()`) always pass a real `LLMProvider()` instance - so `self.llm` is never falsy in production, and the dead `quality_score = 0.0` initializer at `task_executor_v2.py:570` never survives to a real result. Ran the real executor through the exact exploding-provider repro checkpoint 106 used:
+
+```
+status        : escalated
+tokens_used    : 0        (present, genuinely computed - the except-branch
+                            never advances tokens_used past its 0 initializer)
+token_cost     : 0.0      (present)
+quality_score  : 2.0      (present, nonzero - never 0 on any reachable path)
+```
+
+Extracted the real `renderTaskDetail()`/`loadWorkflows()` source from `dashboard.html` and ran it under `node` against that real result, same method checkpoints 109/110 used:
+
+```
+PRE-FIX:  extra = ['<dt>Quality Score</dt><dd>2</dd>']
+          (Tokens Used line - cost and any [NOT CHARGED] note included -
+           missing entirely, despite tokens_used=0 being present and real)
+POST-FIX: extra = ['<dt>Tokens Used</dt><dd>0 ($0.00000)</dd>',
+                    '<dt>Quality Score</dt><dd>2</dd>']
+```
+
+Same confirmed for the workflow step-line site: pre-fix a step result shaped `{summary, tokens_used: 0, token_cost: 0.0, quality_score: 2.0}` rendered only `"... (quality 2)"`, silently dropping the `($0.00000)` cost half.
+
+### 🔧 Fix
+
+**`static/dashboard.html`**: both guards, at both sites, switched from truthy checks to presence checks (`"tokens_used" in result`, `"quality_score" in result`), matching the exact pattern already shipped at `main_v2.py`'s two sites. A comment at the task-detail site records the bug, the precedent (checkpoints 104/106), and an honest caveat: `tokens_used` is the half of this fix proven live; `quality_score`'s guard is switched for consistency with that precedent even though no reachable path leaves it at a falsy 0 today (confirmed above). No backend file changed - `/api/tasks/<id>` and `/api/workflows` already serve the correct real-zero JSON since checkpoints 104/106; this was purely the browser's own rendering logic.
+
+### 🧪 Validation
+
+New `tests/test_dashboard_token_cost_presence.py`, 5 tests: (1)/(2) structural/regex pins on the real source confirming both sites use presence checks, with explicit regression guards against the original truthy forms reappearing; (3)/(4) a pure-Python mirror of each fixed block, proving a never-attempted task still shows neither line while a real-$0-but-attempted task now shows both (the never-vs-real distinction checkpoints 104/106 each pinned the same way); (5) drives the real `DepartmentHeadAgent` through the exploding-provider path (no hand-built dict) to confirm the live shape matches what (3) assumes, then feeds that real result through the mirror. Ran the new file twice back-to-back - byte-identical output both runs. Full `tests/test_*.py` suite (94 files) - all green. `python3 -m py_compile` clean on the new test file (the dashboard change is JS inside `.html`, validated via the live `node` repro above, not a `py_compile` target). Also started the real `web_server.py` against the repo's actual `data/` (GET-only - `/`, `/api/status`, `/api/tasks` - no mutation), loaded the dashboard in a headless Chromium (Playwright), and confirmed zero console/page errors on load. Restored `data/agent_states.json`/`data/performance_metrics.json` and removed every generated `data/budgets.json`/`data/workflows.json`/`data/test_*.json` after every run, per CLAUDE.md.
+
+### Behavior change: yes, named here per CLAUDE.md
+
+Purely visual, scoped to two places: the task detail panel's "Tokens Used" row, and a workflow step's inline cost suffix. An attempted task/step whose real token cost was genuinely $0.00 (the provider-exception path) now shows "Tokens Used: 0 ($0.00000)" (and the `[NOT CHARGED: ...]` note, if applicable) instead of showing nothing at all for that row - making it visually indistinguishable, for the first time, from a task/step that was escalated before any attempt was made. No API payload, no backend computation, and no other dashboard field changes.
+
+### 📝 Next Steps
+
+- All standing policy-question items from checkpoints 42-110's Next Steps (token-cost rate, placeholder department heads, `must_approve_over_100k`, `agent_decisions.py:57`'s task-id mismatch, `customer_satisfaction`, `EventBus.subscribe()` zero subscribers, `WorkflowStep.input_schema`/`timeout_minutes`/`retry_on_failure`/`max_retries`, `AgentProfile.capabilities`, `core.py`'s `agent_registry`/`skill_registry`, `OrganizationDecisionMaker`, `departments.py`'s `create_department()`/`list_departments()`, the weekly-hours accumulator, `main_v2.run_agent()`'s injection point, `rollover_forfeiture_threshold`'s hardcoded default, the three workflow templates' unapprovable `design_lead`/`ceo`/`tech_lead` `approval_role`s, `DecisionResult.decision`'s dead `"reject"` branch, `web_server.py`'s `_task_summary()` list/detail split, `rank_candidate()`'s `workload_factor` ranking-quality note, `departments.py`'s `get_staff_count()`/`get_staff_range()` band-mismatch note, the negation-handling residual limits, the `tests/test_concurrent_first_creation.py` threading flake, the cross-department file-write race, the gemini/groq/nvidia single-shot path's empty-string passthrough, checkpoint 107's multi-department-tie-breaking observation, and checkpoint 109's resurfaced `can_execute()` `skill_level < 4` skill-gap-bypass policy question) - unchanged, still open. The skill_level gate remains the most actionable owner decision pending.
+- **New, named but not chased this session**: `task_executor_v2.py:570`'s `quality_score = 0.0` initializer is genuinely dead in production (confirmed above - `self.llm` is never falsy at either construction site) but would silently become live again if a future caller ever constructed `DepartmentHeadAgent`/`TaskExecutor` with `llm_provider=None` (both default to `None` in their signatures). Not fixed here since nothing live demonstrates it and it isn't this checkpoint's bug - worth a defensive test or an explicit guard if that constructor default is ever actually exercised for something other than a unit test.
+- **Closed this session**: the dashboard's own truthy-vs-presence bug on `tokens_used`/`quality_score`, at both the task detail panel and the workflow step line - see above.
+- `static/dashboard.html` has now had three consecutive checkpoints (109, 110, 111) all finding bugs unswept from a fix made elsewhere first. Still worth the dedicated full fresh sweep named in checkpoint 110's Next Steps - this session's fork covered it as one pass among several modules, not a line-by-line audit of the whole file in isolation.
+- No new non-policy, self-contained gap beyond the items above was spotted and deliberately left this session.
+
+---
+
 # Daily Progress Report - November 27, 2026
 
 ## 🐛 CHECKPOINT 110: THE WORKFLOW PROGRESS BAR REUSED THE SAME "HIGH = BAD" COLOR SCALE CHECKPOINT 109 JUST FIXED FOR TRUST - AT A SITE THAT TURNED OUT TO NEED A THIRD POLARITY, NOT THE SAME FIX
