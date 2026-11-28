@@ -18,6 +18,48 @@ reasoning rather than relitigated every week.
 
 ---
 
+## 2026-11-28 — Open watch items re-check: promptfoo license, OTel GenAI semconv (BOTH: NOTHING CHANGED)
+
+Picked the two explicit "Open watch items" from the 2026-09-11 baseline sweep
+rather than slices 4-6 (durable execution/observability/security advisories),
+which were only ever covered in that same one-time baseline and have no
+dedicated rotation slot of their own in `DAILY_ROUTINE_PROMPT.md`'s six-slice
+list - these two are concrete, dated flags actually meant to be re-checked,
+so they take priority over re-surveying three broad areas from scratch.
+
+**promptfoo license post-acquisition: resolved, no risk.** OpenAI announced
+the acquisition 2026-03-09; promptfoo's own `promptfoo.dev/blog/promptfoo-joining-openai`
+post and OpenAI's acquisition announcement both commit to keeping the
+project open source, integrated into OpenAI Frontier rather than folded away.
+No source found any license change - this repo doesn't depend on promptfoo
+(it's an external CLI, per the baseline's own note), so the only exposure was
+"the project disappears or relicenses out from under us," which did not
+happen. Nothing to act on; closing this watch item rather than carrying it
+forward indefinitely.
+
+**OTel GenAI semconv: still not stable, watch item stays open.** As of the
+most recent sources found (through ~September 2026), every `gen_ai.*`
+attribute, span, metric and event in the official registry still carries the
+"Development" stability badge - none are Stable, and the spec's own pages
+still describe a transition plan to be published before stabilization, with
+no date given. The June 2026 move to a dedicated `semantic-conventions-genai`
+repo (noted in the baseline) hasn't changed that. Unchanged from the
+baseline's conclusion: this repo emits no OTel today, so the only
+consequence of waiting is that any `gen_ai.*` constants adopted later still
+need to be self-sourced strings rather than a dependency's stable contract.
+
+**Not re-checked this run, so not claimed as current:** slices 4 (durable
+execution), 5 (observability platform choice), 6 (security advisories) -
+these still reflect the 2026-09-11 baseline's findings (DBOS/Langfuse
+verdicts, LiteLLM supply-chain compromise) with no dedicated re-check since.
+Next session picking the research slice should treat these, not slice 1
+(re-checked 2026-11-27) or 2/3 (re-checked 2026-09-18/2026-10-14), as the
+least-recently-checked.
+
+Sources: [promptfoo joining openai](https://promptfoo.dev/blog/promptfoo-joining-openai), [openai to acquire promptfoo](https://openai.com/index/openai-to-acquire-promptfoo/), [OpenTelemetry GenAI semantic conventions explained](https://www.dash0.com/knowledge/opentelemetry-genai-semantic-conventions-explained), [OpenTelemetry gen-ai spans spec](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/index.md)
+
+---
+
 ## 2026-11-27 — Slice 1 re-check: model/provider landscape (PARTIAL RISK CLOSED, ONE STILL OPEN)
 
 Re-checked the 2026-09-11 open risk rather than rotating to a never-checked
